@@ -2,6 +2,11 @@ import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import OpenAI from 'openai';
 import type { BoundingBoxPercent, DifferenceSeverity, EquivalenceLevelId } from '../types.js';
+import {
+  createLmsCli,
+  readLmsCliConfigFromEnv,
+  type LmsCli,
+} from './lms-cli.js';
 
 // ---------------------------------------------------------------------------
 // Response schema (zod) — must mirror the JSON Schema below.
@@ -146,9 +151,20 @@ export interface LmConfig {
   temperature?: number;
   /** Seconds before aborting an LM call. Default 240. */
   timeoutSeconds?: number;
+  /** Try `lms server start` automatically when /v1/models is unreachable. */
+  autoStart: boolean;
+  /** Try `lms load <model>` automatically when the configured model is missing. */
+  autoLoad: boolean;
+  /** Seconds the cached preflight result remains valid. */
+  preflightCacheSeconds: number;
 }
 
 export function readLmConfigFromEnv(env: NodeJS.ProcessEnv = process.env): LmConfig {
+  const flag = (key: string, def: boolean) => {
+    const v = env[key];
+    if (v === undefined) return def;
+    return v !== '0' && v.toLowerCase() !== 'false';
+  };
   return {
     baseURL: env.LM_STUDIO_BASE_URL ?? 'http://localhost:1234/v1',
     apiKey: env.LM_STUDIO_API_KEY ?? 'lm-studio',
@@ -157,6 +173,11 @@ export function readLmConfigFromEnv(env: NodeJS.ProcessEnv = process.env): LmCon
     maxTokens: env.LM_STUDIO_MAX_TOKENS ? Number(env.LM_STUDIO_MAX_TOKENS) : 1024,
     temperature: env.LM_STUDIO_TEMPERATURE ? Number(env.LM_STUDIO_TEMPERATURE) : 0.1,
     timeoutSeconds: env.LM_STUDIO_TIMEOUT_SECONDS ? Number(env.LM_STUDIO_TIMEOUT_SECONDS) : 240,
+    autoStart: flag('LM_STUDIO_AUTO_START', true),
+    autoLoad: flag('LM_STUDIO_AUTO_LOAD', true),
+    preflightCacheSeconds: env.LM_STUDIO_PREFLIGHT_CACHE_SECONDS
+      ? Number(env.LM_STUDIO_PREFLIGHT_CACHE_SECONDS)
+      : 30,
   };
 }
 
@@ -198,29 +219,227 @@ export function isAnalyzeError(o: AnalyzeOutcome): o is AnalyzeError {
   return o.parsed === null;
 }
 
+export interface PreflightOk {
+  ok: true;
+  serverReachable: true;
+  modelLoaded: true;
+  configuredModel: string;
+  loadedModels: string[];
+  /** Whether `lms server start` was invoked during this preflight. */
+  startedServer: boolean;
+  /** Whether `lms load <model>` was invoked during this preflight. */
+  loadedModel: boolean;
+  durationMs: number;
+}
+
+export interface PreflightFailure {
+  ok: false;
+  serverReachable: boolean;
+  modelLoaded: boolean;
+  configuredModel: string;
+  loadedModels: string[];
+  /** Machine-readable failure category. */
+  reason:
+    | 'server_unreachable'
+    | 'auto_start_failed'
+    | 'model_not_loaded'
+    | 'auto_load_failed'
+    | 'unknown';
+  message: string;
+  startedServer: boolean;
+  loadedModel: boolean;
+  durationMs: number;
+}
+
+export type PreflightResult = PreflightOk | PreflightFailure;
+
 export interface LmClient {
+  config: LmConfig;
+  /**
+   * Verifies LM Studio is up and the configured model is loaded. Auto-starts
+   * the server / auto-loads the model based on config flags. Result is cached
+   * for `config.preflightCacheSeconds` to avoid hammering on every comparison
+   * run; pass `force` to bypass the cache.
+   */
+  preflight(opts?: { force?: boolean }): Promise<PreflightResult>;
+  /** Invalidate the preflight cache (e.g. after a real LM call fails). */
+  invalidatePreflight(): void;
   analyze(args: Omit<AnalyzeArgs, 'config'>): Promise<AnalyzeOutcome>;
 }
 
 /**
  * Creates an OpenAI-compatible client pointed at LM Studio. Returns a small
- * `analyze` interface so the comparison pipeline doesn't have to know about
- * the OpenAI SDK directly.
+ * surface (preflight, analyze, invalidatePreflight) so the comparison
+ * pipeline doesn't have to know about the OpenAI SDK directly.
  */
-export function createLmClient(config: LmConfig): LmClient {
+export function createLmClient(
+  config: LmConfig,
+  cli: LmsCli = createLmsCli(readLmsCliConfigFromEnv()),
+): LmClient {
   const client = new OpenAI({
     baseURL: config.baseURL,
     apiKey: config.apiKey,
     timeout: (config.timeoutSeconds ?? 240) * 1000,
-    maxRetries: 0,
+    maxRetries: 2,
   });
 
-  return {
-    analyze: (args) => analyze({ config, ...args }, client),
+  let cached: { result: PreflightResult; expiresAt: number } | null = null;
+
+  const invalidatePreflight = () => {
+    cached = null;
   };
+
+  const preflight = async (opts: { force?: boolean } = {}): Promise<PreflightResult> => {
+    if (!opts.force && cached && cached.expiresAt > Date.now() && cached.result.ok) {
+      return cached.result;
+    }
+    const result = await runPreflight(config, cli);
+    cached = {
+      result,
+      expiresAt: Date.now() + config.preflightCacheSeconds * 1000,
+    };
+    return result;
+  };
+
+  const analyze = async (args: Omit<AnalyzeArgs, 'config'>): Promise<AnalyzeOutcome> => {
+    const outcome = await runAnalyze({ config, ...args }, client);
+    if (isAnalyzeError(outcome)) {
+      // A failed call usually means LM is misbehaving — drop the cache so the
+      // next preflight does a real check.
+      invalidatePreflight();
+    }
+    return outcome;
+  };
+
+  return { config, preflight, invalidatePreflight, analyze };
 }
 
-async function analyze(args: AnalyzeArgs, client: OpenAI): Promise<AnalyzeOutcome> {
+async function runPreflight(config: LmConfig, cli: LmsCli): Promise<PreflightResult> {
+  const startedAt = Date.now();
+  let startedServer = false;
+  let loadedModel = false;
+
+  const ping = async (): Promise<{ ok: boolean; loaded: string[]; message?: string }> => {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 4000);
+      try {
+        const res = await fetch(`${config.baseURL.replace(/\/$/, '')}/models`, {
+          signal: ctrl.signal,
+        });
+        if (!res.ok) {
+          return { ok: false, loaded: [], message: `HTTP ${res.status}` };
+        }
+        const json = (await res.json()) as { data?: Array<{ id: string }> };
+        const loaded = (json.data ?? []).map((m) => m.id);
+        return { ok: true, loaded };
+      } finally {
+        clearTimeout(t);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, loaded: [], message: msg };
+    }
+  };
+
+  let probe = await ping();
+
+  if (!probe.ok) {
+    if (!config.autoStart) {
+      return failure({
+        reason: 'server_unreachable',
+        message: `LM Studio at ${config.baseURL} is not reachable: ${probe.message ?? 'no response'}. Set LM_STUDIO_AUTO_START=1 or run \`lms server start\`.`,
+        serverReachable: false,
+        modelLoaded: false,
+        loadedModels: [],
+      });
+    }
+    const start = await cli.serverStart();
+    startedServer = true;
+    if (!start.ok) {
+      return failure({
+        reason: 'auto_start_failed',
+        message: `\`lms server start\` failed: ${start.errorMessage ?? start.stderr.trim() ?? `exit ${start.exitCode}`}`,
+        serverReachable: false,
+        modelLoaded: false,
+        loadedModels: [],
+      });
+    }
+    probe = await ping();
+    if (!probe.ok) {
+      return failure({
+        reason: 'server_unreachable',
+        message: `LM Studio still unreachable after \`lms server start\`: ${probe.message ?? 'no response'}`,
+        serverReachable: false,
+        modelLoaded: false,
+        loadedModels: [],
+      });
+    }
+  }
+
+  if (!probe.loaded.includes(config.model)) {
+    if (!config.autoLoad) {
+      return failure({
+        reason: 'model_not_loaded',
+        message: `Configured model '${config.model}' is not loaded. Set LM_STUDIO_AUTO_LOAD=1 or run \`lms load ${config.model}\`. Loaded: ${probe.loaded.join(', ') || '(none)'}`,
+        serverReachable: true,
+        modelLoaded: false,
+        loadedModels: probe.loaded,
+      });
+    }
+    const load = await cli.load(config.model);
+    loadedModel = true;
+    if (!load.ok) {
+      return failure({
+        reason: 'auto_load_failed',
+        message: `\`lms load ${config.model}\` failed: ${load.errorMessage ?? load.stderr.trim() ?? `exit ${load.exitCode}`}`,
+        serverReachable: true,
+        modelLoaded: false,
+        loadedModels: probe.loaded,
+      });
+    }
+    probe = await ping();
+    if (!probe.loaded.includes(config.model)) {
+      return failure({
+        reason: 'model_not_loaded',
+        message: `Model '${config.model}' still not loaded after \`lms load\`. Loaded: ${probe.loaded.join(', ') || '(none)'}`,
+        serverReachable: true,
+        modelLoaded: false,
+        loadedModels: probe.loaded,
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    serverReachable: true,
+    modelLoaded: true,
+    configuredModel: config.model,
+    loadedModels: probe.loaded,
+    startedServer,
+    loadedModel,
+    durationMs: Date.now() - startedAt,
+  };
+
+  function failure(args: {
+    reason: PreflightFailure['reason'];
+    message: string;
+    serverReachable: boolean;
+    modelLoaded: boolean;
+    loadedModels: string[];
+  }): PreflightFailure {
+    return {
+      ok: false,
+      configuredModel: config.model,
+      startedServer,
+      loadedModel,
+      durationMs: Date.now() - startedAt,
+      ...args,
+    };
+  }
+}
+
+async function runAnalyze(args: AnalyzeArgs, client: OpenAI): Promise<AnalyzeOutcome> {
   const { config } = args;
   const promptVersion = config.promptVersion;
   const model = config.model;

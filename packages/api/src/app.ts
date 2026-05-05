@@ -53,7 +53,7 @@ export function createApp(deps: AppDeps): Express {
   );
   app.use('/api/comparisons', comparisonsRouter(deps.db));
   app.use('/api/jobs', jobsRouter(deps.db));
-  app.use('/api/meta', metaRouter());
+  app.use('/api/meta', metaRouter({ lm: deps.lm }));
 
   app.use('/images', express.static(deps.artifactStore.rootDir, {
     maxAge: '1y',

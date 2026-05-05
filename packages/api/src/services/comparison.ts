@@ -192,8 +192,14 @@ export function startComparisonRun(
         `SELECT * FROM comparisons WHERE comparison_run_id = ? ORDER BY created_at`,
       )
       .all(comparisonRunId);
+    const circuit: LmCircuit = {
+      consecutiveFailures: 0,
+      open: false,
+      lastError: null,
+      threshold: 2,
+    };
     for (const c of comparisons) {
-      await runOneComparison(deps, imagick, c, options.equivalenceLevel);
+      await runOneComparison(deps, imagick, c, options.equivalenceLevel, circuit);
       ctx.incrementProgress();
     }
   });
@@ -205,11 +211,19 @@ export function startComparisonRun(
   };
 }
 
+interface LmCircuit {
+  consecutiveFailures: number;
+  open: boolean;
+  lastError: string | null;
+  threshold: number;
+}
+
 async function runOneComparison(
   deps: ComparisonRunDeps,
   imagick: ComparisonImagick,
   comparison: ComparisonRow,
   level: EquivalenceLevelId,
+  circuit: LmCircuit,
 ): Promise<void> {
   const { db, artifactStore } = deps;
   db.prepare(`UPDATE comparisons SET status = 'processing' WHERE id = ?`).run(comparison.id);
@@ -270,6 +284,13 @@ async function runOneComparison(
           `LM Studio is required for level '${level}' (reason: ${lmInvocationReason}) but no LM client was configured. Set LM_STUDIO_BASE_URL and load a model.`,
         );
       }
+      // Circuit breaker: skip if a prior comparison in this run already
+      // exhausted the failure threshold.
+      if (circuit.open) {
+        throw new Error(
+          `lm_circuit_open: skipped LM call after ${circuit.threshold} consecutive failures in this run. Last error: ${circuit.lastError ?? 'unknown'}`,
+        );
+      }
       lmOutcome = await deps.lm.analyze({
         aPath,
         bPath,
@@ -280,8 +301,16 @@ async function runOneComparison(
         ssim,
       });
       if (isAnalyzeError(lmOutcome)) {
+        circuit.consecutiveFailures += 1;
+        circuit.lastError = lmOutcome.message;
+        if (circuit.consecutiveFailures >= circuit.threshold) {
+          circuit.open = true;
+        }
         throw new Error(`LM Studio failed: ${lmOutcome.message}`);
       }
+      // Successful LM call → reset breaker.
+      circuit.consecutiveFailures = 0;
+      circuit.lastError = null;
     }
 
     // Final verdict: LM trumps pixel decision when LM was invoked.

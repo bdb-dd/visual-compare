@@ -3,6 +3,7 @@ import { NavLink, Route, Routes } from 'react-router-dom';
 import { SessionsPage } from './pages/SessionsPage.js';
 import { SessionDetailPage } from './pages/SessionDetailPage.js';
 import { ComparisonDetailPage } from './pages/ComparisonDetailPage.js';
+import { LmStatusPill } from './components/LmStatusPill.js';
 
 export function App(): JSX.Element {
   return (
@@ -14,6 +15,9 @@ export function App(): JSX.Element {
             Sessions
           </NavLink>
         </nav>
+        <div style={{ marginLeft: 'auto' }}>
+          <LmStatusPill />
+        </div>
       </header>
       <Routes>
         <Route path="/" element={<SessionsPage />} />

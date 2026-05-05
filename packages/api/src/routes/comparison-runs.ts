@@ -8,6 +8,7 @@ import {
   startComparisonRun,
   type ComparisonRunDeps,
 } from '../services/comparison.js';
+import { levelMayInvokeLm } from '../services/equivalence.js';
 import { toComparisonDto } from './comparisons.js';
 
 const startBodySchema = z.object({
@@ -19,7 +20,7 @@ const startBodySchema = z.object({
 export function comparisonRunsRouter(deps: ComparisonRunDeps): Router {
   const router = Router();
 
-  router.post('/', (req, res) => {
+  router.post('/', async (req, res) => {
     const parsed = startBodySchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({
@@ -29,6 +30,31 @@ export function comparisonRunsRouter(deps: ComparisonRunDeps): Router {
       });
       return;
     }
+
+    // LM preflight: if the level might invoke LM, verify upfront so we don't
+    // queue 10 jobs that all timeout. Auto-recovery (lms server start, lms
+    // load) is attempted inside preflight per LmConfig.
+    if (levelMayInvokeLm(parsed.data.options.equivalenceLevel)) {
+      if (!deps.lm) {
+        res.status(503).json({
+          error: 'lm_unavailable',
+          message: `Level '${parsed.data.options.equivalenceLevel}' may invoke LM Studio but no LM client is configured.`,
+        });
+        return;
+      }
+      const pf = await deps.lm.preflight();
+      if (!pf.ok) {
+        res.status(503).json({
+          error: 'lm_unavailable',
+          reason: pf.reason,
+          message: pf.message,
+          configured_model: pf.configuredModel,
+          loaded_models: pf.loadedModels,
+        });
+        return;
+      }
+    }
+
     try {
       const result = startComparisonRun(deps, {
         sessionId: parsed.data.session_id,

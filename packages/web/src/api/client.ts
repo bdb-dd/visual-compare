@@ -75,4 +75,21 @@ export const api = {
     request<{ levels: EquivalenceLevelDef[]; default: EquivalenceLevelId }>(
       '/api/meta/equivalence-levels',
     ),
+
+  getLmStatus: (force = false) =>
+    request<LmStatusDto>(`/api/meta/lm-status${force ? '?force=1' : ''}`),
 };
+
+export interface LmStatusDto {
+  ok: boolean;
+  configured: boolean;
+  server_reachable?: boolean;
+  model_loaded?: boolean;
+  configured_model?: string;
+  loaded_models?: string[];
+  started_server?: boolean;
+  loaded_model?: boolean;
+  reason?: string;
+  message?: string;
+  duration_ms?: number;
+}

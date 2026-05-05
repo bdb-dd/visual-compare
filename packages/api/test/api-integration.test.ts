@@ -11,6 +11,7 @@ import { JobQueue } from '../src/services/queue.js';
 import { createArtifactStore } from '../src/services/artifact-store.js';
 import type { CaptureWorker } from '../src/services/capture.js';
 import type { ComparisonImagick } from '../src/services/comparison.js';
+import type { LmClient } from '../src/services/lm.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
@@ -73,6 +74,43 @@ interface Harness {
   cleanup(): Promise<void>;
 }
 
+function makeStubLmClient(): LmClient {
+  return {
+    config: {
+      baseURL: 'http://stub',
+      apiKey: 'stub',
+      model: 'stub-model',
+      promptVersion: 'test',
+      autoStart: false,
+      autoLoad: false,
+      preflightCacheSeconds: 0,
+    },
+    preflight: async () => ({
+      ok: true,
+      serverReachable: true,
+      modelLoaded: true,
+      configuredModel: 'stub-model',
+      loadedModels: ['stub-model'],
+      startedServer: false,
+      loadedModel: false,
+      durationMs: 0,
+    }),
+    invalidatePreflight: () => undefined,
+    analyze: async () => ({
+      parsed: {
+        equivalent: false,
+        confidence: 0.7,
+        summary: 'stub LM verdict',
+        differences: [],
+      },
+      rawText: '{}',
+      path: 'json_schema',
+      promptVersion: 'test',
+      model: 'stub-model',
+    }),
+  };
+}
+
 async function makeHarness(): Promise<Harness> {
   const storeDir = await mkdtemp(join(tmpdir(), 'vc-itest-'));
   const db = openDatabase({ path: ':memory:' });
@@ -81,7 +119,8 @@ async function makeHarness(): Promise<Harness> {
   const artifactStore = createArtifactStore(storeDir);
   const captureWorker = makeStubCaptureWorker();
   const imagick = makeStubImagick(Buffer.from('STUB-DIFF-BYTES'));
-  const app = createApp({ db, queue, artifactStore, captureWorker, imagick });
+  const lm = makeStubLmClient();
+  const app = createApp({ db, queue, artifactStore, captureWorker, imagick, lm });
   return {
     app,
     queue,

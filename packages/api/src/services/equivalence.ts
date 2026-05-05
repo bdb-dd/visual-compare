@@ -1,6 +1,16 @@
 import { getEquivalenceLevel } from '../constants/equivalence.js';
 import type { EquivalenceLevelId } from '../types.js';
 
+/**
+ * True when this level *might* trigger an LM Studio call: either the LM is
+ * always invoked (semantic) or the level has a non-zero ambiguity band where
+ * a tiebreaker could fire.
+ */
+export function levelMayInvokeLm(id: EquivalenceLevelId): boolean {
+  const def = getEquivalenceLevel(id);
+  return def.semantic || def.ambiguity_band_percentage > 0;
+}
+
 export interface EquivalenceDecisionInput {
   level: EquivalenceLevelId;
   changedPixelPercentage: number;

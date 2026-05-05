@@ -1,6 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { api } from '../api/client.js';
+import { api, type LmStatusDto } from '../api/client.js';
 import { usePolledJob } from '../api/usePolledJob.js';
 import { StatusPill } from '../components/StatusPill.js';
 import type {
@@ -34,6 +34,7 @@ export function SessionDetailPage(): JSX.Element {
   const [selectedViewports, setSelectedViewports] = useState<string[]>([]);
   const [levels, setLevels] = useState<EquivalenceLevelDef[]>([]);
   const [selectedLevel, setSelectedLevel] = useState<EquivalenceLevelId>('tolerant');
+  const [lmStatus, setLmStatus] = useState<LmStatusDto | null>(null);
 
   const [captureRun, setCaptureRun] = useState<RunSummary | null>(null);
   const [captures, setCaptures] = useState<CaptureDto[]>([]);
@@ -46,10 +47,11 @@ export function SessionDetailPage(): JSX.Element {
   useEffect(() => {
     void (async () => {
       try {
-        const [{ session, url_pairs }, vp, lv] = await Promise.all([
+        const [{ session, url_pairs }, vp, lv, lm] = await Promise.all([
           api.getSession(id),
           api.getViewports(),
           api.getLevels(),
+          api.getLmStatus().catch(() => null),
         ]);
         setSession(session);
         setPairs(url_pairs);
@@ -57,6 +59,7 @@ export function SessionDetailPage(): JSX.Element {
         setSelectedViewports([vp.default]);
         setLevels(lv.levels);
         setSelectedLevel(lv.default);
+        setLmStatus(lm);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -209,11 +212,21 @@ export function SessionDetailPage(): JSX.Element {
           <label>
             Equivalence level:{' '}
             <select value={selectedLevel} onChange={(e) => setSelectedLevel(e.target.value as EquivalenceLevelId)}>
-              {levels.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.name}{l.semantic ? ' (LM Studio)' : ''}
-                </option>
-              ))}
+              {levels.map((l) => {
+                const needsLm = l.semantic || l.ambiguity_band_percentage > 0;
+                const lmDown = lmStatus !== null && !lmStatus.ok;
+                const disabled = needsLm && lmDown;
+                const suffix = l.semantic
+                  ? ' (LM Studio)'
+                  : needsLm
+                    ? ` (LM tiebreak ±${l.ambiguity_band_percentage}%)`
+                    : '';
+                return (
+                  <option key={l.id} value={l.id} disabled={disabled} title={disabled ? 'LM Studio is unavailable' : undefined}>
+                    {l.name}{suffix}{disabled ? ' — LM down' : ''}
+                  </option>
+                );
+              })}
             </select>
           </label>
           <div style={{ marginTop: 12 }}>
