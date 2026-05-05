@@ -48,10 +48,21 @@ export function ComparisonDetailPage(): JSX.Element {
           <div><span className="label">SSIM:</span> <span className="value">{fmtNum(c.ssim, 4)}</span></div>
           <div><span className="label">Bounding-box area %:</span> <span className="value">{fmtPct(c.bounding_box_area_percentage)}</span></div>
           <div><span className="label">Connected components:</span> <span className="value">{c.connected_component_count ?? '—'}</span></div>
-          <div><span className="label">Equivalent:</span> <span className="value">{c.is_equivalent === null ? '—' : c.is_equivalent ? '✓ yes' : '✗ no'}</span></div>
-          <div><span className="label">LM invocation:</span> <span className="value">{c.lm_invocation_reason ?? '—'}</span></div>
+          <div><span className="label">Pixel verdict:</span> <span className="value">{c.im_determined_equivalent === null ? '—' : c.im_determined_equivalent ? '✓ yes' : '✗ no'}</span></div>
+          <div><span className="label">Final verdict:</span> <span className="value">{c.is_equivalent === null ? '—' : c.is_equivalent ? '✓ yes' : '✗ no'}</span></div>
         </div>
         {c.error_message && <div className="error">{c.error_message}</div>}
+        {c.lm_invocation_reason && (
+          <div className="card" style={{ marginTop: 12, background: '#181b20' }}>
+            <div className="metrics" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
+              <div><span className="label">LM model:</span> <span className="value">{c.lm_model ?? '—'}</span></div>
+              <div><span className="label">LM verdict:</span> <span className="value">{c.lm_determined_equivalent === null ? '—' : c.lm_determined_equivalent ? '✓ yes' : '✗ no'}</span></div>
+              <div><span className="label">LM confidence:</span> <span className="value">{fmtNum(c.lm_confidence, 2)}</span></div>
+              <div style={{ gridColumn: '1 / -1' }}><span className="label">Invoked because:</span> <span className="value">{c.lm_invocation_reason}{c.lm_prompt_version ? ` · prompt ${c.lm_prompt_version}` : ''}</span></div>
+              {c.lm_summary && <div style={{ gridColumn: '1 / -1' }}><span className="label">Summary:</span> <span className="value">{c.lm_summary}</span></div>}
+            </div>
+          </div>
+        )}
         <label>
           <input type="checkbox" checked={showBoxes} onChange={(e) => setShowBoxes(e.target.checked)} />{' '}
           Show difference bounding boxes
@@ -87,7 +98,9 @@ export function ComparisonDetailPage(): JSX.Element {
           <ul className="diff-list">
             {differences.map((d) => (
               <li key={d.id}>
-                <strong>[{d.source}]</strong> {d.description}
+                <strong>[{d.source}]</strong>
+                {d.severity ? <span className="muted"> {d.severity}</span> : null}{' '}
+                {d.description}
                 {d.bounding_box ? (
                   <span className="muted">
                     {' '}— ({d.bounding_box.x.toFixed(1)}%, {d.bounding_box.y.toFixed(1)}%)

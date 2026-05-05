@@ -11,6 +11,7 @@ import type { JobQueue } from './services/queue.js';
 import type { ArtifactStore } from './services/artifact-store.js';
 import type { CaptureWorker } from './services/capture.js';
 import type { ComparisonImagick } from './services/comparison.js';
+import type { LmClient } from './services/lm.js';
 
 export interface AppDeps {
   db: Db;
@@ -19,6 +20,8 @@ export interface AppDeps {
   captureWorker: CaptureWorker;
   /** Test seam — when omitted, services use the real `magick` CLI. */
   imagick?: ComparisonImagick;
+  /** LM Studio client. Required for `semantic` and ambiguity-band paths. */
+  lm?: LmClient;
 }
 
 export function createApp(deps: AppDeps): Express {
@@ -45,6 +48,7 @@ export function createApp(deps: AppDeps): Express {
       queue: deps.queue,
       artifactStore: deps.artifactStore,
       imagick: deps.imagick,
+      lm: deps.lm,
     }),
   );
   app.use('/api/comparisons', comparisonsRouter(deps.db));

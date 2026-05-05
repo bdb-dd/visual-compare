@@ -210,8 +210,8 @@ export function SessionDetailPage(): JSX.Element {
             Equivalence level:{' '}
             <select value={selectedLevel} onChange={(e) => setSelectedLevel(e.target.value as EquivalenceLevelId)}>
               {levels.map((l) => (
-                <option key={l.id} value={l.id} disabled={l.semantic /* LM not wired in v1 */}>
-                  {l.name}{l.semantic ? ' (LM, not yet)' : ''}
+                <option key={l.id} value={l.id}>
+                  {l.name}{l.semantic ? ' (LM Studio)' : ''}
                 </option>
               ))}
             </select>

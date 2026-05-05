@@ -8,6 +8,7 @@ import { recoverInterruptedRuns } from './db/recovery.js';
 import { JobQueue } from './services/queue.js';
 import { createArtifactStore } from './services/artifact-store.js';
 import { createPlaywrightCaptureWorker } from './services/capture.js';
+import { createLmClient, readLmConfigFromEnv } from './services/lm.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const PACKAGE_ROOT = resolve(dirname(__filename), '..');
@@ -34,7 +35,12 @@ const queue = new JobQueue(db);
 const artifactStore = createArtifactStore(IMAGES_DIR);
 const captureWorker = createPlaywrightCaptureWorker();
 
-const app = createApp({ db, queue, artifactStore, captureWorker });
+const lmConfig = readLmConfigFromEnv();
+const lm = createLmClient(lmConfig);
+// eslint-disable-next-line no-console
+console.log(`[lm] base=${lmConfig.baseURL} model=${lmConfig.model} prompt=${lmConfig.promptVersion}`);
+
+const app = createApp({ db, queue, artifactStore, captureWorker, lm });
 
 const server = app.listen(PORT, () => {
   // eslint-disable-next-line no-console

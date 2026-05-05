@@ -12,12 +12,18 @@ import {
 } from './imagick.js';
 import { parseConnectedComponents } from './connected-components.js';
 import { decideEquivalence } from './equivalence.js';
+import {
+  isAnalyzeError,
+  type AnalyzeOutcome,
+  type LmClient,
+} from './lm.js';
 import type { JobQueue } from './queue.js';
 import type {
   CaptureRow,
   ComparisonRow,
   ComparisonRunRow,
   EquivalenceLevelId,
+  LmInvocationReason,
 } from '../types.js';
 
 export const comparisonRunOptionsSchema = z.object({
@@ -51,6 +57,11 @@ export interface ComparisonRunDeps {
   queue: JobQueue;
   artifactStore: ArtifactStore;
   imagick?: ComparisonImagick;
+  /**
+   * LM Studio client. Required for `semantic` level and for ambiguity-band
+   * tiebreaks; absence is treated as a hard error for those code paths.
+   */
+  lm?: LmClient;
 }
 
 export interface StartComparisonRunInput {
@@ -229,11 +240,10 @@ async function runOneComparison(
     const { sha256: diffHash, byteSize: diffBytes } =
       await artifactStore.writeImage(diffTempPath);
     diffTempPath = null;
+    const diffPath = artifactStore.absolutePathFor(diffHash);
 
     // Connected components.
-    const cc = await imagick.extractConnectedComponents(
-      artifactStore.absolutePathFor(diffHash),
-    );
+    const cc = await imagick.extractConnectedComponents(diffPath);
     const regions = parseConnectedComponents(cc.raw, {
       imageWidth: ae.width,
       imageHeight: ae.height,
@@ -250,9 +260,44 @@ async function runOneComparison(
       ssim,
     });
 
-    const isEquivalent = decision.imDeterminedEquivalent;
-    const completedAt = new Date().toISOString();
+    // LM Studio invocation: required for `semantic` (always) and for ambiguity
+    // band tiebreaks. Outside those cases the LM is skipped entirely.
+    let lmOutcome: AnalyzeOutcome | null = null;
+    let lmInvocationReason: LmInvocationReason | null = decision.lmInvocationReason;
+    if (lmInvocationReason !== null) {
+      if (!deps.lm) {
+        throw new Error(
+          `LM Studio is required for level '${level}' (reason: ${lmInvocationReason}) but no LM client was configured. Set LM_STUDIO_BASE_URL and load a model.`,
+        );
+      }
+      lmOutcome = await deps.lm.analyze({
+        aPath,
+        bPath,
+        diffPath,
+        level,
+        invocationReason: lmInvocationReason,
+        changedPixelPercentage: ae.changedPixelPercentage,
+        ssim,
+      });
+      if (isAnalyzeError(lmOutcome)) {
+        throw new Error(`LM Studio failed: ${lmOutcome.message}`);
+      }
+    }
 
+    // Final verdict: LM trumps pixel decision when LM was invoked.
+    const lmEquivalent = lmOutcome && !isAnalyzeError(lmOutcome)
+      ? lmOutcome.parsed.equivalent
+      : null;
+    const finalEquivalent: boolean | null =
+      lmEquivalent !== null ? lmEquivalent : decision.imDeterminedEquivalent;
+
+    if (finalEquivalent === null) {
+      throw new Error(
+        `Internal: comparison ${comparison.id} is missing a final equivalence verdict`,
+      );
+    }
+
+    const completedAt = new Date().toISOString();
     db.transaction(() => {
       db.prepare(
         `UPDATE comparisons SET
@@ -265,6 +310,12 @@ async function runOneComparison(
            im_diff_byte_size = ?,
            im_determined_equivalent = ?,
            lm_invocation_reason = ?,
+           lm_model = ?,
+           lm_prompt_version = ?,
+           lm_summary = ?,
+           lm_confidence = ?,
+           lm_response_json = ?,
+           lm_determined_equivalent = ?,
            is_equivalent = ?,
            duration_ms = ?,
            completed_at = ?
@@ -279,8 +330,14 @@ async function runOneComparison(
         decision.imDeterminedEquivalent === null
           ? null
           : decision.imDeterminedEquivalent ? 1 : 0,
-        decision.lmInvocationReason,
-        isEquivalent === null ? null : isEquivalent ? 1 : 0,
+        lmInvocationReason,
+        lmOutcome && !isAnalyzeError(lmOutcome) ? lmOutcome.model : null,
+        lmOutcome && !isAnalyzeError(lmOutcome) ? lmOutcome.promptVersion : null,
+        lmOutcome && !isAnalyzeError(lmOutcome) ? lmOutcome.parsed.summary : null,
+        lmOutcome && !isAnalyzeError(lmOutcome) ? lmOutcome.parsed.confidence : null,
+        lmOutcome && !isAnalyzeError(lmOutcome) ? lmOutcome.rawText : null,
+        lmEquivalent === null ? null : lmEquivalent ? 1 : 0,
+        finalEquivalent ? 1 : 0,
         Date.now() - startedAt,
         completedAt,
         comparison.id,
@@ -289,26 +346,33 @@ async function runOneComparison(
       const insertDiff = db.prepare(
         `INSERT INTO differences
            (id, comparison_id, source, description, severity, bounding_box_json, created_at)
-         VALUES (?, ?, 'imagick', ?, NULL, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const r of regions) {
         insertDiff.run(
           randomUUID(),
           comparison.id,
+          'imagick',
           `Region of ${r.area}px${r.color ? ` (${r.color})` : ''}`,
+          null,
           JSON.stringify(r.bbox_percent),
           completedAt,
         );
       }
+      if (lmOutcome && !isAnalyzeError(lmOutcome)) {
+        for (const d of lmOutcome.parsed.differences) {
+          insertDiff.run(
+            randomUUID(),
+            comparison.id,
+            'lm',
+            d.description,
+            d.severity,
+            JSON.stringify(d.boundingBox),
+            completedAt,
+          );
+        }
+      }
     })();
-
-    // Service-layer invariant: status='complete' means is_equivalent is non-null
-    // unless an LM tiebreaker is pending (lm_invocation_reason is set).
-    if (isEquivalent === null && decision.lmInvocationReason === null) {
-      throw new Error(
-        `Internal: equivalence decision missing for comparison ${comparison.id}`,
-      );
-    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     db.prepare(
