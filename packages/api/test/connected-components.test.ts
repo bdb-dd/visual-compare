@@ -59,51 +59,50 @@ describe('parseConnectedComponents (JSON, simple)', () => {
   });
 });
 
-describe('parseConnectedComponents (verbose text)', () => {
-  it('parses the verbose text fallback', () => {
+describe('parseConnectedComponents (verbose text — real IM 7 output)', () => {
+  // Captured from `magick compare -metric AE -fuzz 5% -highlight-color red
+  // -lowlight-color white | -channel G -separate +channel -threshold 50% -negate
+  // -connected-components 8 null:` on a real 1440x900 diff (iana home vs about).
+  // The first row is the gray(0) background covering ~70% of the image and
+  // must be dropped by the background heuristic.
+  it('drops the dominant background and converts pixel boxes to %', () => {
     const result = parseConnectedComponents(read('simple.txt'), {
-      imageWidth: 1000,
-      imageHeight: 1000,
+      imageWidth: 1440,
+      imageHeight: 900,
       format: 'text',
     });
-    expect(result).toMatchInlineSnapshot(`
-      [
-        {
-          "area": 1234,
-          "bbox_percent": {
-            "height": 4,
-            "width": 24,
-            "x": 5,
-            "y": 10,
-          },
-          "bbox_pixels": {
-            "height": 40,
-            "width": 240,
-            "x": 50,
-            "y": 100,
-          },
-          "color": "srgba(255,0,0,1)",
-          "id": 1,
-        },
-        {
-          "area": 800,
-          "bbox_percent": {
-            "height": 8,
-            "width": 10,
-            "x": 60,
-            "y": 40,
-          },
-          "bbox_pixels": {
-            "height": 80,
-            "width": 100,
-            "x": 600,
-            "y": 400,
-          },
-          "color": "srgba(0,0,255,1)",
-          "id": 2,
-        },
-      ]
-    `);
+    expect(result.map((r) => r.area)).toEqual([190731, 174240, 3892, 2563]);
+    expect(result.map((r) => r.color)).toEqual([
+      'gray(255)',
+      'gray(255)',
+      'gray(255)',
+      'gray(255)',
+    ]);
+    expect(result[0]).toMatchObject({
+      id: 0,
+      bbox_pixels: { x: 0, y: 0, width: 1440, height: 162 },
+      bbox_percent: { x: 0, y: 0, width: 100, height: 18 },
+    });
+    expect(result[3]).toMatchObject({
+      id: 693,
+      bbox_pixels: { x: 534, y: 329, width: 367, height: 306 },
+    });
+  });
+
+  it('handles scientific-notation areas', () => {
+    const synthetic = [
+      'Objects (id: bounding-box centroid area mean-color):',
+      '  0: 1440x900+0+0 720.0,450.0 1.296e+06 gray(255)',
+      '  1: 100x50+10+20 60.0,45.0 5.0e+03 gray(0)',
+    ].join('\n');
+    const result = parseConnectedComponents(synthetic, {
+      imageWidth: 1440,
+      imageHeight: 900,
+      format: 'text',
+    });
+    // The 1.296e+06 region covers the entire image and is dropped as background.
+    expect(result).toHaveLength(1);
+    expect(result[0]?.area).toBe(5000);
   });
 });
 

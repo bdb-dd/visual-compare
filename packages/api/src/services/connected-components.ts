@@ -268,12 +268,18 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 // Verbose text parser (fallback)
 // ---------------------------------------------------------------------------
 
-// Example line emitted by `-define connected-components:verbose=true`:
-//   1: 1234 240x40+50+100 50.5,120.0 srgba(255,0,0,1)  red
-// We accept the leading id (with optional colon), the area, the bbox geometry,
-// the centroid, and an optional colour token. Anything trailing is ignored.
+// Real ImageMagick 7.1.x output for `-define connected-components:verbose=true`:
+//
+//   Objects (id: bounding-box centroid area mean-color):
+//     162: 1440x652+0+127 722.1,453.7 841885 gray(0)
+//     2086: 644x74+195+663 557.2,701.1 1825 gray(255)
+//
+// Field order is `id: geometry centroid area color`. Area can be in scientific
+// notation (e.g. `1.296e+06`). IDs are not guaranteed sequential — they are
+// pixel-label values. The "Objects (...):" header line is skipped because it
+// does not match the data shape.
 const TEXT_LINE_RE =
-  /^\s*(?<id>\d+)\s*:\s*(?<area>\d+)\s+(?<geom>\d+x\d+[+-]\d+[+-]\d+)\s+\S+\s+(?<color>\S+)/;
+  /^\s*(?<id>\d+)\s*:\s*(?<geom>\d+x\d+[+-]\d+[+-]\d+)\s+[\d.,+\-eE]+\s+(?<area>[\d.]+(?:[eE][+\-]?\d+)?)\s+(?<color>\S+)/;
 
 function parseVerboseText(raw: string): PixelRegion[] {
   const out: PixelRegion[] = [];
@@ -281,9 +287,11 @@ function parseVerboseText(raw: string): PixelRegion[] {
     const m = TEXT_LINE_RE.exec(line);
     if (!m || !m.groups) continue;
     const geom = parseGeometryString(m.groups.geom!);
+    const area = Number(m.groups.area);
+    if (!Number.isFinite(area)) continue;
     out.push({
       id: Number(m.groups.id),
-      area: Number(m.groups.area),
+      area: Math.round(area),
       color: m.groups.color,
       ...geom,
     });

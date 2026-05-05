@@ -84,6 +84,31 @@ export interface AeCompareResult {
   height: number;
 }
 
+/**
+ * `magick compare -metric ...` emits two numbers: an absolute distortion
+ * value and, in parentheses, a normalized 0..1 value.
+ *
+ *   identical:  "0 (0)"
+ *   different:  "461955 (0.356447)"   (AE count, normalized fraction)
+ *
+ * `parseMetricLine` returns both. Callers choose whichever is meaningful for
+ * the metric they ran — AE wants the count, SSIM/PSNR want the normalized.
+ */
+function parseMetricLine(text: string): { absolute: number; normalized: number | null } {
+  const trimmed = text.trim();
+  const tokens = trimmed.split(/\s+/);
+  const absolute = Number(tokens[0]);
+  if (!Number.isFinite(absolute)) {
+    throw new Error(`magick compare produced unparseable output: "${trimmed}"`);
+  }
+  const parenMatch = /\(([^)]+)\)/.exec(trimmed);
+  const normalized = parenMatch ? Number(parenMatch[1]) : null;
+  return {
+    absolute,
+    normalized: normalized !== null && Number.isFinite(normalized) ? normalized : null,
+  };
+}
+
 /** Returns the number of changed pixels and writes a diff image to `diffPath`. */
 export async function compareAe(
   imageA: string,
@@ -93,7 +118,9 @@ export async function compareAe(
 ): Promise<AeCompareResult> {
   await mkdir(dirname(diffPath), { recursive: true });
   const fuzz = options.fuzzPercent ?? 5;
-  // `magick compare` writes the AE count to stderr and exits 1 if pixels differ.
+  // Render the diff with explicit highlight/lowlight colours so the same diff
+  // image can be (a) shown in the UI and (b) masked for connected-components
+  // by isolating red pixels. The metric (AE count) is on stderr; exit 1 on diff.
   const result = await runMagick(
     [
       'compare',
@@ -101,6 +128,10 @@ export async function compareAe(
       'AE',
       '-fuzz',
       `${fuzz}%`,
+      '-highlight-color',
+      'red',
+      '-lowlight-color',
+      'white',
       imageA,
       imageB,
       diffPath,
@@ -108,12 +139,8 @@ export async function compareAe(
     { allowExitCodes: [0, 1] },
   );
 
-  // The metric value is on stderr (sometimes stdout depending on version).
   const text = (result.stderr || result.stdout).trim();
-  const ae = Number(text.split(/\s+/)[0]);
-  if (!Number.isFinite(ae)) {
-    throw new Error(`compare -metric AE produced unparseable output: "${text}"`);
-  }
+  const { absolute: ae } = parseMetricLine(text);
 
   const dims = await getImageDimensions(diffPath);
   const totalPixels = dims.width * dims.height;
@@ -130,8 +157,12 @@ export async function compareAe(
 }
 
 /**
- * Returns SSIM (0-1, higher = more similar). Uses `magick compare -metric SSIM`,
- * which prints the value to stderr.
+ * Returns SSIM as a similarity in 0..1 where 1 means identical.
+ *
+ * IM 7.1.x emits SSIM as `<absolute-distortion> (<normalized-dissimilarity>)`,
+ * where the parenthesized value is in 0..1 and behaves like dissimilarity
+ * (0 for identical, larger for more different). We invert it so the stored
+ * value matches the plan's expectation that high = perceptually similar.
  */
 export async function compareSsim(imageA: string, imageB: string): Promise<number> {
   const result = await runMagick(
@@ -139,11 +170,13 @@ export async function compareSsim(imageA: string, imageB: string): Promise<numbe
     { allowExitCodes: [0, 1] },
   );
   const text = (result.stderr || result.stdout).trim();
-  const value = Number(text.split(/\s+/)[0]);
-  if (!Number.isFinite(value)) {
-    throw new Error(`compare -metric SSIM produced unparseable output: "${text}"`);
-  }
-  return value;
+  const { absolute, normalized } = parseMetricLine(text);
+  // For identical images IM emits "0 (0)" — both absolute and normalized are 0.
+  // For different images both are non-zero (e.g. "461955 (0.140968)").
+  // Treat the parenthesized number as dissimilarity in 0..1 and invert.
+  const dissimilarity = normalized ?? (absolute === 0 ? 0 : 1);
+  const clamped = Math.max(0, Math.min(1, dissimilarity));
+  return 1 - clamped;
 }
 
 export interface ConnectedComponentsRaw {
@@ -153,45 +186,61 @@ export interface ConnectedComponentsRaw {
 }
 
 /**
- * Run connected-components on a diff image. Prefers JSON output; falls back to
- * verbose text if the pinned ImageMagick version doesn't support `format=json`
- * for connected-components.
+ * Run connected-components on a diff image rendered with red-on-white
+ * highlight/lowlight colours (see `compareAe`).
+ *
+ * Steps:
+ * 1. Build a binary mask where changed pixels (red) become white and
+ *    unchanged pixels (white) become black. We extract the green channel —
+ *    pure red has G=0, pure white has G=255 — threshold and negate.
+ * 2. Run 8-connectivity connected-components on the mask, dropping regions
+ *    smaller than `areaThreshold` to suppress single-pixel noise.
+ *
+ * IM 7.1.x silently ignores `connected-components:format=json`, so we always
+ * use verbose text and parse it. The JSON branch is kept for newer/older
+ * versions that honour the define.
  */
 export async function extractConnectedComponents(
   diffPath: string,
-  options: { thresholdPercent?: number } = {},
+  options: { areaThreshold?: number } = {},
 ): Promise<ConnectedComponentsRaw> {
-  const threshold = options.thresholdPercent ?? 1;
-  // Try JSON.
+  const areaThreshold = options.areaThreshold ?? 16;
+
+  const baseArgs = [
+    diffPath,
+    '-channel',
+    'G',
+    '-separate',
+    '+channel',
+    '-threshold',
+    '50%',
+    '-negate',
+    '-define',
+    `connected-components:area-threshold=${areaThreshold}`,
+    '-define',
+    'connected-components:verbose=true',
+  ];
+
+  // Try JSON. IM honours this define on some versions.
   try {
-    const result = await runMagick(
-      [
-        diffPath,
-        '-threshold',
-        `${threshold}%`,
-        '-define',
-        'connected-components:format=json',
-        '-define',
-        'connected-components:verbose=true',
-        '-connected-components',
-        '8',
-        'null:',
-      ],
-    );
+    const result = await runMagick([
+      ...baseArgs,
+      '-define',
+      'connected-components:format=json',
+      '-connected-components',
+      '8',
+      'null:',
+    ]);
     const trimmed = result.stdout.trim();
     if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
       return { format: 'json', raw: trimmed };
     }
   } catch {
-    // fall through
+    // fall through to text
   }
-  // Verbose text fallback.
+
   const result = await runMagick([
-    diffPath,
-    '-threshold',
-    `${threshold}%`,
-    '-define',
-    'connected-components:verbose=true',
+    ...baseArgs,
     '-connected-components',
     '8',
     'null:',
