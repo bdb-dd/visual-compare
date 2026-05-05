@@ -1,0 +1,16 @@
+node_modules
+dist
+.DS_Store
+.env
+.env.local
+
+# runtime data
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# test output
+coverage/
+.vitest/
