@@ -285,6 +285,30 @@ describe('applyFilter', () => {
       }).map((p) => p.id),
     ).toEqual(['3']);
   });
+
+  it('falls back to the URL pathname when path column is null', () => {
+    // CSVs without an explicit `path` column leave it null; users still
+    // expect path_prefix to filter against the URL itself. Mirrors the
+    // test-corpus shape (http://host:port/fixtures/<slug>/...).
+    const corpus: UrlPairRow[] = [
+      { ...pairs[0]!, id: 'cp', url_a: 'http://localhost:5173/fixtures/cp-lazy/a.html', path: null, language: null, category: null },
+      { ...pairs[0]!, id: 'fp1', url_a: 'http://localhost:5173/fixtures/fp-anti-aliasing/a.html', path: null, language: null, category: null },
+      { ...pairs[0]!, id: 'fp2', url_a: 'http://localhost:5173/fixtures/fp-cookie-banner-hidden/a.html', path: null, language: null, category: null },
+      { ...pairs[0]!, id: 'tp', url_a: 'http://localhost:5173/fixtures/tp-something/a.html', path: null, language: null, category: null },
+    ];
+    expect(
+      applyFilter(corpus, { path_prefix: '/fixtures/fp-' }).map((p) => p.id),
+    ).toEqual(['fp1', 'fp2']);
+  });
+
+  it('explicit path column wins over URL pathname', () => {
+    const mixed: UrlPairRow[] = [
+      { ...pairs[0]!, id: 'x', url_a: 'http://example.com/foo/bar', path: '/explicit/', language: null, category: null },
+    ];
+    // url pathname is /foo/bar but explicit path takes precedence.
+    expect(applyFilter(mixed, { path_prefix: '/foo' })).toHaveLength(0);
+    expect(applyFilter(mixed, { path_prefix: '/explicit' })).toHaveLength(1);
+  });
 });
 
 describe('isAllowListed', () => {

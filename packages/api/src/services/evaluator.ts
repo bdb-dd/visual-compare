@@ -199,6 +199,22 @@ export function resolveEvaluationConfig(
 }
 
 /**
+ * Effective path for filtering. Prefers the explicit `path` column when
+ * the CSV provided one (e.g. Altinn's sitemap-derived `/en/about-altinn`),
+ * and falls back to `url_a`'s pathname so filters still work on plain
+ * `url_a, url_b` CSVs. `url_b` is intentionally not consulted — pairs
+ * are expected to share a path; A is the canonical side for filtering.
+ */
+function effectivePath(p: UrlPairRow): string | null {
+  if (p.path) return p.path;
+  try {
+    return new URL(p.url_a).pathname;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Apply the filter DSL to a list of url_pairs. Empty/missing fields mean
  * "no constraint on this facet." Pairs whose facet is null fail an
  * inclusive-list check (they can't be in `["no"]` if they have no language).
@@ -215,7 +231,8 @@ export function applyFilter(pairs: UrlPairRow[], filter: FilterQuery): UrlPairRo
       if (!p.subcategory || !filter.subcategory.includes(p.subcategory)) return false;
     }
     if (filter.path_prefix) {
-      if (!p.path || !p.path.startsWith(filter.path_prefix)) return false;
+      const path = effectivePath(p);
+      if (!path || !path.startsWith(filter.path_prefix)) return false;
     }
     return true;
   });
