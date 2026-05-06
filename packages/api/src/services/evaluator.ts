@@ -16,6 +16,10 @@ import {
   type ExplicitComparisonPair,
 } from './comparison.js';
 import { getSessionConfig, listUrlPairs } from './sessions.js';
+import {
+  getSessionPrompt,
+  type LmPromptInvocationReason,
+} from './lm-prompts.js';
 import { decideEquivalence } from './equivalence.js';
 import { captureOptsHashFor } from './capture-opts-hash.js';
 import { PIPELINE_VERSION } from '../constants/pipeline.js';
@@ -59,7 +63,7 @@ export const evaluationConfigInputSchema = z
     equivalence_levels: z.array(equivalenceLevelSchema).min(1).optional(),
     capture_options: z.record(z.unknown()).optional(),
     url_pair_ids: z.array(z.string()).optional(),
-    lm_prompt_id: z.string().min(1).optional(),
+    /** Override the model id used for cache lookups; rarely needed. */
     lm_model_id: z.string().min(1).optional(),
   })
   .strict();
@@ -77,7 +81,12 @@ export interface EvaluationConfig {
   url_pair_ids: string[] | null;
   filter_query: FilterQuery;
   allow_list: AllowListEntry[];
-  lm_prompt_id: string;
+  /**
+   * Cache-key prompt ids per invocation reason. After Phase 4 these come
+   * from `lm_prompts` (session-scoped). The keys are content-addressable
+   * sha256s, so editing a session's prompt naturally produces a cache miss.
+   */
+  lm_prompt_ids: Partial<Record<LmPromptInvocationReason, string>>;
   lm_model_id: string;
 }
 
@@ -116,6 +125,27 @@ export interface StartEvaluationResult {
 }
 
 /**
+ * Per-reason `prompt_id` cache keys. Phase 4 sources these from
+ * `lm_prompts(session_id, ...)`; if a row is missing for a given reason,
+ * the LM client's env-derived `promptVersion` is used as a fallback so
+ * older sessions keep working.
+ */
+export function loadSessionPromptIds(
+  db: Db,
+  sessionId: string,
+  lm: LmClient | undefined,
+): Partial<Record<LmPromptInvocationReason, string>> {
+  const out: Partial<Record<LmPromptInvocationReason, string>> = {};
+  const fallback = lm?.config.promptVersion;
+  for (const reason of ['semantic_mode', 'ambiguous_pixel_result'] as const) {
+    const row = getSessionPrompt(db, sessionId, reason);
+    if (row) out[reason] = row.prompt_id;
+    else if (fallback) out[reason] = fallback;
+  }
+  return out;
+}
+
+/**
  * Resolve an EvaluationConfigInput into the fully-defaulted config the
  * planner needs. Precedence (highest to lowest):
  *   1. Per-call overrides (`input`).
@@ -124,11 +154,15 @@ export interface StartEvaluationResult {
  *
  * `url_pair_ids` from `input` takes precedence over `filter_query` from
  * `session` — explicit pair selection trumps the DSL.
+ *
+ * `promptIds` are looked up separately via `loadSessionPromptIds` because
+ * they require a db handle; resolveEvaluationConfig stays pure.
  */
 export function resolveEvaluationConfig(
   input: EvaluationConfigInput | undefined,
   session: SessionConfig | undefined,
   lm: LmClient | undefined,
+  promptIds: Partial<Record<LmPromptInvocationReason, string>> = {},
 ): EvaluationConfig {
   const sessionViewports = session?.default_viewports ?? [];
   const sessionLevels = session?.default_equivalence_levels ?? [];
@@ -149,8 +183,6 @@ export function resolveEvaluationConfig(
     viewports,
   });
 
-  const lm_prompt_id =
-    input?.lm_prompt_id ?? lm?.config.promptVersion ?? 'unknown';
   const lm_model_id = input?.lm_model_id ?? lm?.config.model ?? 'unknown';
 
   return {
@@ -160,7 +192,7 @@ export function resolveEvaluationConfig(
     url_pair_ids: input?.url_pair_ids ?? null,
     filter_query: session?.filter_query ?? {},
     allow_list: session?.allow_list ?? [],
-    lm_prompt_id,
+    lm_prompt_ids: promptIds,
     lm_model_id,
   };
 }
@@ -201,6 +233,21 @@ export function isAllowListed(
       a.level === level &&
       a.viewport_name === viewport_name,
   );
+}
+
+/**
+ * Returns the cache-key prompt id for the given invocation reason. Returns
+ * null when the reason has no configured prompt (e.g. `manual_retry`,
+ * which the seed doesn't cover). Cache lookups skip over null reasons.
+ */
+function lookupPromptId(
+  config: EvaluationConfig,
+  reason: LmInvocationReason,
+): string | null {
+  if (reason === 'semantic_mode' || reason === 'ambiguous_pixel_result') {
+    return config.lm_prompt_ids[reason] ?? null;
+  }
+  return null;
 }
 
 function selectEnabledPairs(
@@ -331,14 +378,17 @@ export function planEvaluation(
         });
         const reason: LmInvocationReason | null = decision.lmInvocationReason;
         if (reason !== null) {
-          const lmHit = lmCacheLookup.get(
-            aSha,
-            bSha,
-            config.lm_prompt_id,
-            config.lm_model_id,
-            reason,
-            PIPELINE_VERSION,
-          );
+          const promptId = lookupPromptId(config, reason);
+          const lmHit = promptId
+            ? lmCacheLookup.get(
+                aSha,
+                bSha,
+                promptId,
+                config.lm_model_id,
+                reason,
+                PIPELINE_VERSION,
+              )
+            : null;
           if (!lmHit) {
             comparison_misses.push({
               url_pair_id: pair.id,
@@ -411,7 +461,13 @@ export class Evaluator {
     if (inFlight) return { evaluation_id: inFlight.id, coalesced: true };
 
     const sessionConfig = getSessionConfig(db, sessionId) ?? undefined;
-    const config = resolveEvaluationConfig(configInput, sessionConfig, this.#deps.lm);
+    const promptIds = loadSessionPromptIds(db, sessionId, this.#deps.lm);
+    const config = resolveEvaluationConfig(
+      configInput,
+      sessionConfig,
+      this.#deps.lm,
+      promptIds,
+    );
     const initialPlan = planEvaluation(db, sessionId, config);
 
     const evaluationId = randomUUID();
@@ -736,14 +792,17 @@ export function readSessionResults(
               ssim: pixel.ssim,
             });
             if (decision.lmInvocationReason) {
-              const lm = lmCacheLookup.get(
-                aSha,
-                bSha,
-                config.lm_prompt_id,
-                config.lm_model_id,
-                decision.lmInvocationReason,
-                PIPELINE_VERSION,
-              );
+              const promptId = lookupPromptId(config, decision.lmInvocationReason);
+              const lm = promptId
+                ? lmCacheLookup.get(
+                    aSha,
+                    bSha,
+                    promptId,
+                    config.lm_model_id,
+                    decision.lmInvocationReason,
+                    PIPELINE_VERSION,
+                  )
+                : null;
               if (lm) {
                 row.lm = {
                   invocation_reason: decision.lmInvocationReason,

@@ -17,6 +17,7 @@ import {
   type AnalyzeOutcome,
   type LmClient,
 } from './lm.js';
+import { getSessionPrompt, type LmPromptInvocationReason } from './lm-prompts.js';
 import type { JobQueue } from './queue.js';
 import type {
   CaptureRow,
@@ -242,8 +243,12 @@ export function startComparisonRunForPairs(
       lastError: null,
       threshold: 2,
     };
+    // Resolve session-scoped prompts once per run. The session config can be
+    // edited mid-run, but we want every comparison in this run to use a
+    // single, consistent prompt (and hence a stable cache key).
+    const prompts = resolveSessionPrompts(db, sessionId);
     for (const c of comparisons) {
-      await runOneComparison(deps, imagick, c, options.equivalenceLevel, circuit);
+      await runOneComparison(deps, imagick, c, options.equivalenceLevel, circuit, prompts);
       ctx.incrementProgress();
     }
   });
@@ -262,12 +267,24 @@ interface LmCircuit {
   threshold: number;
 }
 
+type SessionPromptMap = Partial<Record<LmPromptInvocationReason, { id: string; text: string }>>;
+
+function resolveSessionPrompts(db: Db, sessionId: string): SessionPromptMap {
+  const out: SessionPromptMap = {};
+  for (const reason of ['semantic_mode', 'ambiguous_pixel_result'] as const) {
+    const row = getSessionPrompt(db, sessionId, reason);
+    if (row) out[reason] = { id: row.prompt_id, text: row.prompt_text };
+  }
+  return out;
+}
+
 async function runOneComparison(
   deps: ComparisonRunDeps,
   imagick: ComparisonImagick,
   comparison: ComparisonRow,
   level: EquivalenceLevelId,
   circuit: LmCircuit,
+  prompts: SessionPromptMap,
 ): Promise<void> {
   const { db, artifactStore } = deps;
   db.prepare(`UPDATE comparisons SET status = 'processing' WHERE id = ?`).run(comparison.id);
@@ -335,6 +352,13 @@ async function runOneComparison(
           `lm_circuit_open: skipped LM call after ${circuit.threshold} consecutive failures in this run. Last error: ${circuit.lastError ?? 'unknown'}`,
         );
       }
+      // Look up the session-scoped prompt for this invocation reason. If
+      // there's no row (e.g. `manual_retry`, which the seed doesn't cover),
+      // fall through and let the LM client use its env-derived default.
+      const sessionPrompt =
+        lmInvocationReason === 'semantic_mode' || lmInvocationReason === 'ambiguous_pixel_result'
+          ? prompts[lmInvocationReason]
+          : undefined;
       lmOutcome = await deps.lm.analyze({
         aPath,
         bPath,
@@ -343,6 +367,7 @@ async function runOneComparison(
         invocationReason: lmInvocationReason,
         changedPixelPercentage: ae.changedPixelPercentage,
         ssim,
+        prompt: sessionPrompt,
       });
       if (isAnalyzeError(lmOutcome)) {
         circuit.consecutiveFailures += 1;

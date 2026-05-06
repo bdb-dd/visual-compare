@@ -17,12 +17,20 @@ import {
 import {
   evaluationConfigInputSchema,
   listEvaluations,
+  loadSessionPromptIds,
   planEvaluation,
   readSessionResults,
   resolveEvaluationConfig,
   type Evaluator,
 } from '../services/evaluator.js';
 import { parseEvaluationRow } from './evaluations.js';
+import {
+  getSessionPrompt,
+  listSessionPrompts,
+  updateSessionPrompt,
+  type LmPromptInvocationReason,
+} from '../services/lm-prompts.js';
+import { z } from 'zod';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -212,7 +220,13 @@ export function sessionsRouter(db: Db, evaluator: Evaluator): Router {
       return;
     }
     const sessionConfig = getSessionConfig(db, id) ?? undefined;
-    const config = resolveEvaluationConfig(parsed.data, sessionConfig, undefined);
+    const promptIds = loadSessionPromptIds(db, id, undefined);
+    const config = resolveEvaluationConfig(
+      parsed.data,
+      sessionConfig,
+      undefined,
+      promptIds,
+    );
     const plan = planEvaluation(db, id, config);
     res.json({
       session_id: id,
@@ -225,6 +239,75 @@ export function sessionsRouter(db: Db, evaluator: Evaluator): Router {
       },
       results: readSessionResults(db, id, config),
     });
+  });
+
+  router.get('/:id/lm-prompts', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    if (!getSession(db, id)) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json({ prompts: listSessionPrompts(db, id) });
+  });
+
+  const promptReasonSchema = z.enum(['semantic_mode', 'ambiguous_pixel_result']);
+  const promptBodySchema = z
+    .object({ prompt_text: z.string().min(1) })
+    .strict();
+
+  router.get('/:id/lm-prompts/:reason', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    const reasonParse = promptReasonSchema.safeParse(req.params.reason);
+    if (!reasonParse.success) {
+      res.status(400).json({ error: 'invalid_reason' });
+      return;
+    }
+    const row = getSessionPrompt(db, id, reasonParse.data as LmPromptInvocationReason);
+    if (!row) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json({ prompt: row });
+  });
+
+  router.put('/:id/lm-prompts/:reason', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    if (!getSession(db, id)) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const reasonParse = promptReasonSchema.safeParse(req.params.reason);
+    if (!reasonParse.success) {
+      res.status(400).json({ error: 'invalid_reason' });
+      return;
+    }
+    const bodyParse = promptBodySchema.safeParse(req.body);
+    if (!bodyParse.success) {
+      res.status(400).json({
+        error: 'invalid_body',
+        message: bodyParse.error.message,
+      });
+      return;
+    }
+    const updated = updateSessionPrompt(
+      db,
+      id,
+      reasonParse.data as LmPromptInvocationReason,
+      bodyParse.data.prompt_text,
+    );
+    res.json({ prompt: updated });
   });
 
   router.get('/:id/evaluations', (req, res) => {

@@ -6,6 +6,7 @@ import { comparisonRunsRouter } from './routes/comparison-runs.js';
 import { comparisonsRouter } from './routes/comparisons.js';
 import { evaluationsRouter } from './routes/evaluations.js';
 import { jobsRouter } from './routes/jobs.js';
+import { lmPromptsRouter } from './routes/lm-prompts.js';
 import { metaRouter } from './routes/meta.js';
 import type { Db } from './db/client.js';
 import type { JobQueue } from './services/queue.js';
@@ -69,6 +70,7 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/comparisons', comparisonsRouter(deps.db));
   app.use('/api/evaluations', evaluationsRouter(deps.db));
   app.use('/api/jobs', jobsRouter(deps.db));
+  app.use('/api/lm-prompts', lmPromptsRouter(deps.db));
   app.use('/api/meta', metaRouter({ lm: deps.lm }));
 
   app.use('/images', express.static(deps.artifactStore.rootDir, {

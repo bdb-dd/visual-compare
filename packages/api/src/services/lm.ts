@@ -190,6 +190,12 @@ export interface AnalyzeArgs {
   invocationReason: 'semantic_mode' | 'ambiguous_pixel_result' | 'manual_retry';
   changedPixelPercentage: number | null;
   ssim: number | null;
+  /**
+   * Optional caller-supplied prompt. When present, replaces the env-derived
+   * system prompt and `promptVersion`. Phase 4 wires session-scoped
+   * prompts here so the LM cache key is content-addressable.
+   */
+  prompt?: { id: string; text: string };
 }
 
 export interface AnalyzeResult {
@@ -441,7 +447,7 @@ async function runPreflight(config: LmConfig, cli: LmsCli): Promise<PreflightRes
 
 async function runAnalyze(args: AnalyzeArgs, client: OpenAI): Promise<AnalyzeOutcome> {
   const { config } = args;
-  const promptVersion = config.promptVersion;
+  const promptVersion = args.prompt?.id ?? config.promptVersion;
   const model = config.model;
 
   let aDataUrl: string;
@@ -463,7 +469,7 @@ async function runAnalyze(args: AnalyzeArgs, client: OpenAI): Promise<AnalyzeOut
     };
   }
 
-  const system = config.systemPrompt ?? SYSTEM_PROMPT_V1;
+  const system = args.prompt?.text ?? config.systemPrompt ?? SYSTEM_PROMPT_V1;
   const user = buildPromptUserInstruction({
     level: args.level,
     invocationReason: args.invocationReason,

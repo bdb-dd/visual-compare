@@ -11,6 +11,7 @@ import type {
   UrlPairRow,
   ViewportDef,
 } from '../types.js';
+import { copyDefaultsToSession } from './lm-prompts.js';
 
 export interface CreateSessionInput {
   name: string;
@@ -45,6 +46,7 @@ export function createSession(db: Db, input: CreateSessionInput): CreateSessionO
   const created: UrlPairRow[] = [];
   const tx = db.transaction(() => {
     insertSession.run(sessionId, name, csv_filename, now);
+    copyDefaultsToSession(db, sessionId);
     rows.forEach((row, idx) => {
       const id = randomUUID();
       const label = row.label ?? null;

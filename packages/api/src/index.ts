@@ -6,6 +6,10 @@ import { openDatabase } from './db/client.js';
 import { runMigrations } from './db/migrations.js';
 import { recoverInterruptedRuns } from './db/recovery.js';
 import { runCacheBackfill } from './services/cache-backfill.js';
+import {
+  backfillSessionPrompts,
+  seedLmPromptDefaults,
+} from './services/lm-prompts.js';
 import { JobQueue } from './services/queue.js';
 import { createArtifactStore } from './services/artifact-store.js';
 import { createPlaywrightCaptureWorker } from './services/capture.js';
@@ -42,6 +46,15 @@ if (
   // eslint-disable-next-line no-console
   console.log(
     `[cache] backfilled: captures=${backfill.capture_cache_inserted} pixel=${backfill.pixel_compare_cache_inserted} lm=${backfill.lm_verdict_cache_inserted} skipped_runs=${backfill.capture_runs_skipped}`,
+  );
+}
+
+const seededDefaults = seedLmPromptDefaults(db);
+const backfilledSessions = backfillSessionPrompts(db);
+if (seededDefaults > 0 || backfilledSessions > 0) {
+  // eslint-disable-next-line no-console
+  console.log(
+    `[lm-prompts] seeded_defaults=${seededDefaults} backfilled_sessions=${backfilledSessions}`,
   );
 }
 
