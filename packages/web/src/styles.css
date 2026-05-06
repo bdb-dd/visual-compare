@@ -479,6 +479,12 @@ ul.diff-list li {
   flex-wrap: wrap;
 }
 .project-header .breadcrumb .sep { color: #4b5563; }
+.project-header .breadcrumb .brand {
+  color: #aab1bd;
+  font-weight: 600;
+  text-decoration: none;
+}
+.project-header .breadcrumb .brand:hover { color: #e5e7eb; }
 .project-header .breadcrumb .title {
   font-size: 18px;
   font-weight: 600;
@@ -541,7 +547,8 @@ ul.diff-list li {
   flex: 1;
   min-height: 0;
 }
-.project-detail { min-width: 0; }
+.project-detail { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.project-detail > .tab-bar { margin-bottom: 0; }
 
 .config-panel {
   background: #15171c;

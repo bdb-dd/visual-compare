@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState, type JSX } from 'r
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ComparisonDetail } from '../components/ComparisonDetail.js';
+import { LmStatusPill } from '../components/LmStatusPill.js';
 import { PlanAndEvaluate } from '../components/PlanAndEvaluate.js';
 import { SessionConfigPanel } from '../components/SessionConfigPanel.js';
 import { SessionResultsList, type ResultsFilter } from '../components/SessionResultsList.js';
@@ -20,7 +21,8 @@ import type {
 } from '@visual-compare/api/types';
 import type { EquivalenceLevelDef } from '@visual-compare/api/constants/equivalence';
 
-type Tab = 'review' | 'config';
+type SidebarTab = 'review' | 'config';
+type DetailTab = 'comparison' | 'history' | 'pairs';
 
 export function SessionDetailPage(): JSX.Element {
   const { id = '' } = useParams();
@@ -36,11 +38,10 @@ export function SessionDetailPage(): JSX.Element {
   const [captureRuns, setCaptureRuns] = useState<CaptureRunRow[]>([]);
   const [comparisonRuns, setComparisonRuns] = useState<ComparisonRunRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [pairsOpen, setPairsOpen] = useState(false);
   const [expandedEvaluationId, setExpandedEvaluationId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [activeTab, setActiveTab] = useState<Tab>('review');
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('review');
+  const [detailTab, setDetailTab] = useState<DetailTab>('comparison');
   const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
   const [resultsFilter, setResultsFilter] = useState<ResultsFilter>('failed');
   const [selectedRow, setSelectedRow] = useState<SessionResultRow | null>(null);
@@ -165,6 +166,8 @@ export function SessionDetailPage(): JSX.Element {
       <header className="project-header">
         <div className="project-header-top">
           <p className="breadcrumb">
+            <Link to="/" className="brand">visual-compare</Link>
+            <span className="sep">/</span>
             <Link to="/">Sessions</Link>
             <span className="sep">/</span>
             <span className="title">{session.name}</span>
@@ -177,6 +180,7 @@ export function SessionDetailPage(): JSX.Element {
             <button className="btn secondary" onClick={() => void handleArchive()} disabled={busy}>
               {session.archived_at ? 'Unarchive' : 'Archive'}
             </button>
+            <LmStatusPill />
           </div>
         </div>
         <div className="project-header-bottom">
@@ -199,28 +203,28 @@ export function SessionDetailPage(): JSX.Element {
 
       <div className="project-body">
         <aside className="project-sidebar">
-          <div className="tab-bar" role="tablist" aria-label="Session view">
+          <div className="tab-bar" role="tablist" aria-label="Sidebar view">
             <button
               type="button"
               role="tab"
-              aria-selected={activeTab === 'review'}
-              className={`tab ${activeTab === 'review' ? 'active' : ''}`}
-              onClick={() => setActiveTab('review')}
+              aria-selected={sidebarTab === 'review'}
+              className={`tab ${sidebarTab === 'review' ? 'active' : ''}`}
+              onClick={() => setSidebarTab('review')}
             >
               Review {results ? <span className="muted">({results.results.length})</span> : null}
             </button>
             <button
               type="button"
               role="tab"
-              aria-selected={activeTab === 'config'}
-              className={`tab ${activeTab === 'config' ? 'active' : ''}`}
-              onClick={() => setActiveTab('config')}
+              aria-selected={sidebarTab === 'config'}
+              className={`tab ${sidebarTab === 'config' ? 'active' : ''}`}
+              onClick={() => setSidebarTab('config')}
             >
               Config
             </button>
           </div>
 
-          {activeTab === 'review' ? (
+          {sidebarTab === 'review' ? (
             <ReviewSidebar
               results={results}
               filter={resultsFilter}
@@ -229,6 +233,7 @@ export function SessionDetailPage(): JSX.Element {
               onSelect={(key, row) => {
                 setSelectedRowKey(key);
                 setSelectedRow(row);
+                if (key !== null) setDetailTab('comparison');
               }}
             />
           ) : (
@@ -240,176 +245,219 @@ export function SessionDetailPage(): JSX.Element {
               defaults={{ viewportName: defaultViewportName, level: defaultLevel }}
               onSaved={(next) => {
                 handleConfigSaved(next);
-                setActiveTab('review');
+                setSidebarTab('review');
               }}
             />
           )}
         </aside>
 
         <section className="project-detail">
-          {selectedRow?.comparison_id ? (
-            <ComparisonDetail id={selectedRow.comparison_id} />
-          ) : selectedRow ? (
-            <div className="card">
-              <p className="muted" style={{ margin: 0 }}>
-                No comparison run yet for this row — its captures or pixel verdict
-                are still pending. Press Evaluate above.
-              </p>
-            </div>
-          ) : (
-            <div className="card">
-              <p className="muted" style={{ margin: 0 }}>
-                {activeTab === 'review'
-                  ? 'Select a result on the left.'
-                  : 'Edit your project config on the left, then switch to Review.'}
-              </p>
-            </div>
+          <div className="tab-bar" role="tablist" aria-label="Detail view">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={detailTab === 'comparison'}
+              className={`tab ${detailTab === 'comparison' ? 'active' : ''}`}
+              onClick={() => setDetailTab('comparison')}
+            >
+              Comparison
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={detailTab === 'history'}
+              className={`tab ${detailTab === 'history' ? 'active' : ''}`}
+              onClick={() => setDetailTab('history')}
+            >
+              History {evaluations.length > 0 ? <span className="muted">({evaluations.length})</span> : null}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={detailTab === 'pairs'}
+              className={`tab ${detailTab === 'pairs' ? 'active' : ''}`}
+              onClick={() => setDetailTab('pairs')}
+            >
+              URL pairs <span className="muted">({pairs.length})</span>
+            </button>
+          </div>
+
+          {detailTab === 'comparison' &&
+            (selectedRow?.comparison_id ? (
+              <ComparisonDetail id={selectedRow.comparison_id} />
+            ) : selectedRow ? (
+              <div className="card">
+                <p className="muted" style={{ margin: 0 }}>
+                  No comparison run yet for this row — its captures or pixel verdict
+                  are still pending. Press Evaluate above.
+                </p>
+              </div>
+            ) : (
+              <div className="card">
+                <p className="muted" style={{ margin: 0 }}>
+                  Select a result on the left.
+                </p>
+              </div>
+            ))}
+
+          {detailTab === 'history' && (
+            <HistoryTab
+              evaluations={evaluations}
+              captureRuns={captureRuns}
+              comparisonRuns={comparisonRuns}
+              expandedEvaluationId={expandedEvaluationId}
+              onToggleEvaluation={(id) =>
+                setExpandedEvaluationId((cur) => (cur === id ? null : id))
+              }
+            />
+          )}
+
+          {detailTab === 'pairs' && (
+            <UrlPairsEditor
+              sessionId={session.id}
+              pairs={pairs}
+              onChange={() => {
+                void refreshPairs();
+                void refreshResults();
+              }}
+            />
           )}
         </section>
       </div>
 
-      <div className="card">
-        <button
-          type="button"
-          className="btn secondary"
-          style={{ padding: '4px 10px', fontSize: 13, float: 'right' }}
-          onClick={() => setHistoryOpen((v) => !v)}
-        >
-          {historyOpen ? 'Hide' : 'Show'} history
-        </button>
-        <h3 style={{ marginTop: 0 }}>History</h3>
-        {historyOpen && (
-          <>
-            {evaluations.length > 0 && (
-              <>
-                <p className="muted" style={{ marginTop: 0 }}>Evaluations</p>
-                <table>
-                  <thead>
-                    <tr>
-                      <th></th>
-                      <th>Started</th>
-                      <th>Status</th>
-                      <th>Pairs</th>
-                      <th>Cache hits</th>
-                      <th>Capture run</th>
-                      <th>Comparison runs</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {evaluations.map((e) => {
-                      const open = expandedEvaluationId === e.id;
-                      return (
-                        <Fragment key={e.id}>
-                          <tr>
-                            <td>
-                              <button
-                                type="button"
-                                className="btn secondary"
-                                style={{ padding: '0 6px', fontSize: 12 }}
-                                onClick={() =>
-                                  setExpandedEvaluationId(open ? null : e.id)
-                                }
-                              >
-                                {open ? '▾' : '▸'}
-                              </button>
-                            </td>
-                            <td>{formatDate(e.started_at)}</td>
-                            <td>{e.status}</td>
-                            <td>{e.enabled_pair_count}</td>
-                            <td className="muted">
-                              c:{e.cache_hits.captures} p:{e.cache_hits.pixel} l:{e.cache_hits.lm}
-                            </td>
-                            <td className="muted">{e.capture_run_id?.slice(0, 8) ?? '—'}</td>
-                            <td className="muted">{e.comparison_run_ids.length}</td>
-                          </tr>
-                          {open && (
-                            <tr>
-                              <td colSpan={7}>
-                                <EvaluationDetail evaluation={e} />
-                              </td>
-                            </tr>
-                          )}
-                        </Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </>
-            )}
-
-            {captureRuns.length > 0 && (
-              <>
-                <p className="muted" style={{ marginTop: 16 }}>Capture runs</p>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Started</th>
-                      <th>Viewports</th>
-                      <th>Run id</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {captureRuns.map((r) => (
-                      <tr key={r.id}>
-                        <td>{formatDate(r.created_at)}</td>
-                        <td>{parseViewports(r.options_json)}</td>
-                        <td className="muted">{r.id.slice(0, 8)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </>
-            )}
-
-            {comparisonRuns.length > 0 && (
-              <>
-                <p className="muted" style={{ marginTop: 16 }}>Comparison runs</p>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Started</th>
-                      <th>Level</th>
-                      <th>Run id</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {comparisonRuns.map((r) => (
-                      <tr key={r.id}>
-                        <td>{formatDate(r.created_at)}</td>
-                        <td>{r.equivalence_level}</td>
-                        <td className="muted">{r.id.slice(0, 8)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </>
-            )}
-          </>
-        )}
-      </div>
-
-      <div className="card">
-        <button
-          type="button"
-          className="btn secondary"
-          style={{ padding: '4px 10px', fontSize: 13, float: 'right' }}
-          onClick={() => setPairsOpen((v) => !v)}
-        >
-          {pairsOpen ? 'Hide' : 'Show'} URL pairs
-        </button>
-        <h3 style={{ marginTop: 0 }}>URL pairs</h3>
-        {pairsOpen && (
-          <UrlPairsEditor
-            sessionId={session.id}
-            pairs={pairs}
-            onChange={() => {
-              void refreshPairs();
-              void refreshResults();
-            }}
-          />
-        )}
-      </div>
     </main>
+  );
+}
+
+interface HistoryTabProps {
+  evaluations: EvaluationStatusDto[];
+  captureRuns: CaptureRunRow[];
+  comparisonRuns: ComparisonRunRow[];
+  expandedEvaluationId: string | null;
+  onToggleEvaluation: (id: string) => void;
+}
+
+function HistoryTab({
+  evaluations,
+  captureRuns,
+  comparisonRuns,
+  expandedEvaluationId,
+  onToggleEvaluation,
+}: HistoryTabProps): JSX.Element {
+  if (evaluations.length === 0 && captureRuns.length === 0 && comparisonRuns.length === 0) {
+    return (
+      <div className="card">
+        <p className="muted" style={{ margin: 0 }}>
+          No history yet — press Evaluate above.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <>
+      {evaluations.length > 0 && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Evaluations</h3>
+          <table>
+            <thead>
+              <tr>
+                <th></th>
+                <th>Started</th>
+                <th>Status</th>
+                <th>Pairs</th>
+                <th>Cache hits</th>
+                <th>Capture run</th>
+                <th>Comparison runs</th>
+              </tr>
+            </thead>
+            <tbody>
+              {evaluations.map((e) => {
+                const open = expandedEvaluationId === e.id;
+                return (
+                  <Fragment key={e.id}>
+                    <tr>
+                      <td>
+                        <button
+                          type="button"
+                          className="btn secondary"
+                          style={{ padding: '0 6px', fontSize: 12 }}
+                          onClick={() => onToggleEvaluation(e.id)}
+                        >
+                          {open ? '▾' : '▸'}
+                        </button>
+                      </td>
+                      <td>{formatDate(e.started_at)}</td>
+                      <td>{e.status}</td>
+                      <td>{e.enabled_pair_count}</td>
+                      <td className="muted">
+                        c:{e.cache_hits.captures} p:{e.cache_hits.pixel} l:{e.cache_hits.lm}
+                      </td>
+                      <td className="muted">{e.capture_run_id?.slice(0, 8) ?? '—'}</td>
+                      <td className="muted">{e.comparison_run_ids.length}</td>
+                    </tr>
+                    {open && (
+                      <tr>
+                        <td colSpan={7}>
+                          <EvaluationDetail evaluation={e} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {captureRuns.length > 0 && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Capture runs</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Started</th>
+                <th>Viewports</th>
+                <th>Run id</th>
+              </tr>
+            </thead>
+            <tbody>
+              {captureRuns.map((r) => (
+                <tr key={r.id}>
+                  <td>{formatDate(r.created_at)}</td>
+                  <td>{parseViewports(r.options_json)}</td>
+                  <td className="muted">{r.id.slice(0, 8)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {comparisonRuns.length > 0 && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Comparison runs</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Started</th>
+                <th>Level</th>
+                <th>Run id</th>
+              </tr>
+            </thead>
+            <tbody>
+              {comparisonRuns.map((r) => (
+                <tr key={r.id}>
+                  <td>{formatDate(r.created_at)}</td>
+                  <td>{r.equivalence_level}</td>
+                  <td className="muted">{r.id.slice(0, 8)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
   );
 }
 
