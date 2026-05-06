@@ -158,83 +158,115 @@ export function SessionDetailPage(): JSX.Element {
 
   const lastEval = evaluations[0];
 
+  const cacheHits = results?.plan.cache_hits;
+
   return (
     <main className="wide">
-      <p><Link to="/">← Back to sessions</Link></p>
-
-      <div className="project-header">
-        <div>
-          <h2 style={{ margin: 0 }}>{session.name}</h2>
-          <p className="muted" style={{ marginTop: 4 }}>
-            {pairs.length} URL pair{pairs.length === 1 ? '' : 's'}
-            {lastEval ? ` · last evaluated ${formatRelative(lastEval.started_at)}` : ' · not yet evaluated'}
-            {session.archived_at ? ' · archived' : ''}
+      <header className="project-header">
+        <div className="project-header-top">
+          <p className="breadcrumb">
+            <Link to="/">Sessions</Link>
+            <span className="sep">/</span>
+            <span className="title">{session.name}</span>
+            {session.archived_at && <span className="muted"> (archived)</span>}
           </p>
+          <div className="project-header-actions">
+            <button className="btn secondary" onClick={() => void handleInvalidateAll()} disabled={busy}>
+              Recapture all
+            </button>
+            <button className="btn secondary" onClick={() => void handleArchive()} disabled={busy}>
+              {session.archived_at ? 'Unarchive' : 'Archive'}
+            </button>
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn secondary" onClick={() => void handleInvalidateAll()} disabled={busy}>
-            Recapture all
-          </button>
-          <button className="btn secondary" onClick={() => void handleArchive()} disabled={busy}>
-            {session.archived_at ? 'Unarchive' : 'Archive'}
-          </button>
+        <div className="project-header-bottom">
+          <p className="muted project-meta">
+            {pairs.length} URL pair{pairs.length === 1 ? '' : 's'}
+            {cacheHits
+              ? ` · cache c:${cacheHits.captures} p:${cacheHits.pixel} l:${cacheHits.lm}`
+              : ''}
+            {lastEval ? ` · last evaluated ${formatRelative(lastEval.started_at)}` : ' · not yet evaluated'}
+          </p>
+          <PlanAndEvaluate
+            sessionId={session.id}
+            results={results}
+            onEvaluationComplete={handleEvaluationComplete}
+          />
         </div>
-      </div>
+      </header>
 
       {error && <div className="error">{error}</div>}
 
-      <PlanAndEvaluate
-        sessionId={session.id}
-        results={results}
-        onEvaluationComplete={handleEvaluationComplete}
-      />
+      <div className="project-body">
+        <aside className="project-sidebar">
+          <div className="tab-bar" role="tablist" aria-label="Session view">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'review'}
+              className={`tab ${activeTab === 'review' ? 'active' : ''}`}
+              onClick={() => setActiveTab('review')}
+            >
+              Review {results ? <span className="muted">({results.results.length})</span> : null}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'config'}
+              className={`tab ${activeTab === 'config' ? 'active' : ''}`}
+              onClick={() => setActiveTab('config')}
+            >
+              Config
+            </button>
+          </div>
 
-      <div className="tab-bar" role="tablist" aria-label="Session view">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'review'}
-          className={`tab ${activeTab === 'review' ? 'active' : ''}`}
-          onClick={() => setActiveTab('review')}
-        >
-          Review {results ? <span className="muted">({results.results.length})</span> : null}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'config'}
-          className={`tab ${activeTab === 'config' ? 'active' : ''}`}
-          onClick={() => setActiveTab('config')}
-        >
-          Config
-        </button>
+          {activeTab === 'review' ? (
+            <ReviewSidebar
+              results={results}
+              filter={resultsFilter}
+              onFilterChange={setResultsFilter}
+              selectedKey={selectedRowKey}
+              onSelect={(key, row) => {
+                setSelectedRowKey(key);
+                setSelectedRow(row);
+              }}
+            />
+          ) : (
+            <SessionConfigPanel
+              sessionId={session.id}
+              config={config}
+              viewports={viewports}
+              levels={levels}
+              defaults={{ viewportName: defaultViewportName, level: defaultLevel }}
+              onSaved={(next) => {
+                handleConfigSaved(next);
+                setActiveTab('review');
+              }}
+            />
+          )}
+        </aside>
+
+        <section className="project-detail">
+          {selectedRow?.comparison_id ? (
+            <ComparisonDetail id={selectedRow.comparison_id} />
+          ) : selectedRow ? (
+            <div className="card">
+              <p className="muted" style={{ margin: 0 }}>
+                No comparison run yet for this row — its captures or pixel verdict
+                are still pending. Press Evaluate above.
+              </p>
+            </div>
+          ) : (
+            <div className="card">
+              <p className="muted" style={{ margin: 0 }}>
+                {activeTab === 'review'
+                  ? 'Select a result on the left.'
+                  : 'Edit your project config on the left, then switch to Review.'}
+              </p>
+            </div>
+          )}
+        </section>
       </div>
-
-      {activeTab === 'review' ? (
-        <ReviewTab
-          results={results}
-          filter={resultsFilter}
-          onFilterChange={setResultsFilter}
-          selectedKey={selectedRowKey}
-          selectedRow={selectedRow}
-          onSelect={(key, row) => {
-            setSelectedRowKey(key);
-            setSelectedRow(row);
-          }}
-        />
-      ) : (
-        <SessionConfigPanel
-          sessionId={session.id}
-          config={config}
-          viewports={viewports}
-          levels={levels}
-          defaults={{ viewportName: defaultViewportName, level: defaultLevel }}
-          onSaved={(next) => {
-            handleConfigSaved(next);
-            setActiveTab('review');
-          }}
-        />
-      )}
 
       <div className="card">
         <button
@@ -405,35 +437,31 @@ function parseViewports(optionsJson: string): string {
   }
 }
 
-interface ReviewTabProps {
+interface ReviewSidebarProps {
   results: SessionResultsDto | null;
   filter: ResultsFilter;
   onFilterChange: (next: ResultsFilter) => void;
   selectedKey: string | null;
-  selectedRow: SessionResultRow | null;
   onSelect: (key: string | null, row: SessionResultRow | null) => void;
 }
 
-function ReviewTab({
+function ReviewSidebar({
   results,
   filter,
   onFilterChange,
   selectedKey,
-  selectedRow,
   onSelect,
-}: ReviewTabProps): JSX.Element {
+}: ReviewSidebarProps): JSX.Element {
   const summaries = useMemo(() => summariseByLevel(results?.results ?? []), [results]);
 
   if (!results) {
-    return <div className="card"><p className="muted">Loading results…</p></div>;
+    return <p className="muted" style={{ padding: 12 }}>Loading results…</p>;
   }
   if (results.results.length === 0) {
     return (
-      <div className="card">
-        <p className="muted" style={{ margin: 0 }}>
-          No results yet — press Evaluate above.
-        </p>
-      </div>
+      <p className="muted" style={{ padding: 12, margin: 0 }}>
+        No results yet — press Evaluate above.
+      </p>
     );
   }
 
@@ -443,37 +471,20 @@ function ReviewTab({
         {summaries.map((s) => (
           <div key={s.level} className="level-summary">
             <strong>{s.level}</strong>
-            <span className="chip pass">{s.pass} pass</span>
-            <span className="chip fail">{s.fail} fail</span>
-            {s.allowed > 0 && <span className="chip allowed">{s.allowed} allowed</span>}
-            {s.pending > 0 && <span className="chip pending">{s.pending} pending</span>}
+            <span className="chip pass">{s.pass}</span>
+            <span className="chip fail">{s.fail}</span>
+            {s.allowed > 0 && <span className="chip allowed">{s.allowed}</span>}
+            {s.pending > 0 && <span className="chip pending">{s.pending}</span>}
           </div>
         ))}
       </div>
-
-      <div className="review-layout">
-        <SessionResultsList
-          results={results.results}
-          selectedKey={selectedKey}
-          onSelect={onSelect}
-          filter={filter}
-          onFilterChange={onFilterChange}
-        />
-        <div className="review-detail-pane">
-          {selectedRow?.comparison_id ? (
-            <ComparisonDetail id={selectedRow.comparison_id} />
-          ) : selectedRow ? (
-            <div className="empty">
-              <p className="muted">
-                No comparison run yet for this row — its captures or pixel verdict
-                are still pending. Press Evaluate above.
-              </p>
-            </div>
-          ) : (
-            <div className="empty">Select a result on the left.</div>
-          )}
-        </div>
-      </div>
+      <SessionResultsList
+        results={results.results}
+        selectedKey={selectedKey}
+        onSelect={onSelect}
+        filter={filter}
+        onFilterChange={onFilterChange}
+      />
     </>
   );
 }
