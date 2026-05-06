@@ -104,11 +104,15 @@ export interface FilterQuery {
   path_prefix?: string;
 }
 
+/**
+ * Region-matching geometry knobs. All values are *percent of image dimension*
+ * since regions (BoundingBoxPercent) are stored in percent units.
+ */
 export interface RegionMatchConfig {
-  /** How much an accepted region's bbox can grow before counted as expanded (px). */
-  growth_margin_px: number;
-  /** How far a region can shift and still match an accepted region (px). */
-  displacement_tolerance_px: number;
+  /** How much an accepted region's bbox can grow (in percentage points of image dim) before counted as expanded. */
+  growth_margin_pct: number;
+  /** How far a region can shift (in percentage points of image dim) and still match an accepted region. */
+  displacement_tolerance_pct: number;
   /** Percentage-point allowance over `accepted_pixel_pct` before flagging. */
   pixel_pct_delta: number;
 }

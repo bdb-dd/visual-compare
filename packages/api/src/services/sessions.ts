@@ -171,8 +171,8 @@ const filterQuerySchema = z
 
 const regionMatchConfigSchema = z
   .object({
-    growth_margin_px: z.number().nonnegative(),
-    displacement_tolerance_px: z.number().nonnegative(),
+    growth_margin_pct: z.number().nonnegative(),
+    displacement_tolerance_pct: z.number().nonnegative(),
     pixel_pct_delta: z.number().nonnegative(),
   })
   .strict();

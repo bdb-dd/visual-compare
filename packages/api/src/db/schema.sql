@@ -29,7 +29,7 @@ CREATE TABLE sessions (
   default_equivalence_level TEXT NOT NULL DEFAULT 'tolerant',
   -- Geometry knobs for the acceptance regression check (RegionMatchConfig).
   -- Per-pair overrides live in url_pair_config_overrides.
-  region_match_config_json TEXT NOT NULL DEFAULT '{"growth_margin_px":8,"displacement_tolerance_px":16,"pixel_pct_delta":0.5}',
+  region_match_config_json TEXT NOT NULL DEFAULT '{"growth_margin_pct":0.5,"displacement_tolerance_pct":1,"pixel_pct_delta":0.5}',
   filter_query TEXT NOT NULL DEFAULT '{}',
   archived_at TEXT
 );

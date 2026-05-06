@@ -39,6 +39,12 @@ import {
   invalidateCapturesInputSchema,
   invalidateSessionCaptures,
 } from '../services/cache-invalidation.js';
+import {
+  acceptanceInputSchema,
+  deleteAcceptance,
+  listAcceptances,
+  upsertAcceptance,
+} from '../services/acceptances.js';
 import { z } from 'zod';
 
 const upload = multer({
@@ -401,6 +407,65 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
     }
     const rows = listEvaluations(db, id);
     res.json({ evaluations: rows.map(parseEvaluationRow) });
+  });
+
+  // -------------------------------------------------------------------------
+  // Acceptances
+  // -------------------------------------------------------------------------
+
+  router.get('/:id/acceptances', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    if (!getSession(db, id)) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json({ acceptances: listAcceptances(db, id) });
+  });
+
+  router.post('/:id/acceptances', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    if (!getSession(db, id)) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const parsed = acceptanceInputSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: 'invalid_acceptance',
+        message: parsed.error.message,
+        details: parsed.error.issues,
+      });
+      return;
+    }
+    const acceptance = upsertAcceptance(db, id, parsed.data);
+    res.status(201).json({ acceptance });
+  });
+
+  router.delete('/:id/acceptances/:acceptance_id', (req, res) => {
+    const id = req.params.id;
+    const acceptanceId = req.params.acceptance_id;
+    if (!id || !acceptanceId) {
+      res.status(400).json({ error: 'invalid_request' });
+      return;
+    }
+    if (!getSession(db, id)) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const ok = deleteAcceptance(db, id, acceptanceId);
+    if (!ok) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.status(204).end();
   });
 
   return router;

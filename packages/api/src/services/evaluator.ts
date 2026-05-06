@@ -21,6 +21,8 @@ import {
   type LmPromptInvocationReason,
 } from './lm-prompts.js';
 import { computeMatchedAtLevel } from './equivalence.js';
+import { computeAcceptanceStatus, listAcceptances } from './acceptances.js';
+import { resolvePairConfig } from './config-resolver.js';
 import { captureOptsHashFor } from './capture-opts-hash.js';
 import { PIPELINE_VERSION } from '../constants/pipeline.js';
 import {
@@ -33,6 +35,8 @@ import {
   isAtLeastAsStrict,
 } from '../constants/equivalence.js';
 import type {
+  AcceptanceRow,
+  BoundingBoxPercent,
   CaptureSide,
   EquivalenceLevelId,
   FilterQuery,
@@ -41,6 +45,7 @@ import type {
   RegionMatchConfig,
   SessionConfig,
   SessionResultRow,
+  UrlPairConfigOverrideRow,
   UrlPairRow,
   ViewportDef,
 } from '../types.js';
@@ -796,6 +801,41 @@ export function readSessionResults(
     return { status: 'in_progress', error_message: null };
   };
 
+  // Pre-load acceptances and per-pair config overrides for the session so
+  // each row's acceptance_status check is a hash lookup, not a query.
+  const acceptanceByKey = new Map<string, AcceptanceRow>();
+  for (const a of listAcceptances(db, sessionId)) {
+    acceptanceByKey.set(`${a.url_pair_id}::${a.viewport_name}`, a);
+  }
+  const overrideByPair = new Map<string, UrlPairConfigOverrideRow>();
+  for (const o of db
+    .prepare<unknown[], UrlPairConfigOverrideRow>(
+      `SELECT url_pair_id, equivalence_level, region_match_config_json, updated_at
+         FROM url_pair_config_overrides
+        WHERE url_pair_id IN (
+          SELECT id FROM url_pairs WHERE session_id = ?
+        )`,
+    )
+    .all(sessionId)) {
+    overrideByPair.set(o.url_pair_id, o);
+  }
+
+  const imagickRegionsLookup = db.prepare<[string], { bounding_box_json: string }>(
+    `SELECT bounding_box_json FROM differences
+      WHERE comparison_id = ? AND source = 'imagick' AND bounding_box_json IS NOT NULL`,
+  );
+
+  // Build a SessionConfig-shaped object for the resolver. The evaluator's
+  // EvaluationConfig already carries target_level + region_match_config but
+  // not in the SessionConfig shape; we synthesize one for resolvePairConfig.
+  const sessionShape: SessionConfig = {
+    default_viewports: config.viewports,
+    default_capture_options: config.capture_options,
+    default_equivalence_level: config.target_level,
+    region_match_config: config.region_match_config,
+    filter_query: config.filter_query,
+  };
+
   const out: SessionResultRow[] = [];
   for (const pair of enabledPairs) {
     for (const vp of config.viewports) {
@@ -808,6 +848,9 @@ export function readSessionResults(
         null;
       const captureAStatus = captureStatusFor(aSha, pair.url_a, vp.name);
       const captureBStatus = captureStatusFor(bSha, pair.url_b, vp.name);
+      const acceptance = acceptanceByKey.get(`${pair.id}::${vp.name}`) ?? null;
+      const pairOverride = overrideByPair.get(pair.id) ?? null;
+      const resolved = resolvePairConfig(sessionShape, pairOverride);
       const row: SessionResultRow = {
         url_pair_id: pair.id,
         url_a: pair.url_a,
@@ -823,8 +866,7 @@ export function readSessionResults(
         capture_b_status: captureBStatus,
         pixel: null,
         lm: null,
-        // TODO(phase-3): wire to acceptances table to compute regressed/expanded.
-        acceptance_status: 'unaccepted',
+        acceptance_status: acceptance ? 'accepted' : 'unaccepted',
         status: 'pending',
       };
 
@@ -887,9 +929,49 @@ export function readSessionResults(
             row.matched_decided_by = 'pixel';
             row.status = 'cached';
           }
+
+          // Acceptance check: only meaningful once we have a definitive
+          // matched_at_level. Pending rows (LM cache missing) keep the
+          // optimistic 'accepted' label set above; the read-time check is
+          // re-run after the LM call lands.
+          if (row.matched_at_level !== null && acceptance) {
+            const regions = parseImagickRegions(
+              row.comparison_id,
+              imagickRegionsLookup,
+            );
+            row.acceptance_status = computeAcceptanceStatus({
+              acceptance,
+              current: {
+                matched_at_level: row.matched_at_level,
+                pixel_pct: pixel.changed_pct,
+                regions,
+              },
+              config: resolved.region_match_config,
+            });
+          }
         }
       }
       out.push(row);
+    }
+  }
+  return out;
+}
+
+function parseImagickRegions(
+  comparisonId: string | null,
+  lookup: ReturnType<Db['prepare']>,
+): BoundingBoxPercent[] {
+  if (!comparisonId) return [];
+  const rows = (lookup as unknown as {
+    all(id: string): { bounding_box_json: string }[];
+  }).all(comparisonId);
+  const out: BoundingBoxPercent[] = [];
+  for (const r of rows) {
+    try {
+      const parsed = JSON.parse(r.bounding_box_json);
+      if (parsed && typeof parsed === 'object') out.push(parsed as BoundingBoxPercent);
+    } catch {
+      // Skip malformed rows.
     }
   }
   return out;

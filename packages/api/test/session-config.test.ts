@@ -200,8 +200,8 @@ describe('CSV metadata extraction', () => {
       default_capture_options: {},
       default_equivalence_level: 'tolerant',
       region_match_config: {
-        growth_margin_px: 8,
-        displacement_tolerance_px: 16,
+        growth_margin_pct: 0.5,
+        displacement_tolerance_pct: 1,
         pixel_pct_delta: 0.5,
       },
       filter_query: {},

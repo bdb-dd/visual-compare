@@ -82,7 +82,7 @@ export function isAtLeastAsStrict(a: MatchedAtLevel, b: MatchedAtLevel): boolean
 export const DEFAULT_EQUIVALENCE_LEVEL: EquivalenceLevelId = 'tolerant';
 
 export const DEFAULT_REGION_MATCH_CONFIG = {
-  growth_margin_px: 8,
-  displacement_tolerance_px: 16,
+  growth_margin_pct: 0.5,
+  displacement_tolerance_pct: 1,
   pixel_pct_delta: 0.5,
 } as const;
