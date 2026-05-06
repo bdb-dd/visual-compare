@@ -243,6 +243,20 @@ export interface JobAcceptedResponse {
   comparison_run_id?: string;
 }
 
+export type CaptureStatusKind = 'complete' | 'in_progress' | 'error' | 'missing';
+
+export interface CaptureStatusInfo {
+  /**
+   * - `complete`     – capture succeeded; sha is cached.
+   * - `in_progress`  – a capture row exists but hasn't reached `complete`.
+   * - `error`        – the most recent capture for this URL+viewport in
+   *                    this session is in `error` status.
+   * - `missing`      – no capture has been attempted yet.
+   */
+  status: CaptureStatusKind;
+  error_message: string | null;
+}
+
 export interface SessionResultRow {
   url_pair_id: string;
   url_a: string;
@@ -254,6 +268,9 @@ export interface SessionResultRow {
   capture_b_sha: string | null;
   /** Most recent comparison row this verdict came from. Lets the UI deep-link. */
   comparison_id: string | null;
+  /** Diagnostic per side, so the UI can show *why* a row is pending. */
+  capture_a_status: CaptureStatusInfo;
+  capture_b_status: CaptureStatusInfo;
   pixel: {
     changed_pct: number | null;
     ssim: number | null;

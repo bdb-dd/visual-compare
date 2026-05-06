@@ -11,11 +11,17 @@ interface Props {
   onFilterChange: (next: ResultsFilter) => void;
 }
 
-type Verdict = 'failed' | 'passed' | 'allowed' | 'pending';
+type Verdict = 'failed' | 'passed' | 'allowed' | 'pending' | 'error';
+
+function captureErrored(r: SessionResultRow): boolean {
+  return r.capture_a_status.status === 'error' || r.capture_b_status.status === 'error';
+}
 
 function verdictOf(r: SessionResultRow): Verdict {
   if (r.is_allowed && r.is_equivalent === 0) return 'allowed';
-  if (r.status === 'pending' || r.is_equivalent === null) return 'pending';
+  if (r.status === 'pending' || r.is_equivalent === null) {
+    return captureErrored(r) ? 'error' : 'pending';
+  }
   return r.is_equivalent === 1 ? 'passed' : 'failed';
 }
 
@@ -37,22 +43,24 @@ function verdictGlyph(v: Verdict): string {
   if (v === 'failed') return '✗';
   if (v === 'passed') return '✓';
   if (v === 'allowed') return '~';
+  if (v === 'error') return '!';
   return '…';
 }
 
 function verdictRank(r: SessionResultRow): number {
   const v = verdictOf(r);
-  if (v === 'failed') return 0;
-  if (v === 'pending') return 1;
-  if (v === 'allowed') return 2;
-  return 3;
+  if (v === 'error') return 0; // float capture-blocked rows to the top with failures
+  if (v === 'failed') return 1;
+  if (v === 'pending') return 2;
+  if (v === 'allowed') return 3;
+  return 4;
 }
 
 function sortAndFilter(rows: SessionResultRow[], filter: ResultsFilter): SessionResultRow[] {
   const filtered = rows.filter((r) => {
     const v = verdictOf(r);
     if (filter === 'all') return true;
-    if (filter === 'failed') return v === 'failed' || v === 'allowed';
+    if (filter === 'failed') return v === 'failed' || v === 'allowed' || v === 'error';
     if (filter === 'passed') return v === 'passed';
     return v === 'pending';
   });

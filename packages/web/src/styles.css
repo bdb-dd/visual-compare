@@ -634,6 +634,40 @@ ul.diff-list li {
 .chip.allowed { background: rgba(250, 204, 21, 0.15); color: #facc15; }
 .chip.pending { background: rgba(148, 163, 184, 0.18); color: #94a3b8; }
 
+.comparison-row.verdict-error { border-left-color: #f87171; }
+.comparison-row.verdict-error .verdict-chip { color: #f87171; }
+
+.capture-status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.capture-status {
+  border: 1px solid #23262d;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #0e1014;
+}
+.capture-status-error { border-color: rgba(248, 113, 113, 0.4); }
+.capture-status-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.capture-error {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  background: rgba(248, 113, 113, 0.08);
+  border-radius: 6px;
+  color: #f87171;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .results-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .results-table th,
 .results-table td {

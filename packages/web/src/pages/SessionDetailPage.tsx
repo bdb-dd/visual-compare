@@ -286,12 +286,7 @@ export function SessionDetailPage(): JSX.Element {
             (selectedRow?.comparison_id ? (
               <ComparisonDetail id={selectedRow.comparison_id} />
             ) : selectedRow ? (
-              <div className="card">
-                <p className="muted" style={{ margin: 0 }}>
-                  No comparison run yet for this row — its captures or pixel verdict
-                  are still pending. Press Evaluate above.
-                </p>
-              </div>
+              <PendingRowDetail row={selectedRow} />
             ) : (
               <div className="card">
                 <p className="muted" style={{ margin: 0 }}>
@@ -559,6 +554,52 @@ function summariseByLevel(rows: SessionResultRow[]): LevelSummary[] {
     else s.fail += 1;
   }
   return Array.from(byLevel.values()).sort((a, b) => a.level.localeCompare(b.level));
+}
+
+function PendingRowDetail({ row }: { row: SessionResultRow }): JSX.Element {
+  const sides: Array<{ side: 'A' | 'B'; url: string; info: SessionResultRow['capture_a_status'] }> = [
+    { side: 'A', url: row.url_a, info: row.capture_a_status },
+    { side: 'B', url: row.url_b, info: row.capture_b_status },
+  ];
+  const anyError = sides.some((s) => s.info.status === 'error');
+
+  return (
+    <div className="card">
+      {anyError ? (
+        <>
+          <h3 style={{ marginTop: 0, color: '#f87171' }}>Capture failed</h3>
+          <p className="muted" style={{ marginTop: 0 }}>
+            One or both captures errored. The next evaluation won&rsquo;t retry automatically — fix
+            the underlying issue (page reachability, hide-selectors, settle delay), then{' '}
+            <em>Recapture all</em> at the top to clear the cache and re-attempt.
+          </p>
+        </>
+      ) : (
+        <>
+          <h3 style={{ marginTop: 0 }}>Pending</h3>
+          <p className="muted" style={{ marginTop: 0 }}>
+            No comparison verdict for this row yet. Press <em>Evaluate</em> above to run the
+            captures and comparisons it depends on.
+          </p>
+        </>
+      )}
+      <div className="capture-status-list">
+        {sides.map((s) => (
+          <div key={s.side} className={`capture-status capture-status-${s.info.status}`}>
+            <div className="capture-status-head">
+              <span className={`chip ${s.info.status === 'error' ? 'fail' : s.info.status === 'complete' ? 'pass' : 'pending'}`}>
+                Side {s.side} · {s.info.status === 'in_progress' ? 'in progress' : s.info.status}
+              </span>
+              <span className="muted" style={{ wordBreak: 'break-all', fontSize: 12 }}>{s.url}</span>
+            </div>
+            {s.info.error_message && (
+              <pre className="capture-error">{s.info.error_message}</pre>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function EvaluationDetail({ evaluation }: { evaluation: EvaluationStatusDto }): JSX.Element {

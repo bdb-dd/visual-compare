@@ -745,6 +745,39 @@ export function readSessionResults(
         AND model_id = ? AND invocation_reason = ? AND pipeline_version = ?`,
   );
 
+  // Diagnostic: when a side's sha is missing, find the most recent capture
+  // attempt for that (url, viewport_name) within the session so we can tell
+  // the user *why* the row is pending (capture errored vs. never attempted).
+  const recentCaptureLookup = db.prepare<
+    [string, string, string],
+    { status: string; error_message: string | null }
+  >(
+    `SELECT c.status, c.error_message
+       FROM captures c
+       JOIN capture_runs cr ON cr.id = c.capture_run_id
+      WHERE cr.session_id = ? AND c.url = ? AND c.viewport_name = ?
+      ORDER BY c.created_at DESC
+      LIMIT 1`,
+  );
+
+  const captureStatusFor = (
+    sha: string | null,
+    url: string,
+    viewportName: string,
+  ): import('../types.js').CaptureStatusInfo => {
+    if (sha) return { status: 'complete', error_message: null };
+    const row = recentCaptureLookup.get(sessionId, url, viewportName);
+    if (!row) return { status: 'missing', error_message: null };
+    if (row.status === 'error') return { status: 'error', error_message: row.error_message };
+    if (row.status === 'complete') {
+      // The capture row says complete but no cache row matches the current
+      // capture_opts_hash — different config produced a complete capture
+      // under a *different* options set. Treat as missing for this config.
+      return { status: 'missing', error_message: null };
+    }
+    return { status: 'in_progress', error_message: null };
+  };
+
   const out: SessionResultRow[] = [];
   for (const pair of enabledPairs) {
     for (const vp of config.viewports) {
@@ -755,6 +788,8 @@ export function readSessionResults(
       const bSha =
         captureCacheLookup.get(pair.url_b, vp.name, optsHash)?.screenshot_sha256 ??
         null;
+      const captureAStatus = captureStatusFor(aSha, pair.url_a, vp.name);
+      const captureBStatus = captureStatusFor(bSha, pair.url_b, vp.name);
       for (const level of config.equivalence_levels) {
         const row: SessionResultRow = {
           url_pair_id: pair.id,
@@ -766,6 +801,8 @@ export function readSessionResults(
           capture_a_sha: aSha,
           capture_b_sha: bSha,
           comparison_id: null,
+          capture_a_status: captureAStatus,
+          capture_b_status: captureBStatus,
           pixel: null,
           lm: null,
           is_equivalent: null,
