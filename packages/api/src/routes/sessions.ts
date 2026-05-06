@@ -30,6 +30,10 @@ import {
   updateSessionPrompt,
   type LmPromptInvocationReason,
 } from '../services/lm-prompts.js';
+import {
+  invalidateCapturesInputSchema,
+  invalidateSessionCaptures,
+} from '../services/cache-invalidation.js';
 import { z } from 'zod';
 
 const upload = multer({
@@ -308,6 +312,29 @@ export function sessionsRouter(db: Db, evaluator: Evaluator): Router {
       bodyParse.data.prompt_text,
     );
     res.json({ prompt: updated });
+  });
+
+  router.post('/:id/invalidate-captures', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    if (!getSession(db, id)) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const parsed = invalidateCapturesInputSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({
+        error: 'invalid_body',
+        message: parsed.error.message,
+        issues: parsed.error.issues,
+      });
+      return;
+    }
+    const result = invalidateSessionCaptures(db, id, parsed.data);
+    res.json(result);
   });
 
   router.get('/:id/evaluations', (req, res) => {

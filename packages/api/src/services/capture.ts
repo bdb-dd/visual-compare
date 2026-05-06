@@ -39,6 +39,12 @@ export const captureRunOptionsSchema = z.object({
   useNetworkIdle: z.boolean().default(false),
   concurrency: z.number().int().min(1).max(10).default(3),
   urlPairIds: z.array(z.string()).optional(),
+  /**
+   * Restrict the run to specific sides. Used by the evaluator after a
+   * side-scoped invalidation so we recapture only what's missing instead
+   * of both sides. Defaults to both.
+   */
+  sides: z.array(z.enum(['a', 'b'])).min(1).optional(),
 });
 
 export type CaptureRunOptionsInput = z.input<typeof captureRunOptionsSchema>;
@@ -210,7 +216,8 @@ export function startCaptureRun(
     throw new Error('No url_pairs match the supplied urlPairIds');
   }
 
-  const captureCount = selected.length * SIDES.length * options.viewports.length;
+  const sides = options.sides ?? SIDES;
+  const captureCount = selected.length * sides.length * options.viewports.length;
   const jobId = queue.createJob({ type: 'capture', progress_total: captureCount });
   const captureRunId = randomUUID();
   const now = new Date().toISOString();
@@ -229,7 +236,7 @@ export function startCaptureRun(
 
     for (const pair of selected) {
       for (const viewport of options.viewports) {
-        for (const side of SIDES) {
+        for (const side of sides) {
           const url = side === 'a' ? pair.url_a : pair.url_b;
           insertCapture.run(
             randomUUID(),

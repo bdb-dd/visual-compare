@@ -535,10 +535,17 @@ export class Evaluator {
         const captureViewports = config.viewports.filter((v) =>
           missingViewportNames.has(v.name),
         );
+        // If every miss is on the same side, restrict the run to that
+        // side. Mixed misses fall back to both sides — over-capturing is
+        // wasteful but correct, and the doc's invalidation flows ("all
+        // B-side captures") all share a single side.
+        const missingSides = new Set(initialPlan.capture_misses.map((c) => c.side));
+        const sides = missingSides.size === 1 ? Array.from(missingSides) : undefined;
         const captureOpts = captureRunOptionsSchema.parse({
           ...config.capture_options,
           viewports: captureViewports,
           urlPairIds: missingPairIds,
+          ...(sides ? { sides } : {}),
         });
         const captureResult = startCaptureRun(this.#deps, {
           sessionId,
