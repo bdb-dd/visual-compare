@@ -3,12 +3,16 @@ import multer from 'multer';
 import type { Db } from '../db/client.js';
 import { parseSessionCsv } from '../services/csv.js';
 import {
+  addUrlPairs,
+  addUrlPairsInputSchema,
   createSession,
   deleteSession,
   getSession,
   getSessionConfig,
   listSessions,
   listUrlPairs,
+  patchUrlPair,
+  patchUrlPairInputSchema,
   rowToSessionConfig,
   sessionConfigSchema,
   updateSession,
@@ -312,6 +316,57 @@ export function sessionsRouter(db: Db, evaluator: Evaluator): Router {
       bodyParse.data.prompt_text,
     );
     res.json({ prompt: updated });
+  });
+
+  router.post('/:id/url-pairs', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    if (!getSession(db, id)) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const parsed = addUrlPairsInputSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({
+        error: 'invalid_body',
+        message: parsed.error.message,
+        issues: parsed.error.issues,
+      });
+      return;
+    }
+    const added = addUrlPairs(db, id, parsed.data);
+    res.status(201).json({ url_pairs: added });
+  });
+
+  router.patch('/:id/url-pairs/:pair_id', (req, res) => {
+    const id = req.params.id;
+    const pairId = req.params.pair_id;
+    if (!id || !pairId) {
+      res.status(400).json({ error: 'invalid_request', message: 'id and pair_id are required' });
+      return;
+    }
+    if (!getSession(db, id)) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const parsed = patchUrlPairInputSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({
+        error: 'invalid_body',
+        message: parsed.error.message,
+        issues: parsed.error.issues,
+      });
+      return;
+    }
+    const result = patchUrlPair(db, id, pairId, parsed.data);
+    if (!result) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json(result);
   });
 
   router.post('/:id/invalidate-captures', (req, res) => {

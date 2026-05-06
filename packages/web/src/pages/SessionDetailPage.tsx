@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState, type JSX } from 'react';
+import { Fragment, useCallback, useEffect, useState, type JSX } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { PlanAndEvaluate } from '../components/PlanAndEvaluate.js';
 import { ResultsView } from '../components/ResultsView.js';
 import { SessionConfigPanel } from '../components/SessionConfigPanel.js';
+import { UrlPairsEditor } from '../components/UrlPairsEditor.js';
 import type {
   CaptureRunRow,
   ComparisonRunRow,
@@ -33,6 +34,7 @@ export function SessionDetailPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [pairsOpen, setPairsOpen] = useState(false);
+  const [expandedEvaluationId, setExpandedEvaluationId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refreshResults = useCallback(async () => {
@@ -48,6 +50,15 @@ export function SessionDetailPage(): JSX.Element {
     try {
       const e = await api.listEvaluations(id);
       setEvaluations(e.evaluations);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [id]);
+
+  const refreshPairs = useCallback(async () => {
+    try {
+      const sess = await api.getSession(id);
+      setPairs(sess.url_pairs);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -201,6 +212,7 @@ export function SessionDetailPage(): JSX.Element {
                 <table>
                   <thead>
                     <tr>
+                      <th></th>
                       <th>Started</th>
                       <th>Status</th>
                       <th>Pairs</th>
@@ -210,18 +222,42 @@ export function SessionDetailPage(): JSX.Element {
                     </tr>
                   </thead>
                   <tbody>
-                    {evaluations.map((e) => (
-                      <tr key={e.id}>
-                        <td>{formatDate(e.started_at)}</td>
-                        <td>{e.status}</td>
-                        <td>{e.enabled_pair_count}</td>
-                        <td className="muted">
-                          c:{e.cache_hits.captures} p:{e.cache_hits.pixel} l:{e.cache_hits.lm}
-                        </td>
-                        <td className="muted">{e.capture_run_id?.slice(0, 8) ?? '—'}</td>
-                        <td className="muted">{e.comparison_run_ids.length}</td>
-                      </tr>
-                    ))}
+                    {evaluations.map((e) => {
+                      const open = expandedEvaluationId === e.id;
+                      return (
+                        <Fragment key={e.id}>
+                          <tr>
+                            <td>
+                              <button
+                                type="button"
+                                className="btn secondary"
+                                style={{ padding: '0 6px', fontSize: 12 }}
+                                onClick={() =>
+                                  setExpandedEvaluationId(open ? null : e.id)
+                                }
+                              >
+                                {open ? '▾' : '▸'}
+                              </button>
+                            </td>
+                            <td>{formatDate(e.started_at)}</td>
+                            <td>{e.status}</td>
+                            <td>{e.enabled_pair_count}</td>
+                            <td className="muted">
+                              c:{e.cache_hits.captures} p:{e.cache_hits.pixel} l:{e.cache_hits.lm}
+                            </td>
+                            <td className="muted">{e.capture_run_id?.slice(0, 8) ?? '—'}</td>
+                            <td className="muted">{e.comparison_run_ids.length}</td>
+                          </tr>
+                          {open && (
+                            <tr>
+                              <td colSpan={7}>
+                                <EvaluationDetail evaluation={e} />
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </>
@@ -289,30 +325,14 @@ export function SessionDetailPage(): JSX.Element {
         </button>
         <h3 style={{ marginTop: 0 }}>URL pairs</h3>
         {pairsOpen && (
-          <table>
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>URL A</th>
-                <th>URL B</th>
-                <th>Label</th>
-                <th>Lang</th>
-                <th>Category</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pairs.map((p) => (
-                <tr key={p.id}>
-                  <td>{p.row_index + 1}</td>
-                  <td>{p.url_a}</td>
-                  <td>{p.url_b}</td>
-                  <td>{p.label ?? ''}</td>
-                  <td className="muted">{p.language ?? ''}</td>
-                  <td className="muted">{p.category ?? ''}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <UrlPairsEditor
+            sessionId={session.id}
+            pairs={pairs}
+            onChange={() => {
+              void refreshPairs();
+              void refreshResults();
+            }}
+          />
         )}
       </div>
     </main>
@@ -341,4 +361,57 @@ function parseViewports(optionsJson: string): string {
   } catch {
     return '—';
   }
+}
+
+function EvaluationDetail({ evaluation }: { evaluation: EvaluationStatusDto }): JSX.Element {
+  const config = evaluation.config as
+    | {
+        viewports?: { name: string }[];
+        equivalence_levels?: string[];
+        filter_query?: Record<string, unknown>;
+        capture_options?: { hideSelectors?: string[]; settleDelayMs?: number };
+      }
+    | null;
+  return (
+    <div className="evaluation-detail">
+      <div className="kv">
+        <span className="muted">Viewports:</span>
+        <span>{config?.viewports?.map((v) => v.name).join(', ') ?? '—'}</span>
+      </div>
+      <div className="kv">
+        <span className="muted">Levels:</span>
+        <span>{config?.equivalence_levels?.join(', ') ?? '—'}</span>
+      </div>
+      {config?.capture_options?.hideSelectors && config.capture_options.hideSelectors.length > 0 && (
+        <div className="kv">
+          <span className="muted">Hide selectors:</span>
+          <span>{config.capture_options.hideSelectors.join(', ')}</span>
+        </div>
+      )}
+      {config?.filter_query && Object.keys(config.filter_query).length > 0 && (
+        <div className="kv">
+          <span className="muted">Filter:</span>
+          <code>{JSON.stringify(config.filter_query)}</code>
+        </div>
+      )}
+      <div className="kv">
+        <span className="muted">Cache hits:</span>
+        <span>
+          captures {evaluation.cache_hits.captures} · pixel {evaluation.cache_hits.pixel} · lm {evaluation.cache_hits.lm}
+        </span>
+      </div>
+      {evaluation.error_message && (
+        <div className="kv">
+          <span className="muted">Error:</span>
+          <span className="error" style={{ display: 'inline' }}>{evaluation.error_message}</span>
+        </div>
+      )}
+      {evaluation.completed_at && (
+        <div className="kv">
+          <span className="muted">Completed:</span>
+          <span>{formatDate(evaluation.completed_at)}</span>
+        </div>
+      )}
+    </div>
+  );
 }

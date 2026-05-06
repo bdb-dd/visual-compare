@@ -99,6 +99,46 @@ export const api = {
       },
     ),
 
+  addUrlPairs: (
+    id: string,
+    pairs: Array<{
+      url_a: string;
+      url_b: string;
+      label?: string | null;
+      language?: string | null;
+      category?: string | null;
+      subcategory?: string | null;
+      path?: string | null;
+    }>,
+  ) =>
+    request<{ url_pairs: UrlPairRow[] }>(`/api/sessions/${id}/url-pairs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pairs }),
+    }),
+  patchUrlPair: (
+    id: string,
+    pairId: string,
+    patch: {
+      url_a?: string;
+      url_b?: string;
+      label?: string | null;
+      language?: string | null;
+      category?: string | null;
+      subcategory?: string | null;
+      path?: string | null;
+      disabled?: boolean;
+    },
+  ) =>
+    request<{ pair: UrlPairRow; replaced_id: string | null }>(
+      `/api/sessions/${id}/url-pairs/${pairId}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      },
+    ),
+
   startCaptureRun: (sessionId: string, options?: { viewports?: ViewportDef[]; concurrency?: number }) =>
     request<JobAcceptedResponse>('/api/capture-runs', {
       method: 'POST',

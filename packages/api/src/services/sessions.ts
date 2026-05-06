@@ -286,3 +286,231 @@ export function updateSession(
 }
 
 export { EMPTY_CONFIG };
+
+// ---------------------------------------------------------------------------
+// URL-pair mutations (Phase 7).
+//
+// The doc's "edit-as-add+disable" rule: changing a URL on an existing pair
+// creates a fresh url_pairs row at the next row_index and disables the old
+// one. Old captures stay attached to the old row so cache and history
+// remain intact. Metadata-only edits (label, language, etc.) update the
+// existing row directly because they don't affect the captured pixels.
+// ---------------------------------------------------------------------------
+
+export interface AddUrlPairInput {
+  url_a: string;
+  url_b: string;
+  label?: string | null;
+  language?: string | null;
+  category?: string | null;
+  subcategory?: string | null;
+  path?: string | null;
+}
+
+const urlSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine(
+    (v) => {
+      try {
+        const u = new URL(v);
+        return u.protocol === 'http:' || u.protocol === 'https:';
+      } catch {
+        return false;
+      }
+    },
+    { message: 'must be a valid http(s) URL' },
+  );
+
+const optionalText = z
+  .string()
+  .trim()
+  .min(1)
+  .nullable()
+  .optional();
+
+export const addUrlPairsInputSchema = z
+  .object({
+    pairs: z
+      .array(
+        z
+          .object({
+            url_a: urlSchema,
+            url_b: urlSchema,
+            label: optionalText,
+            language: optionalText,
+            category: optionalText,
+            subcategory: optionalText,
+            path: optionalText,
+          })
+          .strict(),
+      )
+      .min(1),
+  })
+  .strict();
+
+export type AddUrlPairsInput = z.infer<typeof addUrlPairsInputSchema>;
+
+export const patchUrlPairInputSchema = z
+  .object({
+    url_a: urlSchema.optional(),
+    url_b: urlSchema.optional(),
+    label: optionalText,
+    language: optionalText,
+    category: optionalText,
+    subcategory: optionalText,
+    path: optionalText,
+    disabled: z.boolean().optional(),
+  })
+  .strict();
+
+export type PatchUrlPairInput = z.infer<typeof patchUrlPairInputSchema>;
+
+export function addUrlPairs(
+  db: Db,
+  sessionId: string,
+  input: AddUrlPairsInput,
+): UrlPairRow[] {
+  if (!getSession(db, sessionId)) {
+    throw new Error(`session ${sessionId} not found`);
+  }
+  const insert = db.prepare(
+    `INSERT INTO url_pairs
+       (id, session_id, url_a, url_b, label, row_index, raw_row_json,
+        language, category, subcategory, path, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const nextIndexStmt = db.prepare<[string], { next: number }>(
+    `SELECT COALESCE(MAX(row_index) + 1, 0) AS next FROM url_pairs WHERE session_id = ?`,
+  );
+
+  const created: UrlPairRow[] = [];
+  const tx = db.transaction(() => {
+    let next = nextIndexStmt.get(sessionId)?.next ?? 0;
+    const now = new Date().toISOString();
+    for (const p of input.pairs) {
+      const id = randomUUID();
+      const label = p.label ?? null;
+      const language = p.language ?? null;
+      const category = p.category ?? null;
+      const subcategory = p.subcategory ?? null;
+      const path = p.path ?? null;
+      const rawJson = JSON.stringify({
+        url_a: p.url_a,
+        url_b: p.url_b,
+        label,
+        language,
+        category,
+        subcategory,
+        path,
+      });
+      insert.run(
+        id,
+        sessionId,
+        p.url_a,
+        p.url_b,
+        label,
+        next,
+        rawJson,
+        language,
+        category,
+        subcategory,
+        path,
+        now,
+      );
+      created.push({
+        id,
+        session_id: sessionId,
+        url_a: p.url_a,
+        url_b: p.url_b,
+        label,
+        row_index: next,
+        raw_row_json: rawJson,
+        language,
+        category,
+        subcategory,
+        path,
+        disabled: 0,
+        created_at: now,
+      });
+      next += 1;
+    }
+  });
+  tx();
+  return created;
+}
+
+export interface PatchUrlPairResult {
+  /** The row representing the pair after the patch. For URL-changing
+   * edits this is the freshly-inserted replacement row; for metadata-only
+   * edits and toggles it's the original row, updated in place. */
+  pair: UrlPairRow;
+  /** When a new row was minted, the disabled-out predecessor's id. */
+  replaced_id: string | null;
+}
+
+export function patchUrlPair(
+  db: Db,
+  sessionId: string,
+  pairId: string,
+  patch: PatchUrlPairInput,
+): PatchUrlPairResult | null {
+  const existing = db
+    .prepare<[string, string], UrlPairRow>(
+      `SELECT * FROM url_pairs WHERE id = ? AND session_id = ?`,
+    )
+    .get(pairId, sessionId);
+  if (!existing) return null;
+
+  const urlChanged =
+    (patch.url_a !== undefined && patch.url_a !== existing.url_a) ||
+    (patch.url_b !== undefined && patch.url_b !== existing.url_b);
+
+  if (urlChanged) {
+    // Add+disable. Inherit unchanged metadata from the predecessor; allow
+    // the patch to override any metadata field at the same time.
+    const newPair = addUrlPairs(db, sessionId, {
+      pairs: [
+        {
+          url_a: patch.url_a ?? existing.url_a,
+          url_b: patch.url_b ?? existing.url_b,
+          label: patch.label !== undefined ? patch.label : existing.label,
+          language: patch.language !== undefined ? patch.language : existing.language,
+          category: patch.category !== undefined ? patch.category : existing.category,
+          subcategory:
+            patch.subcategory !== undefined ? patch.subcategory : existing.subcategory,
+          path: patch.path !== undefined ? patch.path : existing.path,
+        },
+      ],
+    })[0]!;
+    db.prepare(`UPDATE url_pairs SET disabled = 1 WHERE id = ?`).run(existing.id);
+    return { pair: newPair, replaced_id: existing.id };
+  }
+
+  // Metadata-only or disabled-flag edit — update in place. Apply only the
+  // fields the caller actually supplied so partial patches do the right
+  // thing.
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const apply = (col: string, value: unknown) => {
+    sets.push(`${col} = ?`);
+    params.push(value);
+  };
+  if (patch.label !== undefined) apply('label', patch.label);
+  if (patch.language !== undefined) apply('language', patch.language);
+  if (patch.category !== undefined) apply('category', patch.category);
+  if (patch.subcategory !== undefined) apply('subcategory', patch.subcategory);
+  if (patch.path !== undefined) apply('path', patch.path);
+  if (patch.disabled !== undefined) apply('disabled', patch.disabled ? 1 : 0);
+  if (sets.length > 0) {
+    params.push(existing.id);
+    db.prepare(
+      `UPDATE url_pairs SET ${sets.join(', ')} WHERE id = ?`,
+    ).run(...(params as never[]));
+  }
+  const updated = db
+    .prepare<[string], UrlPairRow>('SELECT * FROM url_pairs WHERE id = ?')
+    .get(existing.id);
+  return { pair: updated!, replaced_id: null };
+}
