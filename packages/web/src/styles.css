@@ -445,7 +445,6 @@ ul.diff-list li {
   .comparison-list { position: static; max-height: 60vh; }
   .detail-frame.mode-split { grid-template-columns: 1fr; }
   .detail-frame.mode-split .panel + .panel { border-left: 0; border-top: 1px solid #23262d; }
-  .project-layout { grid-template-columns: 1fr; }
 }
 
 /* Phase 6: project-style session page */
@@ -458,20 +457,11 @@ ul.diff-list li {
 }
 .project-header > div:first-child { flex: 1; }
 
-.project-layout {
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 16px;
-  align-items: start;
-}
-
 .config-panel {
   background: #15171c;
   border: 1px solid #23262d;
   border-radius: 8px;
   padding: 16px;
-  position: sticky;
-  top: 16px;
 }
 .config-panel h3 { font-size: 16px; }
 .config-panel h4 {
@@ -517,8 +507,6 @@ ul.diff-list li {
   font-family: inherit;
   box-sizing: border-box;
 }
-
-.project-results { display: flex; flex-direction: column; gap: 16px; }
 
 .level-summaries {
   display: flex;
@@ -608,4 +596,29 @@ ul.diff-list li {
   display: grid;
   grid-template-columns: 140px 1fr;
   gap: 8px;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #23262d;
+  margin: 12px 0 12px;
+}
+.tab-bar .tab {
+  background: transparent;
+  color: #aab1bd;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  padding: 6px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+.tab-bar .tab:hover { color: #e5e7eb; }
+.tab-bar .tab.active {
+  color: #e5e7eb;
+  background: #15171c;
+  border-color: #23262d;
 }

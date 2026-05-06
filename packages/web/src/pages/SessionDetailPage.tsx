@@ -1,9 +1,10 @@
-import { Fragment, useCallback, useEffect, useState, type JSX } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
+import { ComparisonDetail } from '../components/ComparisonDetail.js';
 import { PlanAndEvaluate } from '../components/PlanAndEvaluate.js';
-import { ResultsView } from '../components/ResultsView.js';
 import { SessionConfigPanel } from '../components/SessionConfigPanel.js';
+import { SessionResultsList, type ResultsFilter } from '../components/SessionResultsList.js';
 import { UrlPairsEditor } from '../components/UrlPairsEditor.js';
 import type {
   CaptureRunRow,
@@ -11,12 +12,15 @@ import type {
   EquivalenceLevelId,
   EvaluationStatusDto,
   SessionConfig,
+  SessionResultRow,
   SessionResultsDto,
   SessionRow,
   UrlPairRow,
   ViewportDef,
 } from '@visual-compare/api/types';
 import type { EquivalenceLevelDef } from '@visual-compare/api/constants/equivalence';
+
+type Tab = 'review' | 'config';
 
 export function SessionDetailPage(): JSX.Element {
   const { id = '' } = useParams();
@@ -36,6 +40,10 @@ export function SessionDetailPage(): JSX.Element {
   const [pairsOpen, setPairsOpen] = useState(false);
   const [expandedEvaluationId, setExpandedEvaluationId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [activeTab, setActiveTab] = useState<Tab>('review');
+  const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
+  const [resultsFilter, setResultsFilter] = useState<ResultsFilter>('failed');
+  const [selectedRow, setSelectedRow] = useState<SessionResultRow | null>(null);
 
   const refreshResults = useCallback(async () => {
     try {
@@ -175,24 +183,58 @@ export function SessionDetailPage(): JSX.Element {
 
       {error && <div className="error">{error}</div>}
 
-      <div className="project-layout">
+      <PlanAndEvaluate
+        sessionId={session.id}
+        results={results}
+        onEvaluationComplete={handleEvaluationComplete}
+      />
+
+      <div className="tab-bar" role="tablist" aria-label="Session view">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'review'}
+          className={`tab ${activeTab === 'review' ? 'active' : ''}`}
+          onClick={() => setActiveTab('review')}
+        >
+          Review {results ? <span className="muted">({results.results.length})</span> : null}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'config'}
+          className={`tab ${activeTab === 'config' ? 'active' : ''}`}
+          onClick={() => setActiveTab('config')}
+        >
+          Config
+        </button>
+      </div>
+
+      {activeTab === 'review' ? (
+        <ReviewTab
+          results={results}
+          filter={resultsFilter}
+          onFilterChange={setResultsFilter}
+          selectedKey={selectedRowKey}
+          selectedRow={selectedRow}
+          onSelect={(key, row) => {
+            setSelectedRowKey(key);
+            setSelectedRow(row);
+          }}
+        />
+      ) : (
         <SessionConfigPanel
           sessionId={session.id}
           config={config}
           viewports={viewports}
           levels={levels}
           defaults={{ viewportName: defaultViewportName, level: defaultLevel }}
-          onSaved={handleConfigSaved}
+          onSaved={(next) => {
+            handleConfigSaved(next);
+            setActiveTab('review');
+          }}
         />
-        <div className="project-results">
-          <PlanAndEvaluate
-            sessionId={session.id}
-            results={results}
-            onEvaluationComplete={handleEvaluationComplete}
-          />
-          <ResultsView results={results} />
-        </div>
-      </div>
+      )}
 
       <div className="card">
         <button
@@ -361,6 +403,103 @@ function parseViewports(optionsJson: string): string {
   } catch {
     return '—';
   }
+}
+
+interface ReviewTabProps {
+  results: SessionResultsDto | null;
+  filter: ResultsFilter;
+  onFilterChange: (next: ResultsFilter) => void;
+  selectedKey: string | null;
+  selectedRow: SessionResultRow | null;
+  onSelect: (key: string | null, row: SessionResultRow | null) => void;
+}
+
+function ReviewTab({
+  results,
+  filter,
+  onFilterChange,
+  selectedKey,
+  selectedRow,
+  onSelect,
+}: ReviewTabProps): JSX.Element {
+  const summaries = useMemo(() => summariseByLevel(results?.results ?? []), [results]);
+
+  if (!results) {
+    return <div className="card"><p className="muted">Loading results…</p></div>;
+  }
+  if (results.results.length === 0) {
+    return (
+      <div className="card">
+        <p className="muted" style={{ margin: 0 }}>
+          No results yet — press Evaluate above.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="level-summaries">
+        {summaries.map((s) => (
+          <div key={s.level} className="level-summary">
+            <strong>{s.level}</strong>
+            <span className="chip pass">{s.pass} pass</span>
+            <span className="chip fail">{s.fail} fail</span>
+            {s.allowed > 0 && <span className="chip allowed">{s.allowed} allowed</span>}
+            {s.pending > 0 && <span className="chip pending">{s.pending} pending</span>}
+          </div>
+        ))}
+      </div>
+
+      <div className="review-layout">
+        <SessionResultsList
+          results={results.results}
+          selectedKey={selectedKey}
+          onSelect={onSelect}
+          filter={filter}
+          onFilterChange={onFilterChange}
+        />
+        <div className="review-detail-pane">
+          {selectedRow?.comparison_id ? (
+            <ComparisonDetail id={selectedRow.comparison_id} />
+          ) : selectedRow ? (
+            <div className="empty">
+              <p className="muted">
+                No comparison run yet for this row — its captures or pixel verdict
+                are still pending. Press Evaluate above.
+              </p>
+            </div>
+          ) : (
+            <div className="empty">Select a result on the left.</div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+interface LevelSummary {
+  level: EquivalenceLevelId;
+  pass: number;
+  fail: number;
+  allowed: number;
+  pending: number;
+}
+
+function summariseByLevel(rows: SessionResultRow[]): LevelSummary[] {
+  const byLevel = new Map<EquivalenceLevelId, LevelSummary>();
+  for (const r of rows) {
+    let s = byLevel.get(r.level);
+    if (!s) {
+      s = { level: r.level, pass: 0, fail: 0, allowed: 0, pending: 0 };
+      byLevel.set(r.level, s);
+    }
+    if (r.is_allowed && r.is_equivalent === 0) s.allowed += 1;
+    else if (r.status === 'pending' || r.is_equivalent === null) s.pending += 1;
+    else if (r.is_equivalent === 1) s.pass += 1;
+    else s.fail += 1;
+  }
+  return Array.from(byLevel.values()).sort((a, b) => a.level.localeCompare(b.level));
 }
 
 function EvaluationDetail({ evaluation }: { evaluation: EvaluationStatusDto }): JSX.Element {
