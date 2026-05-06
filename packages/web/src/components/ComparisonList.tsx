@@ -130,9 +130,15 @@ export function ComparisonList({
 
 type Verdict = 'failed' | 'passed' | 'unknown';
 
+function isEquivalent(c: ComparisonDto): boolean | null {
+  if (c.matched_at_level === null) return null;
+  return c.matched_at_level !== 'none';
+}
+
 function verdictOf(c: ComparisonDto): Verdict {
-  if (c.is_equivalent === 0) return 'failed';
-  if (c.is_equivalent === 1) return 'passed';
+  const eq = isEquivalent(c);
+  if (eq === false) return 'failed';
+  if (eq === true) return 'passed';
   return 'unknown';
 }
 
@@ -144,9 +150,10 @@ function verdictGlyph(v: Verdict): string {
 
 function sortAndFilter(rows: ComparisonDto[], filter: ComparisonFilter): ComparisonDto[] {
   const filtered = rows.filter((c) => {
+    const eq = isEquivalent(c);
     if (filter === 'all') return true;
-    if (filter === 'failed') return c.is_equivalent === 0;
-    return c.is_equivalent === 1;
+    if (filter === 'failed') return eq === false;
+    return eq === true;
   });
   return [...filtered].sort((a, b) => {
     const av = verdictRank(a);
@@ -159,15 +166,16 @@ function sortAndFilter(rows: ComparisonDto[], filter: ComparisonFilter): Compari
 }
 
 function verdictRank(c: ComparisonDto): number {
-  if (c.is_equivalent === 0) return 0;
-  if (c.is_equivalent === null) return 1;
+  const eq = isEquivalent(c);
+  if (eq === false) return 0;
+  if (eq === null) return 1;
   return 2;
 }
 
 function countFor(rows: ComparisonDto[], filter: ComparisonFilter): number {
   if (filter === 'all') return rows.length;
-  if (filter === 'failed') return rows.filter((c) => c.is_equivalent === 0).length;
-  return rows.filter((c) => c.is_equivalent === 1).length;
+  if (filter === 'failed') return rows.filter((c) => isEquivalent(c) === false).length;
+  return rows.filter((c) => isEquivalent(c) === true).length;
 }
 
 function nextFilter(f: ComparisonFilter): ComparisonFilter {

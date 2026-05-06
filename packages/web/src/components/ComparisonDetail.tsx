@@ -52,7 +52,8 @@ export function ComparisonDetail({ id, onLoaded }: Props): JSX.Element {
     : [];
   const pairLabel = url_pair.label?.trim() || `Pair #${url_pair.row_index + 1}`;
 
-  const verdictKind = verdictOf(c.is_equivalent);
+  const matchedEquivalent = matchedToBool(c.matched_at_level);
+  const verdictKind = verdictOf(matchedEquivalent);
   const lmGlyph =
     c.lm_determined_equivalent === null ? '—' : c.lm_determined_equivalent ? '✓' : '✗';
   const lmTitle = c.lm_prompt_version
@@ -63,12 +64,12 @@ export function ComparisonDetail({ id, onLoaded }: Props): JSX.Element {
     <>
       <div className="detail-head">
         <div className="dh-title-row">
-          <span className={`verdict-chip verdict-${verdictKind}`}>{verdictGlyph(c.is_equivalent)}</span>
+          <span className={`verdict-chip verdict-${verdictKind}`}>{verdictGlyph(matchedEquivalent)}</span>
           <strong className="dh-title">{pairLabel}</strong>
           <span className="dh-sep">·</span>
           <span className="muted">{c.viewport_name}</span>
           <span className="dh-sep">·</span>
-          <span className="muted">{c.equivalence_level}</span>
+          <span className="muted">{c.matched_at_level ?? '—'}</span>
           <StatusPill status={c.status} />
           <label className="dh-toggle">
             <input
@@ -101,7 +102,7 @@ export function ComparisonDetail({ id, onLoaded }: Props): JSX.Element {
             <span className={`verdict-chip verdict-${verdictOf(c.lm_determined_equivalent)}`}>{lmGlyph}</span>
             <span className="muted">{c.lm_model ?? '—'}</span>
             <span className="muted">conf {fmtNum(c.lm_confidence, 2)}</span>
-            {c.lm_summary && <span className="dh-lm-summary">{c.lm_summary}</span>}
+            {c.lm_diff_summary && <span className="dh-lm-summary">{c.lm_diff_summary}</span>}
           </div>
         )}
       </div>
@@ -188,6 +189,10 @@ function Pane({
   );
 }
 
+function matchedToBool(level: ComparisonDetailDto['comparison']['matched_at_level']): number | null {
+  if (level === null) return null;
+  return level === 'none' ? 0 : 1;
+}
 function verdictOf(v: number | null): 'failed' | 'passed' | 'unknown' {
   if (v === 0) return 'failed';
   if (v === 1) return 'passed';

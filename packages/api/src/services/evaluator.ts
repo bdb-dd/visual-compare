@@ -27,13 +27,17 @@ import {
   DEFAULT_VIEWPORTS,
   DEFAULT_VIEWPORT_NAME,
 } from '../constants/viewports.js';
-import { DEFAULT_EQUIVALENCE_LEVEL } from '../constants/equivalence.js';
+import {
+  DEFAULT_EQUIVALENCE_LEVEL,
+  DEFAULT_REGION_MATCH_CONFIG,
+} from '../constants/equivalence.js';
 import type {
-  AllowListEntry,
   CaptureSide,
   EquivalenceLevelId,
   FilterQuery,
   LmInvocationReason,
+  MatchedAtLevel,
+  RegionMatchConfig,
   SessionConfig,
   SessionResultRow,
   UrlPairRow,
@@ -55,13 +59,15 @@ const equivalenceLevelSchema = z.enum([
   'strict',
   'tolerant',
   'loose',
-  'semantic',
 ]);
 
 export const evaluationConfigInputSchema = z
   .object({
     viewports: z.array(viewportSchema).min(1).optional(),
-    equivalence_levels: z.array(equivalenceLevelSchema).min(1).optional(),
+    /** Single target level. The pipeline records `matched_at_level` per comparison. */
+    target_level: equivalenceLevelSchema.optional(),
+    /** When true, run the LM second pass on comparisons that don't match at target. */
+    invoke_lm: z.boolean().optional(),
     capture_options: z.record(z.unknown()).optional(),
     url_pair_ids: z.array(z.string()).optional(),
     /** Override the model id used for cache lookups; rarely needed. */
@@ -73,7 +79,11 @@ export type EvaluationConfigInput = z.infer<typeof evaluationConfigInputSchema>;
 
 export interface EvaluationConfig {
   viewports: ViewportDef[];
-  equivalence_levels: EquivalenceLevelId[];
+  /** Session-wide target level. Single value, not a list. */
+  target_level: EquivalenceLevelId;
+  /** Whether the LM second pass runs on comparisons that miss the target. */
+  invoke_lm: boolean;
+  region_match_config: RegionMatchConfig;
   capture_options: CaptureRunOptionsParsed;
   /**
    * Explicit pair selection. When non-null, takes precedence over
@@ -81,10 +91,8 @@ export interface EvaluationConfig {
    */
   url_pair_ids: string[] | null;
   filter_query: FilterQuery;
-  allow_list: AllowListEntry[];
   /**
-   * Cache-key prompt ids per invocation reason. After Phase 4 these come
-   * from `lm_prompts` (session-scoped). The keys are content-addressable
+   * Cache-key prompt ids per invocation reason. The keys are content-addressable
    * sha256s, so editing a session's prompt naturally produces a cache miss.
    */
   lm_prompt_ids: Partial<Record<LmPromptInvocationReason, string>>;
@@ -101,7 +109,6 @@ export interface PlannedCapture {
 export interface PlannedComparison {
   url_pair_id: string;
   viewport_name: string;
-  level: EquivalenceLevelId;
   /** Already-cached capture shas, when available. */
   capture_a_sha: string | null;
   capture_b_sha: string | null;
@@ -138,7 +145,7 @@ export function loadSessionPromptIds(
 ): Partial<Record<LmPromptInvocationReason, string>> {
   const out: Partial<Record<LmPromptInvocationReason, string>> = {};
   const fallback = lm?.config.promptVersion;
-  for (const reason of ['semantic_mode', 'ambiguous_pixel_result'] as const) {
+  for (const reason of ['target_level_failure', 'ambiguous_pixel_result'] as const) {
     const row = getSessionPrompt(db, sessionId, reason);
     if (row) out[reason] = row.prompt_id;
     else if (fallback) out[reason] = fallback;
@@ -166,7 +173,6 @@ export function resolveEvaluationConfig(
   promptIds: Partial<Record<LmPromptInvocationReason, string>> = {},
 ): EvaluationConfig {
   const sessionViewports = session?.default_viewports ?? [];
-  const sessionLevels = session?.default_equivalence_levels ?? [];
 
   const viewports =
     input?.viewports ??
@@ -174,9 +180,8 @@ export function resolveEvaluationConfig(
       ? sessionViewports
       : DEFAULT_VIEWPORTS.filter((v) => v.name === DEFAULT_VIEWPORT_NAME));
 
-  const equivalence_levels =
-    input?.equivalence_levels ??
-    (sessionLevels.length > 0 ? sessionLevels : [DEFAULT_EQUIVALENCE_LEVEL]);
+  const target_level =
+    input?.target_level ?? session?.default_equivalence_level ?? DEFAULT_EQUIVALENCE_LEVEL;
 
   const capture_options = captureRunOptionsSchema.parse({
     ...(session?.default_capture_options ?? {}),
@@ -188,11 +193,12 @@ export function resolveEvaluationConfig(
 
   return {
     viewports,
-    equivalence_levels,
+    target_level,
+    invoke_lm: input?.invoke_lm ?? false,
+    region_match_config: session?.region_match_config ?? { ...DEFAULT_REGION_MATCH_CONFIG },
     capture_options,
     url_pair_ids: input?.url_pair_ids ?? null,
     filter_query: session?.filter_query ?? {},
-    allow_list: session?.allow_list ?? [],
     lm_prompt_ids: promptIds,
     lm_model_id,
   };
@@ -238,21 +244,6 @@ export function applyFilter(pairs: UrlPairRow[], filter: FilterQuery): UrlPairRo
   });
 }
 
-/** True iff the (pair, level, viewport) triple matches an allow-list entry. */
-export function isAllowListed(
-  allow: AllowListEntry[],
-  url_pair_id: string,
-  level: EquivalenceLevelId,
-  viewport_name: string,
-): boolean {
-  return allow.some(
-    (a) =>
-      a.url_pair_id === url_pair_id &&
-      a.level === level &&
-      a.viewport_name === viewport_name,
-  );
-}
-
 /**
  * Returns the cache-key prompt id for the given invocation reason. Returns
  * null when the reason has no configured prompt (e.g. `manual_retry`,
@@ -262,7 +253,7 @@ function lookupPromptId(
   config: EvaluationConfig,
   reason: LmInvocationReason,
 ): string | null {
-  if (reason === 'semantic_mode' || reason === 'ambiguous_pixel_result') {
+  if (reason === 'target_level_failure' || reason === 'ambiguous_pixel_result') {
     return config.lm_prompt_ids[reason] ?? null;
   }
   return null;
@@ -361,64 +352,64 @@ export function planEvaluation(
   let pixelHits = 0;
   let lmHits = 0;
 
+  // TODO(phase-2): a future planner walks every level strictest -> loosest from
+  // a single cached pixel result and decides whether LM second-pass is needed.
+  // For phase 1, this still plans one comparison per (pair, viewport) at the
+  // session's target level — same shape as before, but without the per-level
+  // fan-out.
   for (const pair of enabledPairs) {
     for (const vp of config.viewports) {
       const aSha = captureShaByKey.get(`${pair.id}::${vp.name}::a`) ?? null;
       const bSha = captureShaByKey.get(`${pair.id}::${vp.name}::b`) ?? null;
-      for (const level of config.equivalence_levels) {
-        if (!aSha || !bSha) {
-          comparison_misses.push({
-            url_pair_id: pair.id,
-            viewport_name: vp.name,
-            level,
-            capture_a_sha: aSha,
-            capture_b_sha: bSha,
-          });
-          continue;
-        }
-        const pixel = pixelCacheLookup.get(aSha, bSha, PIPELINE_VERSION);
-        if (!pixel) {
-          comparison_misses.push({
-            url_pair_id: pair.id,
-            viewport_name: vp.name,
-            level,
-            capture_a_sha: aSha,
-            capture_b_sha: bSha,
-          });
-          continue;
-        }
-        pixelHits += 1;
-
-        const decision = decideEquivalence({
-          level,
-          changedPixelPercentage: pixel.changed_pct ?? 0,
-          ssim: pixel.ssim,
+      if (!aSha || !bSha) {
+        comparison_misses.push({
+          url_pair_id: pair.id,
+          viewport_name: vp.name,
+          capture_a_sha: aSha,
+          capture_b_sha: bSha,
         });
-        const reason: LmInvocationReason | null = decision.lmInvocationReason;
-        if (reason !== null) {
-          const promptId = lookupPromptId(config, reason);
-          const lmHit = promptId
-            ? lmCacheLookup.get(
-                aSha,
-                bSha,
-                promptId,
-                config.lm_model_id,
-                reason,
-                PIPELINE_VERSION,
-              )
-            : null;
-          if (!lmHit) {
-            comparison_misses.push({
-              url_pair_id: pair.id,
-              viewport_name: vp.name,
-              level,
-              capture_a_sha: aSha,
-              capture_b_sha: bSha,
-            });
-            continue;
-          }
-          lmHits += 1;
+        continue;
+      }
+      const pixel = pixelCacheLookup.get(aSha, bSha, PIPELINE_VERSION);
+      if (!pixel) {
+        comparison_misses.push({
+          url_pair_id: pair.id,
+          viewport_name: vp.name,
+          capture_a_sha: aSha,
+          capture_b_sha: bSha,
+        });
+        continue;
+      }
+      pixelHits += 1;
+
+      const decision = decideEquivalence({
+        level: config.target_level,
+        changedPixelPercentage: pixel.changed_pct ?? 0,
+        ssim: pixel.ssim,
+      });
+      const reason: LmInvocationReason | null = decision.lmInvocationReason;
+      if (reason !== null) {
+        const promptId = lookupPromptId(config, reason);
+        const lmHit = promptId
+          ? lmCacheLookup.get(
+              aSha,
+              bSha,
+              promptId,
+              config.lm_model_id,
+              reason,
+              PIPELINE_VERSION,
+            )
+          : null;
+        if (!lmHit) {
+          comparison_misses.push({
+            url_pair_id: pair.id,
+            viewport_name: vp.name,
+            capture_a_sha: aSha,
+            capture_b_sha: bSha,
+          });
+          continue;
         }
+        lmHits += 1;
       }
     }
   }
@@ -445,7 +436,7 @@ interface EvaluationRow {
   session_id: string;
   status: 'pending' | 'running' | 'complete' | 'error';
   capture_run_id: string | null;
-  comparison_run_ids: string;
+  comparison_run_id: string | null;
   cache_hits: string;
   config_snapshot_json: string;
   enabled_pair_count: number;
@@ -493,8 +484,8 @@ export class Evaluator {
     db.prepare(
       `INSERT INTO evaluations
          (id, session_id, config_snapshot_json, enabled_pair_count,
-          capture_run_id, comparison_run_ids, cache_hits, status, started_at)
-         VALUES (?, ?, ?, ?, NULL, '[]', '{}', 'pending', ?)`,
+          capture_run_id, comparison_run_id, cache_hits, status, started_at)
+         VALUES (?, ?, ?, ?, NULL, NULL, '{}', 'pending', ?)`,
     ).run(
       evaluationId,
       sessionId,
@@ -583,26 +574,25 @@ export class Evaluator {
       const plan2 = planEvaluation(db, sessionId, config);
       const captureRowsByPair = this.#loadCapturesForMisses(plan2.comparison_misses);
 
-      // 3) One comparison run per equivalence level, scoped to the (pair,
-      //    viewport) entries that level actually needs.
+      // 3) Single comparison run per evaluation. The pipeline records
+      //    matched_at_level per comparison from the cached pixel metrics.
+      //    TODO(phase-2): orchestrate the LM second pass on misses here.
       const fallbackCaptureRunId = captureRunId ?? this.#anyCaptureRunForSession(sessionId);
-      const comparisonRunIds: string[] = [];
+      let comparisonRunId: string | null = null;
 
-      for (const level of config.equivalence_levels) {
-        const pairs: ExplicitComparisonPair[] = [];
-        for (const m of plan2.comparison_misses) {
-          if (m.level !== level) continue;
-          const key = `${m.url_pair_id}::${m.viewport_name}`;
-          const ids = captureRowsByPair.get(key);
-          if (!ids?.a || !ids?.b) continue;
-          pairs.push({
-            url_pair_id: m.url_pair_id,
-            viewport_name: m.viewport_name,
-            capture_a_id: ids.a,
-            capture_b_id: ids.b,
-          });
-        }
-        if (pairs.length === 0) continue;
+      const pairs: ExplicitComparisonPair[] = [];
+      for (const m of plan2.comparison_misses) {
+        const key = `${m.url_pair_id}::${m.viewport_name}`;
+        const ids = captureRowsByPair.get(key);
+        if (!ids?.a || !ids?.b) continue;
+        pairs.push({
+          url_pair_id: m.url_pair_id,
+          viewport_name: m.viewport_name,
+          capture_a_id: ids.a,
+          capture_b_id: ids.b,
+        });
+      }
+      if (pairs.length > 0) {
         if (!fallbackCaptureRunId) {
           throw new Error(
             'No capture run available to associate with this comparison run; ' +
@@ -612,10 +602,10 @@ export class Evaluator {
         const result = startComparisonRunForPairs(this.#deps, {
           sessionId,
           captureRunId: fallbackCaptureRunId,
-          options: { equivalenceLevel: level },
+          options: { targetLevel: config.target_level, invokeLm: config.invoke_lm },
           pairs,
         });
-        comparisonRunIds.push(result.comparison_run_id);
+        comparisonRunId = result.comparison_run_id;
         const wait = queue.waitForJob(result.job_id);
         if (wait) await wait;
       }
@@ -625,12 +615,12 @@ export class Evaluator {
       db.prepare(
         `UPDATE evaluations
            SET status = 'complete',
-               comparison_run_ids = ?,
+               comparison_run_id = ?,
                cache_hits = ?,
                completed_at = ?
          WHERE id = ?`,
       ).run(
-        JSON.stringify(comparisonRunIds),
+        comparisonRunId,
         JSON.stringify(finalPlan.cache_hits),
         new Date().toISOString(),
         evaluationId,
@@ -807,77 +797,83 @@ export function readSessionResults(
         null;
       const captureAStatus = captureStatusFor(aSha, pair.url_a, vp.name);
       const captureBStatus = captureStatusFor(bSha, pair.url_b, vp.name);
-      for (const level of config.equivalence_levels) {
-        const row: SessionResultRow = {
-          url_pair_id: pair.id,
-          url_a: pair.url_a,
-          url_b: pair.url_b,
-          label: pair.label,
-          viewport_name: vp.name,
-          level,
-          capture_a_sha: aSha,
-          capture_b_sha: bSha,
-          comparison_id: null,
-          capture_a_status: captureAStatus,
-          capture_b_status: captureBStatus,
-          pixel: null,
-          lm: null,
-          is_equivalent: null,
-          is_allowed: isAllowListed(config.allow_list, pair.id, level, vp.name),
-          status: 'pending',
-        };
+      const row: SessionResultRow = {
+        url_pair_id: pair.id,
+        url_a: pair.url_a,
+        url_b: pair.url_b,
+        label: pair.label,
+        viewport_name: vp.name,
+        matched_at_level: null,
+        matched_decided_by: null,
+        capture_a_sha: aSha,
+        capture_b_sha: bSha,
+        comparison_id: null,
+        capture_a_status: captureAStatus,
+        capture_b_status: captureBStatus,
+        pixel: null,
+        lm: null,
+        // TODO(phase-3): wire to acceptances table to compute regressed/expanded.
+        acceptance_status: 'unaccepted',
+        status: 'pending',
+      };
 
-        if (aSha && bSha) {
-          const pixel = pixelCacheLookup.get(aSha, bSha, PIPELINE_VERSION);
-          if (pixel) {
-            row.pixel = {
-              changed_pct: pixel.changed_pct,
-              ssim: pixel.ssim,
-              bbox_area_pct: pixel.bbox_area_pct,
-              component_count: pixel.component_count,
-              im_diff_sha256: pixel.im_diff_sha256,
-            };
-            // Default to the pixel-cache comparison_id; the LM branch below
-            // overrides it when an LM verdict is the source of truth.
-            row.comparison_id = pixel.comparison_id;
-            const decision = decideEquivalence({
-              level,
-              changedPixelPercentage: pixel.changed_pct ?? 0,
-              ssim: pixel.ssim,
-            });
-            if (decision.lmInvocationReason) {
-              const promptId = lookupPromptId(config, decision.lmInvocationReason);
-              const lm = promptId
-                ? lmCacheLookup.get(
-                    aSha,
-                    bSha,
-                    promptId,
-                    config.lm_model_id,
-                    decision.lmInvocationReason,
-                    PIPELINE_VERSION,
-                  )
-                : null;
-              if (lm) {
-                row.lm = {
-                  invocation_reason: decision.lmInvocationReason,
-                  verdict: lm.verdict,
-                  summary: lm.summary,
-                  confidence: lm.confidence,
-                };
-                row.is_equivalent = lm.verdict;
-                // The LM verdict is the authoritative source for this row,
-                // so its comparison_id is what the UI should deep-link to.
-                row.comparison_id = lm.comparison_id;
-                row.status = 'cached';
-              }
-            } else if (decision.imDeterminedEquivalent !== null) {
-              row.is_equivalent = decision.imDeterminedEquivalent ? 1 : 0;
+      if (aSha && bSha) {
+        const pixel = pixelCacheLookup.get(aSha, bSha, PIPELINE_VERSION);
+        if (pixel) {
+          row.pixel = {
+            changed_pct: pixel.changed_pct,
+            ssim: pixel.ssim,
+            bbox_area_pct: pixel.bbox_area_pct,
+            component_count: pixel.component_count,
+            im_diff_sha256: pixel.im_diff_sha256,
+          };
+          // Default to the pixel-cache comparison_id; the LM branch below
+          // overrides it when an LM verdict is the source of truth.
+          row.comparison_id = pixel.comparison_id;
+          const decision = decideEquivalence({
+            level: config.target_level,
+            changedPixelPercentage: pixel.changed_pct ?? 0,
+            ssim: pixel.ssim,
+          });
+          // TODO(phase-2): replace decideEquivalence (single-level) with
+          // computeMatchedAtLevel (walks all levels). For phase 1, matched_at_level
+          // is target if equivalent at target, else 'none'.
+          let matched: MatchedAtLevel | null = null;
+          let decidedBy: 'pixel' | 'lm' | null = null;
+          if (decision.lmInvocationReason) {
+            const promptId = lookupPromptId(config, decision.lmInvocationReason);
+            const lm = promptId
+              ? lmCacheLookup.get(
+                  aSha,
+                  bSha,
+                  promptId,
+                  config.lm_model_id,
+                  decision.lmInvocationReason,
+                  PIPELINE_VERSION,
+                )
+              : null;
+            if (lm) {
+              row.lm = {
+                invocation_reason: decision.lmInvocationReason,
+                verdict: lm.verdict,
+                diff_summary: lm.summary,
+                confidence: lm.confidence,
+              };
+              matched = lm.verdict ? config.target_level : 'none';
+              decidedBy = 'lm';
+              row.comparison_id = lm.comparison_id;
               row.status = 'cached';
             }
+          } else if (decision.imDeterminedEquivalent !== null) {
+            matched = decision.imDeterminedEquivalent ? config.target_level : 'none';
+            decidedBy = 'pixel';
+            row.status = 'cached';
           }
+          row.matched_at_level = matched;
+          row.matched_decided_by = decidedBy;
         }
-        out.push(row);
       }
+      out.push(row);
     }
   }
   return out;

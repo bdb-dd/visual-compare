@@ -84,14 +84,14 @@ describe('extractFirstJsonObject', () => {
 });
 
 describe('buildPromptUserInstruction', () => {
-  it('frames semantic_mode as the LM being final authority', () => {
+  it('frames target_level_failure as a second-pass review', () => {
     const text = buildPromptUserInstruction({
-      level: 'semantic',
-      invocationReason: 'semantic_mode',
+      level: 'tolerant',
+      invocationReason: 'target_level_failure',
       changedPixelPercentage: 12.3,
       ssim: 0.7,
     });
-    expect(text).toMatch(/final authority/i);
+    expect(text).toMatch(/Target equivalence level/);
     expect(text).toMatch(/12\.300/);
     expect(text).toMatch(/0\.7000/);
   });
@@ -109,8 +109,8 @@ describe('buildPromptUserInstruction', () => {
 
   it('omits the metrics line when both are null', () => {
     const text = buildPromptUserInstruction({
-      level: 'semantic',
-      invocationReason: 'semantic_mode',
+      level: 'tolerant',
+      invocationReason: 'target_level_failure',
       changedPixelPercentage: null,
       ssim: null,
     });

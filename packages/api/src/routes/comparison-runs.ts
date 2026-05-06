@@ -34,11 +34,11 @@ export function comparisonRunsRouter(deps: ComparisonRunDeps): Router {
     // LM preflight: if the level might invoke LM, verify upfront so we don't
     // queue 10 jobs that all timeout. Auto-recovery (lms server start, lms
     // load) is attempted inside preflight per LmConfig.
-    if (levelMayInvokeLm(parsed.data.options.equivalenceLevel)) {
+    if (levelMayInvokeLm(parsed.data.options.targetLevel) || parsed.data.options.invokeLm) {
       if (!deps.lm) {
         res.status(503).json({
           error: 'lm_unavailable',
-          message: `Level '${parsed.data.options.equivalenceLevel}' may invoke LM Studio but no LM client is configured.`,
+          message: `Target level '${parsed.data.options.targetLevel}' may invoke LM Studio but no LM client is configured.`,
         });
         return;
       }

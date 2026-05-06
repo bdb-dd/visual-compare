@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { openDatabase } from '../src/db/client.js';
-import { runMigrations } from '../src/db/migrations.js';
+import { applySchema } from '../src/db/schema.js';
 import { recoverInterruptedRuns, INTERRUPTED_BY_RESTART } from '../src/db/recovery.js';
 import { randomUUID } from 'node:crypto';
 
 function setup() {
   const db = openDatabase({ path: ':memory:' });
-  runMigrations(db);
+  applySchema(db);
   return db;
 }
 
@@ -57,16 +57,16 @@ describe('recoverInterruptedRuns', () => {
     insertCapture.run(pendingCapId, captureRunId, pairId, 'b', 'https://b.com', 'pending', 'desktop', now);
 
     db.prepare(
-      `INSERT INTO comparison_runs (id, session_id, capture_run_id, job_id, equivalence_level, options_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(compRunId, sessionId, captureRunId, compJobId, 'strict', '{}', now);
+      `INSERT INTO comparison_runs (id, session_id, capture_run_id, job_id, options_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(compRunId, sessionId, captureRunId, compJobId, '{}', now);
 
     const procCompId = randomUUID();
     db.prepare(
       `INSERT INTO comparisons
-        (id, comparison_run_id, url_pair_id, capture_a_id, capture_b_id, viewport_name, equivalence_level, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', ?)`,
-    ).run(procCompId, compRunId, pairId, processingCapId, pendingCapId, 'desktop', 'strict', now);
+        (id, comparison_run_id, url_pair_id, capture_a_id, capture_b_id, viewport_name, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'processing', ?)`,
+    ).run(procCompId, compRunId, pairId, processingCapId, pendingCapId, 'desktop', now);
 
     const result = recoverInterruptedRuns(db);
     expect(result).toEqual({ jobs: 2, captures: 1, comparisons: 1 });

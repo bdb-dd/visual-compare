@@ -150,18 +150,23 @@ export const api = {
       `/api/capture-runs/${id}`,
     ),
 
-  startComparisonRun: (sessionId: string, captureRunId: string, level: EquivalenceLevelId) =>
+  startComparisonRun: (
+    sessionId: string,
+    captureRunId: string,
+    targetLevel: EquivalenceLevelId,
+    invokeLm = false,
+  ) =>
     request<JobAcceptedResponse>('/api/comparison-runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         session_id: sessionId,
         capture_run_id: captureRunId,
-        options: { equivalenceLevel: level },
+        options: { targetLevel, invokeLm },
       }),
     }),
   getComparisonRun: (id: string) =>
-    request<{ comparison_run: { id: string; session_id: string; capture_run_id: string; equivalence_level: EquivalenceLevelId; job_id: string }; comparisons: ComparisonDto[] }>(
+    request<{ comparison_run: { id: string; session_id: string; capture_run_id: string; job_id: string }; comparisons: ComparisonDto[] }>(
       `/api/comparison-runs/${id}`,
     ),
   getComparisonDetail: (id: string) =>

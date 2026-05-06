@@ -109,7 +109,7 @@ confidence is your overall confidence in the equivalent verdict, in 0..1.`;
 
 interface BuildPromptInput {
   level: EquivalenceLevelId;
-  invocationReason: 'semantic_mode' | 'ambiguous_pixel_result' | 'manual_retry';
+  invocationReason: 'ambiguous_pixel_result' | 'target_level_failure' | 'manual_retry';
   changedPixelPercentage: number | null;
   ssim: number | null;
 }
@@ -125,8 +125,8 @@ export function buildPromptUserInstruction(input: BuildPromptInput): string {
   }
   const ctxLine = ctx.length ? ` Pixel metrics: ${ctx.join(', ')}.` : '';
 
-  if (invocationReason === 'semantic_mode') {
-    return `Equivalence level requested: "${level}". You are the final authority on equivalence — pixel metrics are informational only.${ctxLine} Compare the two pages and reply per the schema.`;
+  if (invocationReason === 'target_level_failure') {
+    return `Target equivalence level: "${level}". Pixel comparison did not pass at this level. Decide whether these pages are nevertheless effectively equivalent in content and purpose.${ctxLine} Reply per the schema.`;
   }
   if (invocationReason === 'ambiguous_pixel_result') {
     return `Equivalence level requested: "${level}". The pixel-level comparison landed inside the ambiguity band, so you are the tiebreaker.${ctxLine} Decide whether these pages are equivalent at this level and reply per the schema.`;
@@ -187,7 +187,7 @@ export interface AnalyzeArgs {
   bPath: string;
   diffPath: string;
   level: EquivalenceLevelId;
-  invocationReason: 'semantic_mode' | 'ambiguous_pixel_result' | 'manual_retry';
+  invocationReason: 'ambiguous_pixel_result' | 'target_level_failure' | 'manual_retry';
   changedPixelPercentage: number | null;
   ssim: number | null;
   /**

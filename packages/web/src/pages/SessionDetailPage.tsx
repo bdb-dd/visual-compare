@@ -388,7 +388,7 @@ function HistoryTab({
                         c:{e.cache_hits.captures} p:{e.cache_hits.pixel} l:{e.cache_hits.lm}
                       </td>
                       <td className="muted">{e.capture_run_id?.slice(0, 8) ?? '—'}</td>
-                      <td className="muted">{e.comparison_run_ids.length}</td>
+                      <td className="muted">{e.comparison_run_id ? e.comparison_run_id.slice(0, 8) : '—'}</td>
                     </tr>
                     {open && (
                       <tr>
@@ -436,7 +436,6 @@ function HistoryTab({
             <thead>
               <tr>
                 <th>Started</th>
-                <th>Level</th>
                 <th>Run id</th>
               </tr>
             </thead>
@@ -444,7 +443,6 @@ function HistoryTab({
               {comparisonRuns.map((r) => (
                 <tr key={r.id}>
                   <td>{formatDate(r.created_at)}</td>
-                  <td>{r.equivalence_level}</td>
                   <td className="muted">{r.id.slice(0, 8)}</td>
                 </tr>
               ))}
@@ -516,7 +514,7 @@ function ReviewSidebar({
             <strong>{s.level}</strong>
             <span className="chip pass">{s.pass}</span>
             <span className="chip fail">{s.fail}</span>
-            {s.allowed > 0 && <span className="chip allowed">{s.allowed}</span>}
+            {s.accepted > 0 && <span className="chip allowed">{s.accepted}</span>}
             {s.pending > 0 && <span className="chip pending">{s.pending}</span>}
           </div>
         ))}
@@ -532,25 +530,29 @@ function ReviewSidebar({
   );
 }
 
+// TODO(phase-5): replace this per-level summary with the per-`matched_at_level`
+// histogram described in the plan. For phase 1 we just bucket by the matched
+// level (or 'none') so the existing UI surface compiles.
 interface LevelSummary {
-  level: EquivalenceLevelId;
+  level: string;
   pass: number;
   fail: number;
-  allowed: number;
+  accepted: number;
   pending: number;
 }
 
 function summariseByLevel(rows: SessionResultRow[]): LevelSummary[] {
-  const byLevel = new Map<EquivalenceLevelId, LevelSummary>();
+  const byLevel = new Map<string, LevelSummary>();
   for (const r of rows) {
-    let s = byLevel.get(r.level);
+    const bucket = r.matched_at_level ?? 'pending';
+    let s = byLevel.get(bucket);
     if (!s) {
-      s = { level: r.level, pass: 0, fail: 0, allowed: 0, pending: 0 };
-      byLevel.set(r.level, s);
+      s = { level: bucket, pass: 0, fail: 0, accepted: 0, pending: 0 };
+      byLevel.set(bucket, s);
     }
-    if (r.is_allowed && r.is_equivalent === 0) s.allowed += 1;
-    else if (r.status === 'pending' || r.is_equivalent === null) s.pending += 1;
-    else if (r.is_equivalent === 1) s.pass += 1;
+    if (r.acceptance_status === 'accepted') s.accepted += 1;
+    else if (r.status === 'pending' || r.matched_at_level === null) s.pending += 1;
+    else if (r.matched_at_level !== 'none') s.pass += 1;
     else s.fail += 1;
   }
   return Array.from(byLevel.values()).sort((a, b) => a.level.localeCompare(b.level));
@@ -606,7 +608,7 @@ function EvaluationDetail({ evaluation }: { evaluation: EvaluationStatusDto }): 
   const config = evaluation.config as
     | {
         viewports?: { name: string }[];
-        equivalence_levels?: string[];
+        target_level?: string;
         filter_query?: Record<string, unknown>;
         capture_options?: { hideSelectors?: string[]; settleDelayMs?: number };
       }
@@ -618,8 +620,8 @@ function EvaluationDetail({ evaluation }: { evaluation: EvaluationStatusDto }): 
         <span>{config?.viewports?.map((v) => v.name).join(', ') ?? '—'}</span>
       </div>
       <div className="kv">
-        <span className="muted">Levels:</span>
-        <span>{config?.equivalence_levels?.join(', ') ?? '—'}</span>
+        <span className="muted">Target level:</span>
+        <span>{config?.target_level ?? '—'}</span>
       </div>
       {config?.capture_options?.hideSelectors && config.capture_options.hideSelectors.length > 0 && (
         <div className="kv">

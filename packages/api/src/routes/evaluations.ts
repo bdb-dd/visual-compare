@@ -26,18 +26,16 @@ export function evaluationsRouter(db: Db): Router {
   return router;
 }
 
-export function parseEvaluationRow<T extends { config_snapshot_json: string; comparison_run_ids: string; cache_hits: string }>(
+export function parseEvaluationRow<T extends { config_snapshot_json: string; cache_hits: string }>(
   row: T,
-): Omit<T, 'config_snapshot_json' | 'comparison_run_ids' | 'cache_hits'> & {
+): Omit<T, 'config_snapshot_json' | 'cache_hits'> & {
   config: unknown;
-  comparison_run_ids: string[];
   cache_hits: { captures: number; pixel: number; lm: number };
 } {
-  const { config_snapshot_json, comparison_run_ids, cache_hits, ...rest } = row;
+  const { config_snapshot_json, cache_hits, ...rest } = row;
   return {
     ...rest,
     config: JSON.parse(config_snapshot_json),
-    comparison_run_ids: JSON.parse(comparison_run_ids),
     cache_hits: JSON.parse(cache_hits || '{}'),
   };
 }

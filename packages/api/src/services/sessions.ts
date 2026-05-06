@@ -3,14 +3,18 @@ import { z } from 'zod';
 import type { Db } from '../db/client.js';
 import type { ParsedCsvRow } from './csv.js';
 import type {
-  AllowListEntry,
   EquivalenceLevelId,
   FilterQuery,
+  RegionMatchConfig,
   SessionConfig,
   SessionRow,
   UrlPairRow,
   ViewportDef,
 } from '../types.js';
+import {
+  DEFAULT_EQUIVALENCE_LEVEL,
+  DEFAULT_REGION_MATCH_CONFIG,
+} from '../constants/equivalence.js';
 import { copyDefaultsToSession } from './lm-prompts.js';
 
 export interface CreateSessionInput {
@@ -146,7 +150,6 @@ const equivalenceLevelSchema = z.enum([
   'strict',
   'tolerant',
   'loose',
-  'semantic',
 ]);
 
 const viewportSchema = z.object({
@@ -166,11 +169,11 @@ const filterQuerySchema = z
   })
   .strict();
 
-const allowListEntrySchema = z
+const regionMatchConfigSchema = z
   .object({
-    url_pair_id: z.string().min(1),
-    level: equivalenceLevelSchema,
-    viewport_name: z.string().min(1),
+    growth_margin_px: z.number().nonnegative(),
+    displacement_tolerance_px: z.number().nonnegative(),
+    pixel_pct_delta: z.number().nonnegative(),
   })
   .strict();
 
@@ -178,9 +181,9 @@ export const sessionConfigSchema = z
   .object({
     default_viewports: z.array(viewportSchema).default([]),
     default_capture_options: z.record(z.unknown()).default({}),
-    default_equivalence_levels: z.array(equivalenceLevelSchema).default([]),
+    default_equivalence_level: equivalenceLevelSchema.default(DEFAULT_EQUIVALENCE_LEVEL),
+    region_match_config: regionMatchConfigSchema.default({ ...DEFAULT_REGION_MATCH_CONFIG }),
     filter_query: filterQuerySchema.default({}),
-    allow_list: z.array(allowListEntrySchema).default([]),
   })
   .strict();
 
@@ -198,9 +201,9 @@ export type SessionPatch = z.infer<typeof sessionPatchSchema>;
 const EMPTY_CONFIG: SessionConfig = {
   default_viewports: [],
   default_capture_options: {},
-  default_equivalence_levels: [],
+  default_equivalence_level: DEFAULT_EQUIVALENCE_LEVEL,
+  region_match_config: { ...DEFAULT_REGION_MATCH_CONFIG },
   filter_query: {},
-  allow_list: [],
 };
 
 function parseJsonField<T>(value: string | null | undefined, fallback: T): T {
@@ -219,12 +222,12 @@ export function rowToSessionConfig(row: SessionRow): SessionConfig {
       row.default_capture_options,
       {},
     ),
-    default_equivalence_levels: parseJsonField<EquivalenceLevelId[]>(
-      row.default_equivalence_levels,
-      [],
+    default_equivalence_level: row.default_equivalence_level ?? DEFAULT_EQUIVALENCE_LEVEL,
+    region_match_config: parseJsonField<RegionMatchConfig>(
+      row.region_match_config_json,
+      { ...DEFAULT_REGION_MATCH_CONFIG },
     ),
     filter_query: parseJsonField<FilterQuery>(row.filter_query, {}),
-    allow_list: parseJsonField<AllowListEntry[]>(row.allow_list, []),
   };
 }
 
@@ -245,16 +248,16 @@ export function updateSessionConfig(
     `UPDATE sessions
         SET default_viewports = ?,
             default_capture_options = ?,
-            default_equivalence_levels = ?,
-            filter_query = ?,
-            allow_list = ?
+            default_equivalence_level = ?,
+            region_match_config_json = ?,
+            filter_query = ?
       WHERE id = ?`,
   ).run(
     JSON.stringify(merged.default_viewports),
     JSON.stringify(merged.default_capture_options),
-    JSON.stringify(merged.default_equivalence_levels),
+    merged.default_equivalence_level,
+    JSON.stringify(merged.region_match_config),
     JSON.stringify(merged.filter_query),
-    JSON.stringify(merged.allow_list),
     id,
   );
   return merged;

@@ -34,7 +34,7 @@ export function SessionConfigPanel({
   // "no override" — the form pre-fills the visual representation but only
   // persists what the user touches.
   const [viewportNames, setViewportNames] = useState<string[]>([]);
-  const [levelIds, setLevelIds] = useState<EquivalenceLevelId[]>([]);
+  const [targetLevel, setTargetLevel] = useState<EquivalenceLevelId>(defaults.level);
   const [language, setLanguage] = useState('');
   const [category, setCategory] = useState('');
   const [pathPrefix, setPathPrefix] = useState('');
@@ -49,11 +49,7 @@ export function SessionConfigPanel({
         ? config.default_viewports.map((v) => v.name)
         : [defaults.viewportName],
     );
-    setLevelIds(
-      config.default_equivalence_levels.length > 0
-        ? config.default_equivalence_levels
-        : [defaults.level],
-    );
+    setTargetLevel(config.default_equivalence_level ?? defaults.level);
     setLanguage(config.filter_query.language?.join(', ') ?? '');
     setCategory(config.filter_query.category?.join(', ') ?? '');
     setPathPrefix(config.filter_query.path_prefix ?? '');
@@ -90,9 +86,9 @@ export function SessionConfigPanel({
       const next = await api.putSessionConfig(sessionId, {
         default_viewports: chosenViewports,
         default_capture_options: captureOpts,
-        default_equivalence_levels: levelIds,
+        default_equivalence_level: targetLevel,
+        region_match_config: config.region_match_config,
         filter_query: filterQuery,
-        allow_list: config.allow_list, // unchanged from this panel for now
       });
       onSaved(next.config);
     } catch (err) {
@@ -124,14 +120,15 @@ export function SessionConfigPanel({
       </section>
 
       <section>
-        <h4>Equivalence levels</h4>
+        <h4>Target equivalence level</h4>
         <div className="checkbox-row">
           {levels.map((l) => (
             <label key={l.id}>
               <input
-                type="checkbox"
-                checked={levelIds.includes(l.id)}
-                onChange={() => setLevelIds((prev) => toggle(prev, l.id))}
+                type="radio"
+                name="target-level"
+                checked={targetLevel === l.id}
+                onChange={() => setTargetLevel(l.id)}
               />
               {l.name}
             </label>
@@ -196,14 +193,7 @@ export function SessionConfigPanel({
         </label>
       </section>
 
-      <section>
-        <h4>Allow-list</h4>
-        <p className="muted" style={{ marginTop: 0 }}>
-          {config.allow_list.length === 0
-            ? 'No findings allow-listed.'
-            : `${config.allow_list.length} entr${config.allow_list.length === 1 ? 'y' : 'ies'} allow-listed.`}
-        </p>
-      </section>
+      {/* Allow-list section removed: subsumed by acceptances (phase 3+). */}
 
       <div style={{ display: 'flex', gap: 8 }}>
         <button className="btn" onClick={() => void save()} disabled={busy}>

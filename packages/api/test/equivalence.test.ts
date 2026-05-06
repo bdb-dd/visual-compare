@@ -41,12 +41,6 @@ describe('decideEquivalence', () => {
     expect(d.imDeterminedEquivalent).toBe(false);
   });
 
-  it('semantic: defers to LM regardless of pixels', () => {
-    const d = decideEquivalence({ level: 'semantic', changedPixelPercentage: 0, ssim: 1 });
-    expect(d.imDeterminedEquivalent).toBe(null);
-    expect(d.lmInvocationReason).toBe('semantic_mode');
-  });
-
   it('loose: in ambiguity band invokes LM', () => {
     const d = decideEquivalence({ level: 'loose', changedPixelPercentage: 14, ssim: 0.9 });
     expect(d.lmInvocationReason).toBe('ambiguous_pixel_result');

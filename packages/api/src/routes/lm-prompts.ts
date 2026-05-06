@@ -8,7 +8,7 @@ import {
   type LmPromptInvocationReason,
 } from '../services/lm-prompts.js';
 
-const reasonSchema = z.enum(['semantic_mode', 'ambiguous_pixel_result']);
+const reasonSchema = z.enum(['target_level_failure', 'ambiguous_pixel_result']);
 
 const updateBodySchema = z
   .object({

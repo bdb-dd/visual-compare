@@ -8,8 +8,16 @@ export type EquivalenceLevelId =
   | 'pixel-perfect'
   | 'strict'
   | 'tolerant'
-  | 'loose'
-  | 'semantic';
+  | 'loose';
+
+/**
+ * The strictest level a comparison passed at, or `none` when no level matched.
+ * `none` is sentinel for "different at every threshold"; it's treated as
+ * weaker than `loose` for sorting/regression-detection purposes.
+ */
+export type MatchedAtLevel = EquivalenceLevelId | 'none';
+
+export type MatchedDecidedBy = 'pixel' | 'lm';
 
 export type CaptureSide = 'a' | 'b';
 
@@ -28,8 +36,8 @@ export type DifferenceSource = 'imagick' | 'lm';
 export type DifferenceSeverity = 'low' | 'medium' | 'high';
 
 export type LmInvocationReason =
-  | 'semantic_mode'
   | 'ambiguous_pixel_result'
+  | 'target_level_failure'
   | 'manual_retry';
 
 export type ScreenOrientation = 'portrait' | 'landscape';
@@ -57,7 +65,14 @@ export interface CaptureRunOptions {
 }
 
 export interface ComparisonRunOptions {
-  equivalenceLevel: EquivalenceLevelId;
+  /**
+   * Target equivalence level for this run. The pipeline computes
+   * `matched_at_level` for every comparison; this value governs which
+   * comparisons surface as "needs review" and which trigger LM second-pass.
+   */
+  targetLevel: EquivalenceLevelId;
+  /** When true, run LM second-pass on comparisons that don't match at the target. */
+  invokeLm?: boolean;
   urlPairIds?: string[];
   viewports?: string[]; // viewport names; undefined = all viewports captured in the run
 }
@@ -76,9 +91,9 @@ export interface SessionRow {
   created_at: string;
   default_viewports: string;             // JSON: ViewportDef[]
   default_capture_options: string;       // JSON: Partial<CaptureRunOptions>
-  default_equivalence_levels: string;    // JSON: EquivalenceLevelId[]
+  default_equivalence_level: EquivalenceLevelId;
+  region_match_config_json: string;      // JSON: RegionMatchConfig
   filter_query: string;                  // JSON: FilterQuery
-  allow_list: string;                    // JSON: AllowListEntry[]
   archived_at: string | null;
 }
 
@@ -89,18 +104,21 @@ export interface FilterQuery {
   path_prefix?: string;
 }
 
-export interface AllowListEntry {
-  url_pair_id: string;
-  level: EquivalenceLevelId;
-  viewport_name: string;
+export interface RegionMatchConfig {
+  /** How much an accepted region's bbox can grow before counted as expanded (px). */
+  growth_margin_px: number;
+  /** How far a region can shift and still match an accepted region (px). */
+  displacement_tolerance_px: number;
+  /** Percentage-point allowance over `accepted_pixel_pct` before flagging. */
+  pixel_pct_delta: number;
 }
 
 export interface SessionConfig {
   default_viewports: ViewportDef[];
   default_capture_options: Partial<CaptureRunOptions>;
-  default_equivalence_levels: EquivalenceLevelId[];
+  default_equivalence_level: EquivalenceLevelId;
+  region_match_config: RegionMatchConfig;
   filter_query: FilterQuery;
-  allow_list: AllowListEntry[];
 }
 
 export interface UrlPairRow {
@@ -162,7 +180,6 @@ export interface ComparisonRunRow {
   session_id: string;
   capture_run_id: string;
   job_id: string;
-  equivalence_level: EquivalenceLevelId;
   options_json: string;
   created_at: string;
 }
@@ -174,7 +191,6 @@ export interface ComparisonRow {
   capture_a_id: string;
   capture_b_id: string;
   viewport_name: string;
-  equivalence_level: EquivalenceLevelId;
   status: RowProcessingStatus;
   changed_pixel_percentage: number | null;
   rmse: number | null;
@@ -184,18 +200,51 @@ export interface ComparisonRow {
   im_diff_sha256: string | null;
   im_diff_byte_size: number | null;
   im_determined_equivalent: number | null;
+  /** Strictest level at which this comparison is equivalent, or 'none'. */
+  matched_at_level: MatchedAtLevel | null;
+  /** Whether the level assignment was made by pixel metrics or LM tiebreaker. */
+  matched_decided_by: MatchedDecidedBy | null;
   lm_invocation_reason: LmInvocationReason | null;
   lm_model: string | null;
   lm_prompt_version: string | null;
-  lm_summary: string | null;
+  /** LM-generated description of the diff; used for UI and label suggestions. */
+  lm_diff_summary: string | null;
   lm_confidence: number | null;
   lm_response_json: string | null;
   lm_determined_equivalent: number | null;
-  is_equivalent: number | null;
   error_message: string | null;
   duration_ms: number | null;
   created_at: string;
   completed_at: string | null;
+}
+
+export interface AcceptanceRow {
+  id: string;
+  session_id: string;
+  url_pair_id: string;
+  viewport_name: string;
+  accepted_level: MatchedAtLevel;
+  accepted_pixel_pct: number | null;
+  accepted_ssim: number | null;
+  /** JSON-encoded BoundingBoxPercent[] — regions detected at acceptance. */
+  accepted_diff_regions_json: string;
+  accepted_capture_a_sha: string;
+  accepted_capture_b_sha: string;
+  /** SQLite stores boolean as 0/1. 1 = ignore regardless of diff growth. */
+  accept_any: number;
+  label: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UrlPairConfigOverrideRow {
+  url_pair_id: string;
+  /** null = inherit session default. */
+  equivalence_level: EquivalenceLevelId | null;
+  /** null = inherit; otherwise partial RegionMatchConfig JSON merged over session. */
+  region_match_config_json: string | null;
+  updated_at: string;
 }
 
 export interface DifferenceRow {
@@ -257,13 +306,29 @@ export interface CaptureStatusInfo {
   error_message: string | null;
 }
 
+/**
+ * Status of a comparison relative to its persisted acceptance, computed at
+ * read time. `unaccepted` = no acceptance row exists. `accepted` = current
+ * state is within the accepted snapshot. `regressed` = matched_at_level is
+ * weaker than accepted_level. `expanded_diff` = level held but pixel pct or
+ * regions grew beyond knob tolerances.
+ */
+export type AcceptanceStatus =
+  | 'unaccepted'
+  | 'accepted'
+  | 'regressed'
+  | 'expanded_diff';
+
 export interface SessionResultRow {
   url_pair_id: string;
   url_a: string;
   url_b: string;
   label: string | null;
   viewport_name: string;
-  level: EquivalenceLevelId;
+  /** Strictest level at which this comparison passed, or 'none'. */
+  matched_at_level: MatchedAtLevel | null;
+  /** Whether the level assignment was made by pixel or LM tiebreaker. */
+  matched_decided_by: MatchedDecidedBy | null;
   capture_a_sha: string | null;
   capture_b_sha: string | null;
   /** Most recent comparison row this verdict came from. Lets the UI deep-link. */
@@ -281,11 +346,11 @@ export interface SessionResultRow {
   lm: {
     invocation_reason: LmInvocationReason;
     verdict: number | null;
-    summary: string | null;
+    diff_summary: string | null;
     confidence: number | null;
   } | null;
-  is_equivalent: number | null;
-  is_allowed: boolean;
+  /** Acceptance state relative to the persisted acceptance, if any. */
+  acceptance_status: AcceptanceStatus;
   status: 'pending' | 'cached';
 }
 
@@ -300,7 +365,7 @@ export interface EvaluationStatusDto {
   session_id: string;
   status: 'pending' | 'running' | 'complete' | 'error';
   capture_run_id: string | null;
-  comparison_run_ids: string[];
+  comparison_run_id: string | null;
   cache_hits: EvaluationCacheHits;
   config: unknown;
   enabled_pair_count: number;
@@ -317,12 +382,15 @@ export interface EvaluationStatusDto {
  */
 export interface ResolvedEvaluationConfig {
   viewports: ViewportDef[];
-  equivalence_levels: EquivalenceLevelId[];
+  /** Session-wide target level. Single value, not a list. */
+  target_level: EquivalenceLevelId;
+  /** Whether the LM second pass runs on comparisons that miss the target. */
+  invoke_lm: boolean;
+  region_match_config: RegionMatchConfig;
   capture_options: CaptureRunOptions;
   url_pair_ids: string[] | null;
   filter_query: FilterQuery;
-  allow_list: AllowListEntry[];
-  lm_prompt_ids: Partial<Record<'semantic_mode' | 'ambiguous_pixel_result', string>>;
+  lm_prompt_ids: Partial<Record<'target_level_failure' | 'ambiguous_pixel_result', string>>;
   lm_model_id: string;
 }
 

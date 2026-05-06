@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path';
 import request from 'supertest';
 import { openDatabase } from '../src/db/client.js';
 import type { Db } from '../src/db/client.js';
-import { runMigrations } from '../src/db/migrations.js';
+import { applySchema } from '../src/db/schema.js';
 import { JobQueue } from '../src/services/queue.js';
 import { createArtifactStore } from '../src/services/artifact-store.js';
 import type { CaptureWorker } from '../src/services/capture.js';
@@ -108,7 +108,7 @@ interface Harness {
 async function makeHarness(): Promise<Harness> {
   const storeDir = await mkdtemp(join(tmpdir(), 'vc-inv-itest-'));
   const db = openDatabase({ path: ':memory:' });
-  runMigrations(db);
+  applySchema(db);
   const queue = new JobQueue(db);
   const artifactStore = createArtifactStore(storeDir);
   const captureWorker = stubCaptureWorker();
@@ -154,7 +154,7 @@ async function uploadAndCapture(h: Harness): Promise<{ sessionId: string; pairs:
   // Populate the cache with one round of captures.
   h.evaluator.start(sessionId, {
     viewports: [desktop],
-    equivalence_levels: ['tolerant'],
+    target_level: 'tolerant',
   });
   for (let i = 0; i < 8; i += 1) {
     await h.evaluator.drainAll();
@@ -281,7 +281,7 @@ describe('POST /api/sessions/:id/invalidate-captures', () => {
     // Re-evaluate → captures only the B side.
     h.evaluator.start(sessionId, {
       viewports: [desktop],
-      equivalence_levels: ['tolerant'],
+      target_level: 'tolerant',
     });
     for (let i = 0; i < 8; i += 1) {
       await h.evaluator.drainAll();

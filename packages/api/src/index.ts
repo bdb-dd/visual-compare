@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { createApp } from './app.js';
 import { openDatabase } from './db/client.js';
-import { runMigrations } from './db/migrations.js';
+import { applySchema } from './db/schema.js';
 import { recoverInterruptedRuns } from './db/recovery.js';
 import { runCacheBackfill } from './services/cache-backfill.js';
 import {
@@ -26,7 +26,7 @@ const IMAGES_DIR = process.env.IMAGES_DIR ?? resolve(REPO_ROOT, 'data', 'images'
 mkdirSync(IMAGES_DIR, { recursive: true });
 
 const db = openDatabase({ path: DB_PATH });
-runMigrations(db);
+applySchema(db);
 
 const recovery = recoverInterruptedRuns(db);
 if (recovery.jobs + recovery.captures + recovery.comparisons > 0) {

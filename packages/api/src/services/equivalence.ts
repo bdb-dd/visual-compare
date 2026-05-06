@@ -1,14 +1,13 @@
 import { getEquivalenceLevel } from '../constants/equivalence.js';
-import type { EquivalenceLevelId } from '../types.js';
+import type { EquivalenceLevelId, LmInvocationReason } from '../types.js';
 
 /**
- * True when this level *might* trigger an LM Studio call: either the LM is
- * always invoked (semantic) or the level has a non-zero ambiguity band where
- * a tiebreaker could fire.
+ * True when this level has a non-zero ambiguity band where a pixel-result
+ * could fall in and trigger an LM tiebreaker.
  */
 export function levelMayInvokeLm(id: EquivalenceLevelId): boolean {
   const def = getEquivalenceLevel(id);
-  return def.semantic || def.ambiguity_band_percentage > 0;
+  return def.ambiguity_band_percentage > 0;
 }
 
 export interface EquivalenceDecisionInput {
@@ -24,29 +23,23 @@ export interface EquivalenceDecision {
   decidedByPixels: boolean;
   /** True if the result fell inside the configured ambiguity band. */
   inAmbiguityBand: boolean;
-  /** Reason for invoking LM, if any. */
-  lmInvocationReason: 'semantic_mode' | 'ambiguous_pixel_result' | null;
+  /** Reason for invoking LM, if any. Phase 2 also returns 'target_level_failure' here. */
+  lmInvocationReason: LmInvocationReason | null;
 }
 
 /**
- * Decide equivalence for a non-LM pipeline run.
+ * Decide equivalence for a single level using only pixel metrics.
  *
  * - `pixel-perfect`: any non-zero pixel change is non-equivalent.
  * - `strict`/`tolerant`/`loose`: equivalent when pct <= threshold and (when configured)
  *   SSIM >= min_ssim. Pct inside the ambiguity band returns null (LM tiebreaker).
- * - `semantic`: always returns null with reason `semantic_mode`.
+ *
+ * TODO(phase-2): replace with `computeMatchedAtLevel` that walks all levels
+ * strictest -> loosest in one call, returning the first match. This function
+ * is retained as a helper used by that walk.
  */
 export function decideEquivalence(input: EquivalenceDecisionInput): EquivalenceDecision {
   const def = getEquivalenceLevel(input.level);
-
-  if (def.semantic) {
-    return {
-      imDeterminedEquivalent: null,
-      decidedByPixels: false,
-      inAmbiguityBand: false,
-      lmInvocationReason: 'semantic_mode',
-    };
-  }
 
   const { changedPixelPercentage: pct, ssim } = input;
   const threshold = def.max_changed_pixel_percentage;

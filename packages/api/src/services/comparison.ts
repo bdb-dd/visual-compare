@@ -29,13 +29,15 @@ import type {
 import { PIPELINE_VERSION } from '../constants/pipeline.js';
 
 export const comparisonRunOptionsSchema = z.object({
-  equivalenceLevel: z.enum([
+  /** Session-wide target level. Single value; the pipeline records `matched_at_level` per comparison. */
+  targetLevel: z.enum([
     'pixel-perfect',
     'strict',
     'tolerant',
     'loose',
-    'semantic',
   ]),
+  /** When true, run the LM second-pass for comparisons that miss the target. */
+  invokeLm: z.boolean().optional(),
   urlPairIds: z.array(z.string()).optional(),
   viewports: z.array(z.string()).optional(),
 });
@@ -199,22 +201,21 @@ export function startComparisonRunForPairs(
   const tx = db.transaction(() => {
     db.prepare(
       `INSERT INTO comparison_runs
-         (id, session_id, capture_run_id, job_id, equivalence_level, options_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (id, session_id, capture_run_id, job_id, options_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(
       comparisonRunId,
       sessionId,
       captureRunId,
       jobId,
-      options.equivalenceLevel,
       JSON.stringify(options),
       now,
     );
     const insertComparison = db.prepare(
       `INSERT INTO comparisons
          (id, comparison_run_id, url_pair_id, capture_a_id, capture_b_id,
-          viewport_name, equivalence_level, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+          viewport_name, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
     );
     for (const p of pairs) {
       insertComparison.run(
@@ -224,7 +225,6 @@ export function startComparisonRunForPairs(
         p.capture_a_id,
         p.capture_b_id,
         p.viewport_name,
-        options.equivalenceLevel,
         now,
       );
     }
@@ -248,7 +248,7 @@ export function startComparisonRunForPairs(
     // single, consistent prompt (and hence a stable cache key).
     const prompts = resolveSessionPrompts(db, sessionId);
     for (const c of comparisons) {
-      await runOneComparison(deps, imagick, c, options.equivalenceLevel, circuit, prompts);
+      await runOneComparison(deps, imagick, c, options.targetLevel, circuit, prompts);
       ctx.incrementProgress();
     }
   });
@@ -271,7 +271,7 @@ type SessionPromptMap = Partial<Record<LmPromptInvocationReason, { id: string; t
 
 function resolveSessionPrompts(db: Db, sessionId: string): SessionPromptMap {
   const out: SessionPromptMap = {};
-  for (const reason of ['semantic_mode', 'ambiguous_pixel_result'] as const) {
+  for (const reason of ['target_level_failure', 'ambiguous_pixel_result'] as const) {
     const row = getSessionPrompt(db, sessionId, reason);
     if (row) out[reason] = { id: row.prompt_id, text: row.prompt_text };
   }
@@ -335,9 +335,12 @@ async function runOneComparison(
       ssim,
     });
 
-    // LM Studio invocation: required for `semantic` (always) and for ambiguity
-    // band tiebreaks. Outside those cases the LM is skipped entirely.
+    // LM Studio invocation: triggered when the pixel result lands in the
+    // ambiguity band. Phase 2 will also invoke LM for `target_level_failure`
+    // as a second pass on misses.
     let lmOutcome: AnalyzeOutcome | null = null;
+    // Phase 2 will also assign `target_level_failure` here when the comparison
+    // misses the target and the user opted in to LM second-pass.
     let lmInvocationReason: LmInvocationReason | null = decision.lmInvocationReason;
     if (lmInvocationReason !== null) {
       if (!deps.lm) {
@@ -356,7 +359,7 @@ async function runOneComparison(
       // there's no row (e.g. `manual_retry`, which the seed doesn't cover),
       // fall through and let the LM client use its env-derived default.
       const sessionPrompt =
-        lmInvocationReason === 'semantic_mode' || lmInvocationReason === 'ambiguous_pixel_result'
+        lmInvocationReason === 'target_level_failure' || lmInvocationReason === 'ambiguous_pixel_result'
           ? prompts[lmInvocationReason]
           : undefined;
       lmOutcome = await deps.lm.analyze({
@@ -395,6 +398,14 @@ async function runOneComparison(
       );
     }
 
+    // TODO(phase-2): replace this with `computeMatchedAtLevel` that walks all
+    // levels strictest -> loosest. For phase 1 we only know whether the
+    // comparison passes at the target level; record `target` if so, else
+    // `none`. `matched_decided_by` reflects whether LM was the deciding voice.
+    const matchedAtLevel: 'pixel-perfect' | 'strict' | 'tolerant' | 'loose' | 'none' =
+      finalEquivalent ? level : 'none';
+    const matchedDecidedBy: 'pixel' | 'lm' = lmEquivalent !== null ? 'lm' : 'pixel';
+
     const completedAt = new Date().toISOString();
     db.transaction(() => {
       db.prepare(
@@ -407,14 +418,15 @@ async function runOneComparison(
            im_diff_sha256 = ?,
            im_diff_byte_size = ?,
            im_determined_equivalent = ?,
+           matched_at_level = ?,
+           matched_decided_by = ?,
            lm_invocation_reason = ?,
            lm_model = ?,
            lm_prompt_version = ?,
-           lm_summary = ?,
+           lm_diff_summary = ?,
            lm_confidence = ?,
            lm_response_json = ?,
            lm_determined_equivalent = ?,
-           is_equivalent = ?,
            duration_ms = ?,
            completed_at = ?
          WHERE id = ?`,
@@ -428,6 +440,8 @@ async function runOneComparison(
         decision.imDeterminedEquivalent === null
           ? null
           : decision.imDeterminedEquivalent ? 1 : 0,
+        matchedAtLevel,
+        matchedDecidedBy,
         lmInvocationReason,
         lmOutcome && !isAnalyzeError(lmOutcome) ? lmOutcome.model : null,
         lmOutcome && !isAnalyzeError(lmOutcome) ? lmOutcome.promptVersion : null,
@@ -435,7 +449,6 @@ async function runOneComparison(
         lmOutcome && !isAnalyzeError(lmOutcome) ? lmOutcome.parsed.confidence : null,
         lmOutcome && !isAnalyzeError(lmOutcome) ? lmOutcome.rawText : null,
         lmEquivalent === null ? null : lmEquivalent ? 1 : 0,
-        finalEquivalent ? 1 : 0,
         Date.now() - startedAt,
         completedAt,
         comparison.id,

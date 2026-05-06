@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import request from 'supertest';
 import { openDatabase } from '../src/db/client.js';
 import type { Db } from '../src/db/client.js';
-import { runMigrations } from '../src/db/migrations.js';
+import { applySchema } from '../src/db/schema.js';
 import { JobQueue } from '../src/services/queue.js';
 import { createArtifactStore } from '../src/services/artifact-store.js';
 import { createApp } from '../src/app.js';
@@ -40,7 +40,7 @@ interface Harness {
 async function makeHarness(): Promise<Harness> {
   const storeDir = await mkdtemp(join(tmpdir(), 'vc-pairs-itest-'));
   const db = openDatabase({ path: ':memory:' });
-  runMigrations(db);
+  applySchema(db);
   const queue = new JobQueue(db);
   const artifactStore = createArtifactStore(storeDir);
   const app = createApp({

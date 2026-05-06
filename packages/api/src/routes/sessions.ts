@@ -258,7 +258,7 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
     res.json({ prompts: listSessionPrompts(db, id) });
   });
 
-  const promptReasonSchema = z.enum(['semantic_mode', 'ambiguous_pixel_result']);
+  const promptReasonSchema = z.enum(['target_level_failure', 'ambiguous_pixel_result']);
   const promptBodySchema = z
     .object({ prompt_text: z.string().min(1) })
     .strict();

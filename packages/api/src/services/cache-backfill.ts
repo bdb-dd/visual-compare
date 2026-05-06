@@ -114,7 +114,7 @@ export function runCacheBackfill(db: Db): BackfillResult {
         lm_invocation_reason: string | null;
         lm_model: string | null;
         lm_prompt_version: string | null;
-        lm_summary: string | null;
+        lm_diff_summary: string | null;
         lm_confidence: number | null;
         lm_determined_equivalent: number | null;
         completed_at: string | null;
@@ -125,7 +125,7 @@ export function runCacheBackfill(db: Db): BackfillResult {
               changed_pixel_percentage, ssim, bounding_box_area_percentage,
               connected_component_count, im_diff_sha256,
               lm_invocation_reason, lm_model, lm_prompt_version,
-              lm_summary, lm_confidence, lm_determined_equivalent,
+              lm_diff_summary, lm_confidence, lm_determined_equivalent,
               completed_at, created_at
          FROM comparisons
         WHERE status = 'complete'`,
@@ -170,7 +170,7 @@ export function runCacheBackfill(db: Db): BackfillResult {
         cmp.lm_invocation_reason,
         PIPELINE_VERSION,
         cmp.lm_determined_equivalent,
-        cmp.lm_summary,
+        cmp.lm_diff_summary,
         cmp.lm_confidence,
         cmp.id,
         ts,

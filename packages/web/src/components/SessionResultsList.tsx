@@ -11,22 +11,22 @@ interface Props {
   onFilterChange: (next: ResultsFilter) => void;
 }
 
-type Verdict = 'failed' | 'passed' | 'allowed' | 'pending' | 'error';
+type Verdict = 'failed' | 'passed' | 'accepted' | 'pending' | 'error';
 
 function captureErrored(r: SessionResultRow): boolean {
   return r.capture_a_status.status === 'error' || r.capture_b_status.status === 'error';
 }
 
 function verdictOf(r: SessionResultRow): Verdict {
-  if (r.is_allowed && r.is_equivalent === 0) return 'allowed';
-  if (r.status === 'pending' || r.is_equivalent === null) {
+  if (r.acceptance_status === 'accepted') return 'accepted';
+  if (r.status === 'pending' || r.matched_at_level === null) {
     return captureErrored(r) ? 'error' : 'pending';
   }
-  return r.is_equivalent === 1 ? 'passed' : 'failed';
+  return r.matched_at_level !== 'none' ? 'passed' : 'failed';
 }
 
 function rowKey(r: SessionResultRow): string {
-  return `${r.url_pair_id}::${r.viewport_name}::${r.level}`;
+  return `${r.url_pair_id}::${r.viewport_name}`;
 }
 
 function thumbUrl(sha: string | null | undefined): string | null {
@@ -42,17 +42,17 @@ function fmtPct(v: number | null | undefined): string {
 function verdictGlyph(v: Verdict): string {
   if (v === 'failed') return '✗';
   if (v === 'passed') return '✓';
-  if (v === 'allowed') return '~';
+  if (v === 'accepted') return '~';
   if (v === 'error') return '!';
   return '…';
 }
 
 function verdictRank(r: SessionResultRow): number {
   const v = verdictOf(r);
-  if (v === 'error') return 0; // float capture-blocked rows to the top with failures
+  if (v === 'error') return 0;
   if (v === 'failed') return 1;
   if (v === 'pending') return 2;
-  if (v === 'allowed') return 3;
+  if (v === 'accepted') return 3;
   return 4;
 }
 
@@ -60,7 +60,7 @@ function sortAndFilter(rows: SessionResultRow[], filter: ResultsFilter): Session
   const filtered = rows.filter((r) => {
     const v = verdictOf(r);
     if (filter === 'all') return true;
-    if (filter === 'failed') return v === 'failed' || v === 'allowed' || v === 'error';
+    if (filter === 'failed') return v === 'failed' || v === 'accepted' || v === 'error';
     if (filter === 'passed') return v === 'passed';
     return v === 'pending';
   });
@@ -217,7 +217,7 @@ export function SessionResultsList({
                   </div>
                   <div className="row-line muted">
                     <span className="viewport-badge">{r.viewport_name}</span>
-                    <span className="viewport-badge">{r.level}</span>
+                    <span className="viewport-badge">{r.matched_at_level ?? '—'}</span>
                     <span className="changed-pct">{fmtPct(r.pixel?.changed_pct)}</span>
                   </div>
                 </div>

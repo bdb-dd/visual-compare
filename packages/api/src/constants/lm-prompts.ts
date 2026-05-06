@@ -35,22 +35,22 @@ Worked example of one valid difference entry:
 
 confidence is your overall confidence in the equivalent verdict, in 0..1.`;
 
-export const SEMANTIC_MODE_PROMPT = `${SHARED_BODY}
+export const TARGET_LEVEL_FAILURE_PROMPT = `${SHARED_BODY}
 
-Mode: semantic. You are the final authority on equivalence; pixel metrics are informational only. Decide based on user-visible meaning.`;
+Mode: second-pass review. The pixel-level comparison did not pass at the session's target equivalence level, so you are the deciding voice on whether the pages are nevertheless effectively equivalent in content and purpose. Decide based on user-visible meaning. Lean toward equivalent=true when the differences are cosmetic; lean toward equivalent=false when meaning, navigation, or primary content has changed.`;
 
 export const AMBIGUOUS_PIXEL_RESULT_PROMPT = `${SHARED_BODY}
 
 Mode: tiebreaker. The pixel-level comparison landed inside the configured ambiguity band, so you are the deciding voice. Lean toward equivalent=true unless you can name a meaningful, user-visible difference.`;
 
-export type SeedableInvocationReason = 'semantic_mode' | 'ambiguous_pixel_result';
+export type SeedableInvocationReason = 'target_level_failure' | 'ambiguous_pixel_result';
 
 export const LM_PROMPT_DEFAULTS: Record<SeedableInvocationReason, string> = {
-  semantic_mode: SEMANTIC_MODE_PROMPT,
+  target_level_failure: TARGET_LEVEL_FAILURE_PROMPT,
   ambiguous_pixel_result: AMBIGUOUS_PIXEL_RESULT_PROMPT,
 };
 
 export const SEEDABLE_INVOCATION_REASONS: SeedableInvocationReason[] = [
-  'semantic_mode',
+  'target_level_failure',
   'ambiguous_pixel_result',
 ];
