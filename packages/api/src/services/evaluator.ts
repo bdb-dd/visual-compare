@@ -35,6 +35,7 @@ import type {
   FilterQuery,
   LmInvocationReason,
   SessionConfig,
+  SessionResultRow,
   UrlPairRow,
   ViewportDef,
 } from '../types.js';
@@ -687,33 +688,9 @@ export function listEvaluations(db: Db, sessionId: string): EvaluationRow[] {
     .all(sessionId);
 }
 
-export interface SessionResultRow {
-  url_pair_id: string;
-  url_a: string;
-  url_b: string;
-  label: string | null;
-  viewport_name: string;
-  level: EquivalenceLevelId;
-  capture_a_sha: string | null;
-  capture_b_sha: string | null;
-  pixel: {
-    changed_pct: number | null;
-    ssim: number | null;
-    bbox_area_pct: number | null;
-    component_count: number | null;
-    im_diff_sha256: string | null;
-  } | null;
-  lm: {
-    invocation_reason: LmInvocationReason;
-    verdict: number | null;
-    summary: string | null;
-    confidence: number | null;
-  } | null;
-  is_equivalent: number | null;
-  /** True when an allow-list entry matches this (pair, level, viewport). */
-  is_allowed: boolean;
-  status: 'pending' | 'cached';
-}
+// SessionResultRow has moved to ../types.ts (cross-package). Re-export so
+// existing imports keep working without churn.
+export type { SessionResultRow } from '../types.js';
 
 /**
  * Compute the live results view for a session by joining `url_pairs` with
@@ -745,18 +722,24 @@ export function readSessionResults(
       bbox_area_pct: number | null;
       component_count: number | null;
       im_diff_sha256: string | null;
+      comparison_id: string;
     }
   >(
-    `SELECT changed_pct, ssim, bbox_area_pct, component_count, im_diff_sha256
+    `SELECT changed_pct, ssim, bbox_area_pct, component_count, im_diff_sha256, comparison_id
        FROM pixel_compare_cache
       WHERE capture_a_sha = ? AND capture_b_sha = ? AND pipeline_version = ?`,
   );
 
   const lmCacheLookup = db.prepare<
     [string, string, string, string, string, string],
-    { verdict: number | null; summary: string | null; confidence: number | null }
+    {
+      verdict: number | null;
+      summary: string | null;
+      confidence: number | null;
+      comparison_id: string;
+    }
   >(
-    `SELECT verdict, summary, confidence
+    `SELECT verdict, summary, confidence, comparison_id
        FROM lm_verdict_cache
       WHERE capture_a_sha = ? AND capture_b_sha = ? AND prompt_id = ?
         AND model_id = ? AND invocation_reason = ? AND pipeline_version = ?`,
@@ -782,6 +765,7 @@ export function readSessionResults(
           level,
           capture_a_sha: aSha,
           capture_b_sha: bSha,
+          comparison_id: null,
           pixel: null,
           lm: null,
           is_equivalent: null,
@@ -792,7 +776,16 @@ export function readSessionResults(
         if (aSha && bSha) {
           const pixel = pixelCacheLookup.get(aSha, bSha, PIPELINE_VERSION);
           if (pixel) {
-            row.pixel = pixel;
+            row.pixel = {
+              changed_pct: pixel.changed_pct,
+              ssim: pixel.ssim,
+              bbox_area_pct: pixel.bbox_area_pct,
+              component_count: pixel.component_count,
+              im_diff_sha256: pixel.im_diff_sha256,
+            };
+            // Default to the pixel-cache comparison_id; the LM branch below
+            // overrides it when an LM verdict is the source of truth.
+            row.comparison_id = pixel.comparison_id;
             const decision = decideEquivalence({
               level,
               changedPixelPercentage: pixel.changed_pct ?? 0,
@@ -818,6 +811,9 @@ export function readSessionResults(
                   confidence: lm.confidence,
                 };
                 row.is_equivalent = lm.verdict;
+                // The LM verdict is the authoritative source for this row,
+                // so its comparison_id is what the UI should deep-link to.
+                row.comparison_id = lm.comparison_id;
                 row.status = 'cached';
               }
             } else if (decision.imDeterminedEquivalent !== null) {

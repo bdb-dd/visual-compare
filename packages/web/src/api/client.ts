@@ -5,9 +5,12 @@ import type {
   ComparisonDto,
   ComparisonRunRow,
   EquivalenceLevelId,
+  EvaluationStatusDto,
   JobAcceptedResponse,
   JobRow,
+  SessionConfig,
   SessionDto,
+  SessionResultsDto,
   SessionRow,
   UrlPairRow,
   ViewportDef,
@@ -32,15 +35,69 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  listSessions: () => request<{ sessions: SessionDto[] }>('/api/sessions'),
+  listSessions: (includeArchived = false) =>
+    request<{ sessions: SessionDto[] }>(
+      `/api/sessions${includeArchived ? '?include_archived=true' : ''}`,
+    ),
   getSession: (id: string) =>
-    request<{ session: SessionRow; url_pairs: UrlPairRow[] }>(`/api/sessions/${id}`),
+    request<{ session: SessionRow; config: SessionConfig; url_pairs: UrlPairRow[] }>(
+      `/api/sessions/${id}`,
+    ),
   uploadCsv: async (csvFile: File, name?: string): Promise<{ session: SessionRow; url_pairs: UrlPairRow[] }> => {
     const fd = new FormData();
     fd.append('csv', csvFile);
     if (name) fd.append('name', name);
     return request('/api/sessions', { method: 'POST', body: fd });
   },
+
+  patchSession: (id: string, patch: { name?: string; archived?: boolean }) =>
+    request<{ session: SessionRow; config: SessionConfig }>(`/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+
+  getSessionConfig: (id: string) =>
+    request<{ config: SessionConfig }>(`/api/sessions/${id}/config`),
+  putSessionConfig: (id: string, config: Partial<SessionConfig>) =>
+    request<{ config: SessionConfig }>(`/api/sessions/${id}/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    }),
+
+  getResults: (id: string, configOverride?: Partial<SessionConfig>) => {
+    const qs =
+      configOverride && Object.keys(configOverride).length > 0
+        ? `?config=${encodeURIComponent(JSON.stringify(configOverride))}`
+        : '';
+    return request<SessionResultsDto>(`/api/sessions/${id}/results${qs}`);
+  },
+
+  evaluate: (id: string, configInput?: Partial<SessionConfig>) =>
+    request<{ evaluation_id: string; coalesced: boolean }>(
+      `/api/sessions/${id}/evaluate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: configInput ?? {} }),
+      },
+    ),
+
+  listEvaluations: (id: string) =>
+    request<{ evaluations: EvaluationStatusDto[] }>(`/api/sessions/${id}/evaluations`),
+  getEvaluation: (id: string) =>
+    request<{ evaluation: EvaluationStatusDto }>(`/api/evaluations/${id}`),
+
+  invalidateCaptures: (id: string, body: { pair_ids?: string[]; side?: 'a' | 'b' }) =>
+    request<{ deleted_count: number; invalidated_urls: string[]; unknown_pair_ids: string[] }>(
+      `/api/sessions/${id}/invalidate-captures`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    ),
 
   startCaptureRun: (sessionId: string, options?: { viewports?: ViewportDef[]; concurrency?: number }) =>
     request<JobAcceptedResponse>('/api/capture-runs', {

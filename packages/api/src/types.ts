@@ -243,6 +243,84 @@ export interface JobAcceptedResponse {
   comparison_run_id?: string;
 }
 
+export interface SessionResultRow {
+  url_pair_id: string;
+  url_a: string;
+  url_b: string;
+  label: string | null;
+  viewport_name: string;
+  level: EquivalenceLevelId;
+  capture_a_sha: string | null;
+  capture_b_sha: string | null;
+  /** Most recent comparison row this verdict came from. Lets the UI deep-link. */
+  comparison_id: string | null;
+  pixel: {
+    changed_pct: number | null;
+    ssim: number | null;
+    bbox_area_pct: number | null;
+    component_count: number | null;
+    im_diff_sha256: string | null;
+  } | null;
+  lm: {
+    invocation_reason: LmInvocationReason;
+    verdict: number | null;
+    summary: string | null;
+    confidence: number | null;
+  } | null;
+  is_equivalent: number | null;
+  is_allowed: boolean;
+  status: 'pending' | 'cached';
+}
+
+export interface EvaluationCacheHits {
+  captures: number;
+  pixel: number;
+  lm: number;
+}
+
+export interface EvaluationStatusDto {
+  id: string;
+  session_id: string;
+  status: 'pending' | 'running' | 'complete' | 'error';
+  capture_run_id: string | null;
+  comparison_run_ids: string[];
+  cache_hits: EvaluationCacheHits;
+  config: unknown;
+  enabled_pair_count: number;
+  error_message: string | null;
+  started_at: string;
+  completed_at: string | null;
+}
+
+/**
+ * Resolved config the evaluator/results endpoints echo back. It's the
+ * fully-defaulted version of `SessionConfig`'s editable fields plus the
+ * scalar planning inputs (`url_pair_ids`, `lm_*`) — everything the
+ * planner needs to make a deterministic plan.
+ */
+export interface ResolvedEvaluationConfig {
+  viewports: ViewportDef[];
+  equivalence_levels: EquivalenceLevelId[];
+  capture_options: CaptureRunOptions;
+  url_pair_ids: string[] | null;
+  filter_query: FilterQuery;
+  allow_list: AllowListEntry[];
+  lm_prompt_ids: Partial<Record<'semantic_mode' | 'ambiguous_pixel_result', string>>;
+  lm_model_id: string;
+}
+
+export interface SessionResultsDto {
+  session_id: string;
+  config: ResolvedEvaluationConfig;
+  plan: {
+    enabled_pair_count: number;
+    capture_misses: number;
+    comparison_misses: number;
+    cache_hits: EvaluationCacheHits;
+  };
+  results: SessionResultRow[];
+}
+
 export interface CsvRowError {
   row_index: number;
   errors: string[];
