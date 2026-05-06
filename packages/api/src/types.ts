@@ -74,6 +74,33 @@ export interface SessionRow {
   name: string;
   csv_filename: string;
   created_at: string;
+  default_viewports: string;             // JSON: ViewportDef[]
+  default_capture_options: string;       // JSON: Partial<CaptureRunOptions>
+  default_equivalence_levels: string;    // JSON: EquivalenceLevelId[]
+  filter_query: string;                  // JSON: FilterQuery
+  allow_list: string;                    // JSON: AllowListEntry[]
+  archived_at: string | null;
+}
+
+export interface FilterQuery {
+  language?: string[];
+  category?: string[];
+  subcategory?: string[];
+  path_prefix?: string;
+}
+
+export interface AllowListEntry {
+  url_pair_id: string;
+  level: EquivalenceLevelId;
+  viewport_name: string;
+}
+
+export interface SessionConfig {
+  default_viewports: ViewportDef[];
+  default_capture_options: Partial<CaptureRunOptions>;
+  default_equivalence_levels: EquivalenceLevelId[];
+  filter_query: FilterQuery;
+  allow_list: AllowListEntry[];
 }
 
 export interface UrlPairRow {
@@ -84,6 +111,12 @@ export interface UrlPairRow {
   label: string | null;
   row_index: number;
   raw_row_json: string | null;
+  language: string | null;
+  category: string | null;
+  subcategory: string | null;
+  path: string | null;
+  /** SQLite stores the boolean as 0/1. */
+  disabled: number;
   created_at: string;
 }
 

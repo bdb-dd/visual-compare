@@ -17,6 +17,7 @@ import type {
   ViewportDef,
 } from '../types.js';
 import { DEFAULT_VIEWPORTS } from '../constants/viewports.js';
+import { captureOptsHashFor } from './capture-opts-hash.js';
 
 const viewportSchema = z.object({
   name: z.string().min(1),
@@ -289,23 +290,35 @@ async function runOneCapture(
     const { sha256, byteSize } = await artifactStore.writeImage(tempPath);
     tempPath = null; // ownership handed to artifact store
     const capturedAt = new Date().toISOString();
-    db.prepare(
-      `UPDATE captures
-         SET status = 'complete',
-             screenshot_sha256 = ?,
-             screenshot_byte_size = ?,
-             metadata_json = ?,
-             duration_ms = ?,
-             captured_at = ?
-       WHERE id = ?`,
-    ).run(
-      sha256,
-      byteSize,
-      result.metadata ? JSON.stringify(result.metadata) : null,
-      result.durationMs,
-      capturedAt,
-      capture.id,
-    );
+    const optsHash = captureOptsHashFor(viewport, options);
+    db.transaction(() => {
+      db.prepare(
+        `UPDATE captures
+           SET status = 'complete',
+               screenshot_sha256 = ?,
+               screenshot_byte_size = ?,
+               metadata_json = ?,
+               duration_ms = ?,
+               captured_at = ?
+         WHERE id = ?`,
+      ).run(
+        sha256,
+        byteSize,
+        result.metadata ? JSON.stringify(result.metadata) : null,
+        result.durationMs,
+        capturedAt,
+        capture.id,
+      );
+      db.prepare(
+        `INSERT INTO capture_cache
+           (url, viewport_name, capture_opts_hash, screenshot_sha256, capture_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (url, viewport_name, capture_opts_hash) DO UPDATE SET
+           screenshot_sha256 = excluded.screenshot_sha256,
+           capture_id        = excluded.capture_id,
+           created_at        = excluded.created_at`,
+      ).run(capture.url, capture.viewport_name, optsHash, sha256, capture.id, capturedAt);
+    })();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     db.prepare(

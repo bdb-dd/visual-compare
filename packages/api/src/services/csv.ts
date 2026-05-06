@@ -2,7 +2,19 @@ import { parse } from 'csv-parse/sync';
 import { z } from 'zod';
 import type { CsvRowError } from '../types.js';
 
-const RESERVED_COLUMNS = new Set(['url_a', 'url_b', 'label']);
+const RESERVED_COLUMNS = new Set([
+  'url_a',
+  'url_b',
+  'label',
+  'language',
+  'category',
+  'subcategory',
+  'path',
+]);
+
+/** Columns whose values are promoted into url_pairs for filter-DSL use. */
+export const METADATA_COLUMNS = ['language', 'category', 'subcategory', 'path'] as const;
+export type MetadataColumn = (typeof METADATA_COLUMNS)[number];
 
 // URL parsing is lenient: we just need a syntactically valid absolute URL.
 // `http(s)://` is required so a typo like `wwww.example.com` doesn't slip
@@ -39,6 +51,8 @@ export interface ParsedCsvRow {
   url_a: string;
   url_b: string;
   label: string | undefined;
+  /** Filter-DSL facets, when present in the CSV. Empty strings normalise to null. */
+  metadata: Record<MetadataColumn, string | null>;
   raw_row: Record<string, string>;
 }
 
@@ -103,10 +117,20 @@ export function parseSessionCsv(text: string): ParseCsvResult {
       return;
     }
 
+    const metadata = METADATA_COLUMNS.reduce(
+      (acc, col) => {
+        const v = rawRow[col];
+        acc[col] = v && v.trim().length > 0 ? v.trim() : null;
+        return acc;
+      },
+      {} as Record<MetadataColumn, string | null>,
+    );
+
     rows.push({
       url_a: result.data.url_a,
       url_b: result.data.url_b,
       label: result.data.label,
+      metadata,
       raw_row: rawRow,
     });
   });

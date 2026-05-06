@@ -6,20 +6,35 @@ import {
   createSession,
   deleteSession,
   getSession,
+  getSessionConfig,
   listSessions,
   listUrlPairs,
+  rowToSessionConfig,
+  sessionConfigSchema,
+  updateSession,
+  updateSessionConfig,
 } from '../services/sessions.js';
+import {
+  evaluationConfigInputSchema,
+  listEvaluations,
+  planEvaluation,
+  readSessionResults,
+  resolveEvaluationConfig,
+  type Evaluator,
+} from '../services/evaluator.js';
+import { parseEvaluationRow } from './evaluations.js';
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MiB
 });
 
-export function sessionsRouter(db: Db): Router {
+export function sessionsRouter(db: Db, evaluator: Evaluator): Router {
   const router = Router();
 
-  router.get('/', (_req, res) => {
-    res.json({ sessions: listSessions(db) });
+  router.get('/', (req, res) => {
+    const include_archived = req.query.include_archived === 'true';
+    res.json({ sessions: listSessions(db, { include_archived }) });
   });
 
   router.post('/', upload.single('csv'), (req, res) => {
@@ -67,8 +82,67 @@ export function sessionsRouter(db: Db): Router {
     }
     res.json({
       session,
+      config: rowToSessionConfig(session),
       url_pairs: listUrlPairs(db, id),
     });
+  });
+
+  router.patch('/:id', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    try {
+      const updated = updateSession(db, id, req.body ?? {});
+      if (!updated) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      res.json({ session: updated, config: rowToSessionConfig(updated) });
+    } catch (err) {
+      res.status(400).json({
+        error: 'invalid_patch',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  router.get('/:id/config', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    const config = getSessionConfig(db, id);
+    if (!config) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json({ config });
+  });
+
+  router.put('/:id/config', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    const parsed = sessionConfigSchema.partial().safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({
+        error: 'invalid_config',
+        message: parsed.error.message,
+        issues: parsed.error.issues,
+      });
+      return;
+    }
+    const updated = updateSessionConfig(db, id, parsed.data);
+    if (!updated) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json({ config: updated });
   });
 
   router.delete('/:id', (req, res) => {
@@ -83,6 +157,89 @@ export function sessionsRouter(db: Db): Router {
       return;
     }
     res.status(204).end();
+  });
+
+  router.post('/:id/evaluate', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    const session = getSession(db, id);
+    if (!session) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const parsed = evaluationConfigInputSchema.safeParse(req.body?.config ?? {});
+    if (!parsed.success) {
+      res.status(400).json({
+        error: 'invalid_config',
+        message: parsed.error.message,
+        issues: parsed.error.issues,
+      });
+      return;
+    }
+    const result = evaluator.start(id, parsed.data);
+    res.status(202).json(result);
+  });
+
+  router.get('/:id/results', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    const session = getSession(db, id);
+    if (!session) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    let configInput: unknown = {};
+    if (typeof req.query.config === 'string' && req.query.config.length > 0) {
+      try {
+        configInput = JSON.parse(req.query.config);
+      } catch {
+        res.status(400).json({
+          error: 'invalid_config',
+          message: 'config query param must be valid JSON',
+        });
+        return;
+      }
+    }
+    const parsed = evaluationConfigInputSchema.safeParse(configInput);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_config', message: parsed.error.message });
+      return;
+    }
+    const sessionConfig = getSessionConfig(db, id) ?? undefined;
+    const config = resolveEvaluationConfig(parsed.data, sessionConfig, undefined);
+    const plan = planEvaluation(db, id, config);
+    res.json({
+      session_id: id,
+      config,
+      plan: {
+        enabled_pair_count: plan.enabled_pair_count,
+        capture_misses: plan.capture_misses.length,
+        comparison_misses: plan.comparison_misses.length,
+        cache_hits: plan.cache_hits,
+      },
+      results: readSessionResults(db, id, config),
+    });
+  });
+
+  router.get('/:id/evaluations', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    const session = getSession(db, id);
+    if (!session) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const rows = listEvaluations(db, id);
+    res.json({ evaluations: rows.map(parseEvaluationRow) });
   });
 
   return router;

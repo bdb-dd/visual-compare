@@ -5,6 +5,7 @@ import { createApp } from './app.js';
 import { openDatabase } from './db/client.js';
 import { runMigrations } from './db/migrations.js';
 import { recoverInterruptedRuns } from './db/recovery.js';
+import { runCacheBackfill } from './services/cache-backfill.js';
 import { JobQueue } from './services/queue.js';
 import { createArtifactStore } from './services/artifact-store.js';
 import { createPlaywrightCaptureWorker } from './services/capture.js';
@@ -28,6 +29,19 @@ if (recovery.jobs + recovery.captures + recovery.comparisons > 0) {
   // eslint-disable-next-line no-console
   console.log(
     `[recovery] flipped to error: jobs=${recovery.jobs} captures=${recovery.captures} comparisons=${recovery.comparisons}`,
+  );
+}
+
+const backfill = runCacheBackfill(db);
+if (
+  backfill.capture_cache_inserted +
+    backfill.pixel_compare_cache_inserted +
+    backfill.lm_verdict_cache_inserted >
+  0
+) {
+  // eslint-disable-next-line no-console
+  console.log(
+    `[cache] backfilled: captures=${backfill.capture_cache_inserted} pixel=${backfill.pixel_compare_cache_inserted} lm=${backfill.lm_verdict_cache_inserted} skipped_runs=${backfill.capture_runs_skipped}`,
   );
 }
 

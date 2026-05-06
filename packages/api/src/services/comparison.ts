@@ -25,6 +25,7 @@ import type {
   EquivalenceLevelId,
   LmInvocationReason,
 } from '../types.js';
+import { PIPELINE_VERSION } from '../constants/pipeline.js';
 
 export const comparisonRunOptionsSchema = z.object({
   equivalenceLevel: z.enum([
@@ -122,13 +123,26 @@ function pickMatchingCaptures(db: Db, captureRunId: string, opts: ComparisonRunO
   return out;
 }
 
+export interface ExplicitComparisonPair {
+  url_pair_id: string;
+  viewport_name: string;
+  capture_a_id: string;
+  capture_b_id: string;
+}
+
+export interface StartComparisonRunForPairsInput {
+  sessionId: string;
+  captureRunId: string;
+  options: ComparisonRunOptionsParsed;
+  pairs: ExplicitComparisonPair[];
+}
+
 export function startComparisonRun(
   deps: ComparisonRunDeps,
   input: StartComparisonRunInput,
 ): StartComparisonRunResult {
-  const { db, queue } = deps;
+  const { db } = deps;
   const { sessionId, captureRunId, options } = input;
-  const imagick = deps.imagick ?? realImagick;
 
   // Confirm the capture run belongs to the session.
   const captureRun = db
@@ -145,6 +159,36 @@ export function startComparisonRun(
   const pairs = pickMatchingCaptures(db, captureRunId, options);
   if (pairs.length === 0) {
     throw new Error('No matching A/B captures with status=complete were found.');
+  }
+
+  return startComparisonRunForPairs(deps, {
+    sessionId,
+    captureRunId,
+    options,
+    pairs: pairs.map((p) => ({
+      url_pair_id: p.url_pair_id,
+      viewport_name: p.viewport_name,
+      capture_a_id: p.capture_a.id,
+      capture_b_id: p.capture_b.id,
+    })),
+  });
+}
+
+/**
+ * Lower-level entry point that takes an explicit list of capture pairs. The
+ * evaluator uses this to pull pairs from the cache substrate (potentially
+ * spanning multiple historical capture runs).
+ */
+export function startComparisonRunForPairs(
+  deps: ComparisonRunDeps,
+  input: StartComparisonRunForPairsInput,
+): StartComparisonRunResult {
+  const { db, queue } = deps;
+  const { sessionId, captureRunId, options, pairs } = input;
+  const imagick = deps.imagick ?? realImagick;
+
+  if (pairs.length === 0) {
+    throw new Error('startComparisonRunForPairs requires at least one pair');
   }
 
   const jobId = queue.createJob({ type: 'comparison', progress_total: pairs.length });
@@ -176,8 +220,8 @@ export function startComparisonRun(
         randomUUID(),
         comparisonRunId,
         p.url_pair_id,
-        p.capture_a.id,
-        p.capture_b.id,
+        p.capture_a_id,
+        p.capture_b_id,
         p.viewport_name,
         options.equivalenceLevel,
         now,
@@ -400,6 +444,65 @@ async function runOneComparison(
             completedAt,
           );
         }
+      }
+
+      // Cache upserts. Pixel cache is keyed on the ordered capture-sha pair +
+      // pipeline_version; LM cache adds prompt_id, model_id, and the
+      // invocation reason because the LM is prompted differently in
+      // semantic_mode vs ambiguity tiebreak.
+      db.prepare(
+        `INSERT INTO pixel_compare_cache
+           (capture_a_sha, capture_b_sha, pipeline_version,
+            changed_pct, ssim, bbox_area_pct, component_count,
+            im_diff_sha256, comparison_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (capture_a_sha, capture_b_sha, pipeline_version) DO UPDATE SET
+           changed_pct     = excluded.changed_pct,
+           ssim            = excluded.ssim,
+           bbox_area_pct   = excluded.bbox_area_pct,
+           component_count = excluded.component_count,
+           im_diff_sha256  = excluded.im_diff_sha256,
+           comparison_id   = excluded.comparison_id,
+           created_at      = excluded.created_at`,
+      ).run(
+        captureA.screenshot_sha256,
+        captureB.screenshot_sha256,
+        PIPELINE_VERSION,
+        ae.changedPixelPercentage,
+        ssim,
+        bboxAreaPct,
+        componentCount,
+        diffHash,
+        comparison.id,
+        completedAt,
+      );
+
+      if (lmInvocationReason && lmOutcome && !isAnalyzeError(lmOutcome)) {
+        db.prepare(
+          `INSERT INTO lm_verdict_cache
+             (capture_a_sha, capture_b_sha, prompt_id, model_id,
+              invocation_reason, pipeline_version,
+              verdict, summary, confidence, comparison_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (capture_a_sha, capture_b_sha, prompt_id, model_id, invocation_reason, pipeline_version) DO UPDATE SET
+             verdict       = excluded.verdict,
+             summary       = excluded.summary,
+             confidence    = excluded.confidence,
+             comparison_id = excluded.comparison_id,
+             created_at    = excluded.created_at`,
+        ).run(
+          captureA.screenshot_sha256,
+          captureB.screenshot_sha256,
+          lmOutcome.promptVersion,
+          lmOutcome.model,
+          lmInvocationReason,
+          PIPELINE_VERSION,
+          lmOutcome.parsed.equivalent ? 1 : 0,
+          lmOutcome.parsed.summary,
+          lmOutcome.parsed.confidence,
+          comparison.id,
+          completedAt,
+        );
       }
     })();
   } catch (err) {

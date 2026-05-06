@@ -29,6 +29,7 @@ export class JobQueue {
   #db: Db;
   #chain: Promise<void> = Promise.resolve();
   #stopped = false;
+  #waitForJob = new Map<string, Promise<void>>();
 
   constructor(db: Db) {
     this.#db = db;
@@ -56,7 +57,19 @@ export class JobQueue {
     if (this.#stopped) {
       throw new Error('Queue is stopped');
     }
-    this.#chain = this.#chain.then(() => this.#run(jobId, handler));
+    const next = this.#chain.then(() => this.#run(jobId, handler));
+    this.#chain = next;
+    // Track the chain segment that resolves once `jobId` finishes. The chain
+    // is sequential, so awaiting `next` is equivalent to "wait until that
+    // job's handler has finished its database writes." Used by the evaluator
+    // to coordinate capture → comparison sequencing without polling.
+    this.#waitForJob.set(jobId, next);
+    next.finally(() => this.#waitForJob.delete(jobId));
+  }
+
+  /** Returns a promise that resolves when the given job's handler finishes. */
+  waitForJob(jobId: string): Promise<void> | undefined {
+    return this.#waitForJob.get(jobId);
   }
 
   /** Wait for all enqueued work to drain. Used by tests. */
