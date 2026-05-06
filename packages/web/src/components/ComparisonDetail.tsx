@@ -52,49 +52,61 @@ export function ComparisonDetail({ id, onLoaded }: Props): JSX.Element {
     : [];
   const pairLabel = url_pair.label?.trim() || `Pair #${url_pair.row_index + 1}`;
 
+  const verdictKind = verdictOf(c.is_equivalent);
+  const lmGlyph =
+    c.lm_determined_equivalent === null ? '—' : c.lm_determined_equivalent ? '✓' : '✗';
+  const lmTitle = c.lm_prompt_version
+    ? `${c.lm_invocation_reason} · prompt ${c.lm_prompt_version}`
+    : c.lm_invocation_reason ?? '';
+
   return (
     <>
-      <div className="detail-header">
-        <div className="detail-title">
-          <strong>{pairLabel}</strong>
-          <span className="viewport-badge">{c.viewport_name}</span>
-          <span className={`verdict-chip verdict-${verdictOf(c.is_equivalent)}`}>{verdictGlyph(c.is_equivalent)}</span>
+      <div className="detail-head">
+        <div className="dh-title-row">
+          <span className={`verdict-chip verdict-${verdictKind}`}>{verdictGlyph(c.is_equivalent)}</span>
+          <strong className="dh-title">{pairLabel}</strong>
+          <span className="dh-sep">·</span>
+          <span className="muted">{c.viewport_name}</span>
+          <span className="dh-sep">·</span>
+          <span className="muted">{c.equivalence_level}</span>
+          <StatusPill status={c.status} />
+          <label className="dh-toggle">
+            <input
+              type="checkbox"
+              checked={showBoxes}
+              onChange={(e) => setShowBoxes(e.target.checked)}
+            />{' '}
+            Boxes
+          </label>
         </div>
-        <div className="detail-urls muted">
-          <div title={url_pair.url_a}>{url_pair.url_a}</div>
-          <div title={url_pair.url_b}>{url_pair.url_b}</div>
+        <div className="dh-urls">
+          <div className="dh-url" title={url_pair.url_a}>
+            <span className="dh-url-side">A</span>
+            <span>{url_pair.url_a}</span>
+          </div>
+          <div className="dh-url" title={url_pair.url_b}>
+            <span className="dh-url-side">B</span>
+            <span>{url_pair.url_b}</span>
+          </div>
         </div>
-      </div>
-
-      <div className="detail-metrics">
-        <span className="metric"><span className="label">Changed</span> <span className="value">{fmtPct(c.changed_pixel_percentage)}</span></span>
-        <span className="metric"><span className="label">SSIM</span> <span className="value">{fmtNum(c.ssim, 4)}</span></span>
-        <span className="metric"><span className="label">Box area</span> <span className="value">{fmtPct(c.bounding_box_area_percentage)}</span></span>
-        <span className="metric"><span className="label">Components</span> <span className="value">{c.connected_component_count ?? '—'}</span></span>
-        <span className="metric"><span className="label">Level</span> <span className="value">{c.equivalence_level}</span></span>
-        <span className="metric"><StatusPill status={c.status} /></span>
-        <label className="metric toggle">
-          <input type="checkbox" checked={showBoxes} onChange={(e) => setShowBoxes(e.target.checked)} />{' '}
-          Boxes
-        </label>
+        <div className="dh-metrics">
+          <span><span className="dh-key">Changed</span> {fmtPct(c.changed_pixel_percentage)}</span>
+          <span><span className="dh-key">SSIM</span> {fmtNum(c.ssim, 4)}</span>
+          <span><span className="dh-key">Box</span> {fmtPct(c.bounding_box_area_percentage)}</span>
+          <span><span className="dh-key">Components</span> {c.connected_component_count ?? '—'}</span>
+        </div>
+        {c.lm_invocation_reason && (
+          <div className="dh-lm" title={lmTitle}>
+            <span className="dh-key">LM</span>
+            <span className={`verdict-chip verdict-${verdictOf(c.lm_determined_equivalent)}`}>{lmGlyph}</span>
+            <span className="muted">{c.lm_model ?? '—'}</span>
+            <span className="muted">conf {fmtNum(c.lm_confidence, 2)}</span>
+            {c.lm_summary && <span className="dh-lm-summary">{c.lm_summary}</span>}
+          </div>
+        )}
       </div>
 
       {c.error_message && <div className="error">{c.error_message}</div>}
-
-      {c.lm_invocation_reason && (
-        <details className="lm-details">
-          <summary>
-            <strong>LM:</strong>{' '}
-            {c.lm_determined_equivalent === null ? '—' : c.lm_determined_equivalent ? '✓' : '✗'}
-            {' · '}{c.lm_model ?? '—'}
-            {' · confidence '}{fmtNum(c.lm_confidence, 2)}
-          </summary>
-          <div className="lm-body">
-            <div><span className="label">Invoked because:</span> {c.lm_invocation_reason}{c.lm_prompt_version ? ` · prompt ${c.lm_prompt_version}` : ''}</div>
-            {c.lm_summary && <div><span className="label">Summary:</span> {c.lm_summary}</div>}
-          </div>
-        </details>
-      )}
 
       <div className="detail-tabs" role="tablist">
         {VIEW_MODES.map((m) => (
