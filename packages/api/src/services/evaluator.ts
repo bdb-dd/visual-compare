@@ -716,6 +716,77 @@ export function listEvaluations(db: Db, sessionId: string): EvaluationRow[] {
 export type { SessionResultRow } from '../types.js';
 
 /**
+ * Aggregate result rows into the histogram/filter buckets the Review UI
+ * needs. Pure function — runs in O(n) over the rows, no DB access.
+ *
+ * `pending` covers any row whose status is 'pending' or whose
+ * matched_at_level hasn't been resolved (LM-cache miss waiting for a
+ * second pass). The same row also lands in by_target_status='pending' so
+ * the two breakdowns never disagree on totals.
+ */
+export function summariseResults(
+  rows: SessionResultRow[],
+  targetLevel: EquivalenceLevelId,
+): import('../types.js').SessionResultsSummary {
+  const by_level: Record<MatchedAtLevel | 'pending', number> = {
+    'pixel-perfect': 0,
+    strict: 0,
+    tolerant: 0,
+    loose: 0,
+    none: 0,
+    pending: 0,
+  };
+  const by_acceptance_status: Record<
+    import('../types.js').AcceptanceStatus,
+    number
+  > = {
+    unaccepted: 0,
+    accepted: 0,
+    regressed: 0,
+    expanded_diff: 0,
+  };
+  const by_decided_by: Record<MatchedDecidedBy | 'none', number> = {
+    pixel: 0,
+    lm: 0,
+    none: 0,
+  };
+  const by_target_status: Record<
+    'reached_target' | 'weaker_than_target' | 'pending',
+    number
+  > = {
+    reached_target: 0,
+    weaker_than_target: 0,
+    pending: 0,
+  };
+
+  for (const r of rows) {
+    if (r.matched_at_level === null) {
+      by_level.pending += 1;
+      by_target_status.pending += 1;
+    } else {
+      by_level[r.matched_at_level] += 1;
+      by_target_status[
+        isAtLeastAsStrict(r.matched_at_level, targetLevel)
+          ? 'reached_target'
+          : 'weaker_than_target'
+      ] += 1;
+    }
+    by_decided_by[r.matched_decided_by ?? 'none'] += 1;
+    by_acceptance_status[r.acceptance_status] += 1;
+  }
+
+  return {
+    total: rows.length,
+    by_level,
+    by_acceptance_status,
+    by_decided_by,
+    by_target_status,
+  };
+}
+
+type MatchedDecidedBy = import('../types.js').MatchedDecidedBy;
+
+/**
  * Compute the live results view for a session by joining `url_pairs` with
  * the cache substrate under the given config. Rows are emitted per (pair,
  * viewport, level). When data is missing the row is still emitted with

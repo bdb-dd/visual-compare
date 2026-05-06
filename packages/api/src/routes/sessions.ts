@@ -26,6 +26,7 @@ import {
   planEvaluation,
   readSessionResults,
   resolveEvaluationConfig,
+  summariseResults,
   type Evaluator,
 } from '../services/evaluator.js';
 import { parseEvaluationRow } from './evaluations.js';
@@ -238,6 +239,7 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
     const promptIds = loadSessionPromptIds(db, id, lm);
     const config = resolveEvaluationConfig(parsed.data, sessionConfig, lm, promptIds);
     const plan = planEvaluation(db, id, config);
+    const results = readSessionResults(db, id, config);
     res.json({
       session_id: id,
       config,
@@ -247,7 +249,8 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
         comparison_misses: plan.comparison_misses.length,
         cache_hits: plan.cache_hits,
       },
-      results: readSessionResults(db, id, config),
+      results,
+      summary: summariseResults(results, config.target_level),
     });
   });
 

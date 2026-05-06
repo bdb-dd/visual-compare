@@ -398,6 +398,28 @@ export interface ResolvedEvaluationConfig {
   lm_model_id: string;
 }
 
+/**
+ * Aggregated counts derived from `SessionResultRow[]`. The Review UI's
+ * histogram strip and filter chips read directly from these numbers — every
+ * `count` field is a non-negative integer summing to `total`.
+ */
+export interface SessionResultsSummary {
+  total: number;
+  /** One bucket per matched_at_level, plus `pending` for rows without a verdict. */
+  by_level: Record<MatchedAtLevel | 'pending', number>;
+  by_acceptance_status: Record<AcceptanceStatus, number>;
+  /**
+   * `pixel` / `lm` / `none` (none = no verdict yet). Useful for the UI to
+   * show how many comparisons relied on the LM second pass.
+   */
+  by_decided_by: Record<MatchedDecidedBy | 'none', number>;
+  /**
+   * Coarser bucket for the "needs review" filter: did the comparison reach
+   * the session target, miss it, or is it still pending?
+   */
+  by_target_status: Record<'reached_target' | 'weaker_than_target' | 'pending', number>;
+}
+
 export interface SessionResultsDto {
   session_id: string;
   config: ResolvedEvaluationConfig;
@@ -408,6 +430,7 @@ export interface SessionResultsDto {
     cache_hits: EvaluationCacheHits;
   };
   results: SessionResultRow[];
+  summary: SessionResultsSummary;
 }
 
 export interface CsvRowError {

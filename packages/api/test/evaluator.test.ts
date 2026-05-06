@@ -273,6 +273,10 @@ describe('evaluator', () => {
     for (const r of empty.body.results) expect(r.status).toBe('pending');
     expect(empty.body.plan.capture_misses).toBe(4);
     expect(empty.body.plan.comparison_misses).toBe(2);
+    // Summary on the empty side: everything is pending.
+    expect(empty.body.summary.total).toBe(2);
+    expect(empty.body.summary.by_level.pending).toBe(2);
+    expect(empty.body.summary.by_target_status.pending).toBe(2);
 
     h.evaluator.start(sessionId, {
       viewports: [desktop],
@@ -283,6 +287,12 @@ describe('evaluator', () => {
     const populated = await request(h.app).get(`/api/sessions/${sessionId}/results`);
     expect(populated.body.plan.capture_misses).toBe(0);
     expect(populated.body.plan.comparison_misses).toBe(0);
+    // Both rows resolved at tolerant by pixel.
+    expect(populated.body.summary.total).toBe(2);
+    expect(populated.body.summary.by_level.tolerant).toBe(2);
+    expect(populated.body.summary.by_target_status.reached_target).toBe(2);
+    expect(populated.body.summary.by_decided_by.pixel).toBe(2);
+    expect(populated.body.summary.by_acceptance_status.unaccepted).toBe(2);
     for (const r of populated.body.results) {
       expect(r.status).toBe('cached');
       // pct=1 with ssim=0.97 → tolerant matches (pct≤5, ssim≥0.95).
