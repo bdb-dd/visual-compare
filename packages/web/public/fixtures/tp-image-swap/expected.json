@@ -1,0 +1,11 @@
+{
+  "description": "Hero image swapped (mountains -> desert) at identical dimensions",
+  "expected": {
+    "pixel-perfect": false,
+    "strict": false,
+    "tolerant": false,
+    "loose": null,
+    "semantic": false
+  },
+  "notes": "Localized but large pixel delta. LM should still call them non-equivalent (different scenes)."
+}

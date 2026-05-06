@@ -1,0 +1,11 @@
+{
+  "description": "Same page on both sides; hero contains a lazy-loaded image that sits above the fold",
+  "expected": {
+    "pixel-perfect": null,
+    "strict": true,
+    "tolerant": true,
+    "loose": true,
+    "semantic": true
+  },
+  "notes": "If our scroll-bottom-and-back trigger doesn't fire, the lazy image stays unloaded and the captured viewport shows a grey placeholder instead of the gradient. Stable equivalence here means the trigger is working."
+}

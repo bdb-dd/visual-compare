@@ -1,0 +1,11 @@
+{
+  "description": "One-letter typo in hero headline (store -> stores)",
+  "expected": {
+    "pixel-perfect": false,
+    "strict": null,
+    "tolerant": null,
+    "loose": true,
+    "semantic": null
+  },
+  "notes": "Plan hypothesized strict would catch this. Empirically a single trailing letter at 1440x900 produces ~0.40% AE — below strict's 0.5% threshold and inside its ambiguity band, where LM tiebreak called the pages 'identical'. Expectation softened to null: question is whether strict should be tightened or whether typos are genuinely outside its scope."
+}

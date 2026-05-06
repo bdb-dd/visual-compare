@@ -1,0 +1,11 @@
+{
+  "description": "Features section removed in B — testimonials shifts up",
+  "expected": {
+    "pixel-perfect": false,
+    "strict": false,
+    "tolerant": false,
+    "loose": null,
+    "semantic": false
+  },
+  "notes": "KNOWN system finding: at semantic level, gemma-4-e2b calls these pages equivalent (~19.7% AE, SSIM 0.899) even though the visible viewport in A shows feature cards and in B shows testimonials. Same pair under loose's ambiguity-band tiebreak gets the correct 'not equivalent' verdict, suggesting the semantic prompt is more permissive than the band-tiebreak prompt — or the small model is non-deterministic. Phase 4 (stronger LM) should resolve this; until then this expectation is intentionally hard so the corpus continues to surface it."
+}

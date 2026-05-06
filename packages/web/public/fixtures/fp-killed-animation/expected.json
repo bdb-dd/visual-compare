@@ -1,0 +1,11 @@
+{
+  "description": "Same page on both sides, with hero elements running a 2s fade-in/translate animation",
+  "expected": {
+    "pixel-perfect": true,
+    "strict": true,
+    "tolerant": true,
+    "loose": true,
+    "semantic": true
+  },
+  "notes": "Animations are CSS-killed and reduced-motion is set during capture. If pixel-perfect fails here, the animation-kill injection isn't applying before screenshot."
+}

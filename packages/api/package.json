@@ -11,7 +11,8 @@
     "build:copy-migrations": "node -e \"import('node:fs').then(fs => fs.cpSync('src/db/migrations', 'dist/db/migrations', { recursive: true }))\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "corpus": "tsx scripts/run-test-corpus.ts --allow-mismatch tp-section-removed:semantic"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",

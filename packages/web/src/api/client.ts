@@ -1,7 +1,9 @@
 import type {
   CaptureDto,
+  CaptureRunRow,
   ComparisonDetailDto,
   ComparisonDto,
+  ComparisonRunRow,
   EquivalenceLevelId,
   JobAcceptedResponse,
   JobRow,
@@ -67,6 +69,11 @@ export const api = {
     ),
   getComparisonDetail: (id: string) =>
     request<ComparisonDetailDto>(`/api/comparisons/${id}`),
+
+  listCaptureRuns: (sessionId: string) =>
+    request<{ capture_runs: CaptureRunRow[] }>(`/api/capture-runs?session_id=${encodeURIComponent(sessionId)}`),
+  listComparisonRuns: (sessionId: string) =>
+    request<{ comparison_runs: ComparisonRunRow[] }>(`/api/comparison-runs?session_id=${encodeURIComponent(sessionId)}`),
 
   getJob: (id: string) => request<{ job: JobRow }>(`/api/jobs/${id}`),
 

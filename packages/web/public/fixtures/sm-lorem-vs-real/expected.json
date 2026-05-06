@@ -1,0 +1,11 @@
+{
+  "description": "Same layout and dimensions; A has placeholder copy (Lorem ipsum, $00), B has real product copy and prices",
+  "expected": {
+    "pixel-perfect": false,
+    "strict": false,
+    "tolerant": null,
+    "loose": null,
+    "semantic": false
+  },
+  "notes": "Same shape so pixel deltas track only character widths — likely small to moderate. LM should call non-equivalent because the meaning differs (placeholder vs real catalog)."
+}

@@ -1,0 +1,11 @@
+{
+  "description": "Same page on both sides, hero headline using Playfair Display via Google Fonts with font-display: swap",
+  "expected": {
+    "pixel-perfect": null,
+    "strict": true,
+    "tolerant": true,
+    "loose": true,
+    "semantic": true
+  },
+  "notes": "If document.fonts.ready isn't awaited, captures intermittently render in fallback Georgia (FOUT) and pixel-perfect/strict will fail at random. Stable behavior here means font wait is working."
+}

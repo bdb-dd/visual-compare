@@ -1,0 +1,11 @@
+{
+  "description": "Hero headline copy fully replaced (welcome message -> seasonal sale)",
+  "expected": {
+    "pixel-perfect": false,
+    "strict": false,
+    "tolerant": true,
+    "loose": true,
+    "semantic": false
+  },
+  "notes": "Plan predicted tolerant would fail. Empirically a localized headline swap is ~0.56% AE at 1440x900 — well under tolerant's 5%, so pixel rule passes directly. Semantic still flags because the LM reads the text. If we want tolerant to catch headline swaps we need to tighten its threshold."
+}

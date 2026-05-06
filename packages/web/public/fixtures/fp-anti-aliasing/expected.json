@@ -1,0 +1,11 @@
+{
+  "description": "Same page on both sides, with rotated italic type and a curved ring to expose sub-pixel jitter",
+  "expected": {
+    "pixel-perfect": null,
+    "strict": true,
+    "tolerant": true,
+    "loose": true,
+    "semantic": true
+  },
+  "notes": "Identical HTML, but rendering jitter on curves/text may produce a tiny non-zero pixel diff. Pixel-perfect is null because that's exactly the question the corpus is meant to answer; strict and looser must absolutely pass."
+}

@@ -1,0 +1,11 @@
+{
+  "description": "Sale banner added at top of B, pushing the rest of the page down",
+  "expected": {
+    "pixel-perfect": false,
+    "strict": false,
+    "tolerant": false,
+    "loose": false,
+    "semantic": false
+  },
+  "notes": "Whole-viewport vertical shift — pixel diff dominates, all non-loose levels should fail. Loose may also fail because the shift is huge."
+}

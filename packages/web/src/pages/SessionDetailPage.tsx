@@ -5,7 +5,9 @@ import { usePolledJob } from '../api/usePolledJob.js';
 import { StatusPill } from '../components/StatusPill.js';
 import type {
   CaptureDto,
+  CaptureRunRow,
   ComparisonDto,
+  ComparisonRunRow,
   EquivalenceLevelId,
   SessionRow,
   UrlPairRow,
@@ -40,6 +42,8 @@ export function SessionDetailPage(): JSX.Element {
   const [captures, setCaptures] = useState<CaptureDto[]>([]);
   const [comparisonRun, setComparisonRun] = useState<ComparisonSummary | null>(null);
   const [comparisons, setComparisons] = useState<ComparisonDto[]>([]);
+  const [captureRunHistory, setCaptureRunHistory] = useState<CaptureRunRow[]>([]);
+  const [comparisonRunHistory, setComparisonRunHistory] = useState<ComparisonRunRow[]>([]);
 
   const captureJob = usePolledJob(captureRun?.job_id ?? null);
   const comparisonJob = usePolledJob(comparisonRun?.job_id ?? null);
@@ -47,11 +51,13 @@ export function SessionDetailPage(): JSX.Element {
   useEffect(() => {
     void (async () => {
       try {
-        const [{ session, url_pairs }, vp, lv, lm] = await Promise.all([
+        const [{ session, url_pairs }, vp, lv, lm, capRuns, compRuns] = await Promise.all([
           api.getSession(id),
           api.getViewports(),
           api.getLevels(),
           api.getLmStatus().catch(() => null),
+          api.listCaptureRuns(id),
+          api.listComparisonRuns(id),
         ]);
         setSession(session);
         setPairs(url_pairs);
@@ -60,6 +66,8 @@ export function SessionDetailPage(): JSX.Element {
         setLevels(lv.levels);
         setSelectedLevel(lv.default);
         setLmStatus(lm);
+        setCaptureRunHistory(capRuns.capture_runs);
+        setComparisonRunHistory(compRuns.comparison_runs);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -98,6 +106,15 @@ export function SessionDetailPage(): JSX.Element {
     }
   }, [comparisonRun, comparisonJob?.status]);
 
+  const refreshHistory = async () => {
+    const [capRuns, compRuns] = await Promise.all([
+      api.listCaptureRuns(id),
+      api.listComparisonRuns(id),
+    ]);
+    setCaptureRunHistory(capRuns.capture_runs);
+    setComparisonRunHistory(compRuns.comparison_runs);
+  };
+
   const startCapture = async () => {
     if (!session) return;
     setError(null);
@@ -112,6 +129,9 @@ export function SessionDetailPage(): JSX.Element {
         capture_count: (result as unknown as { capture_count: number }).capture_count,
       });
       setCaptures([]);
+      setComparisonRun(null);
+      setComparisons([]);
+      void refreshHistory();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -128,6 +148,34 @@ export function SessionDetailPage(): JSX.Element {
         comparison_count: (result as unknown as { comparison_count: number }).comparison_count,
       });
       setComparisons([]);
+      void refreshHistory();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const loadCaptureFromHistory = async (run: CaptureRunRow) => {
+    try {
+      const { capture_run, captures: caps } = await api.getCaptureRun(run.id);
+      setCaptureRun({ capture_run_id: run.id, job_id: capture_run.job_id, capture_count: caps.length });
+      setCaptures(caps);
+      setComparisonRun(null);
+      setComparisons([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const loadComparisonFromHistory = async (run: ComparisonRunRow) => {
+    try {
+      const [{ capture_run, captures: caps }, { comparison_run, comparisons: comps }] = await Promise.all([
+        api.getCaptureRun(run.capture_run_id),
+        api.getComparisonRun(run.id),
+      ]);
+      setCaptureRun({ capture_run_id: run.capture_run_id, job_id: capture_run.job_id, capture_count: caps.length });
+      setCaptures(caps);
+      setComparisonRun({ comparison_run_id: run.id, job_id: comparison_run.job_id, comparison_count: comps.length });
+      setComparisons(comps);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -206,7 +254,7 @@ export function SessionDetailPage(): JSX.Element {
         )}
       </div>
 
-      {captureJob?.status === 'complete' && (
+      {(captureJob?.status === 'complete' || captures.length > 0) && (
         <div className="card">
           <h3 style={{ marginTop: 0 }}>2. Compare</h3>
           <label>
@@ -274,6 +322,85 @@ export function SessionDetailPage(): JSX.Element {
         </div>
       )}
 
+      {(captureRunHistory.length > 0 || comparisonRunHistory.length > 0) && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Run history</h3>
+
+          {captureRunHistory.length > 0 && (
+            <>
+              <p className="muted" style={{ marginTop: 0 }}>Capture runs</p>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Viewports</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {captureRunHistory.map((run) => {
+                    const vpNames = parseViewports(run.options_json);
+                    const isActive = captureRun?.capture_run_id === run.id;
+                    return (
+                      <tr key={run.id}>
+                        <td>{fmtDate(run.created_at)}</td>
+                        <td>{vpNames}</td>
+                        <td>
+                          {isActive ? (
+                            <span className="muted">active</span>
+                          ) : (
+                            <button className="btn secondary" style={{ padding: '4px 10px', fontSize: 13 }} onClick={() => void loadCaptureFromHistory(run)}>
+                              Load
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </>
+          )}
+
+          {comparisonRunHistory.length > 0 && (
+            <>
+              <p className="muted" style={{ marginTop: captureRunHistory.length > 0 ? 16 : 0 }}>Comparison runs</p>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Level</th>
+                    <th>Capture run</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {comparisonRunHistory.map((run) => {
+                    const isActive = comparisonRun?.comparison_run_id === run.id;
+                    return (
+                      <tr key={run.id}>
+                        <td>{fmtDate(run.created_at)}</td>
+                        <td>{run.equivalence_level}</td>
+                        <td className="muted">{run.capture_run_id.slice(0, 8)}</td>
+                        <td>
+                          {isActive ? (
+                            <span className="muted">active</span>
+                          ) : (
+                            <button className="btn secondary" style={{ padding: '4px 10px', fontSize: 13 }} onClick={() => void loadComparisonFromHistory(run)}>
+                              Load
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </>
+          )}
+        </div>
+      )}
+
       <div className="card">
         <h3 style={{ marginTop: 0 }}>URL pairs</h3>
         <table>
@@ -308,4 +435,15 @@ function fmtPct(v: number | null): string {
 function fmtNum(v: number | null, digits = 3): string {
   if (v === null) return '—';
   return v.toFixed(digits);
+}
+function fmtDate(iso: string): string {
+  return new Date(iso).toLocaleString();
+}
+function parseViewports(optionsJson: string): string {
+  try {
+    const opts = JSON.parse(optionsJson) as { viewports?: { name: string }[] };
+    return opts.viewports?.map((v) => v.name).join(', ') ?? '—';
+  } catch {
+    return '—';
+  }
 }

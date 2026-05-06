@@ -1,0 +1,11 @@
+{
+  "description": "Lazy image with different content in A vs B, placed ~1200px below the fold",
+  "expected": {
+    "pixel-perfect": true,
+    "strict": true,
+    "tolerant": true,
+    "loose": true,
+    "semantic": true
+  },
+  "notes": "Viewport-only screenshot (fullPage:false) at 1440x900 should never see the differing image. Verifies our screenshot crop stays at viewport top after scroll-bottom-and-back."
+}
