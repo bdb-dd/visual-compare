@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import type { Db } from '../db/client.js';
+import type { LmClient } from '../services/lm.js';
 import { parseSessionCsv } from '../services/csv.js';
 import {
   addUrlPairs,
@@ -45,7 +46,7 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MiB
 });
 
-export function sessionsRouter(db: Db, evaluator: Evaluator): Router {
+export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Router {
   const router = Router();
 
   router.get('/', (req, res) => {
@@ -228,13 +229,8 @@ export function sessionsRouter(db: Db, evaluator: Evaluator): Router {
       return;
     }
     const sessionConfig = getSessionConfig(db, id) ?? undefined;
-    const promptIds = loadSessionPromptIds(db, id, undefined);
-    const config = resolveEvaluationConfig(
-      parsed.data,
-      sessionConfig,
-      undefined,
-      promptIds,
-    );
+    const promptIds = loadSessionPromptIds(db, id, lm);
+    const config = resolveEvaluationConfig(parsed.data, sessionConfig, lm, promptIds);
     const plan = planEvaluation(db, id, config);
     res.json({
       session_id: id,

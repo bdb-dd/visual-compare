@@ -247,4 +247,38 @@ describe('SessionResultRow capture statuses', () => {
     expect(row.capture_a_status.status).toBe('missing');
     expect(row.capture_b_status.status).toBe('missing');
   });
+
+  // Regression: the /results route used to call resolveEvaluationConfig with
+  // `lm: undefined`, which made the cache lookup use lm_model_id='unknown'
+  // while the cache rows themselves were keyed on the real model id. Every
+  // semantic row stayed in `comparison_misses` forever even though the LM
+  // verdicts were already cached.
+  it('semantic /results reflects cached LM verdicts after evaluation', async () => {
+    const { sessionId } = await uploadOnePair(h.app);
+    // Persist the session config so /results' default lookup uses semantic.
+    await request(h.app)
+      .put(`/api/sessions/${sessionId}/config`)
+      .send({
+        default_viewports: [desktop],
+        default_equivalence_levels: ['semantic'],
+      });
+    h.evaluator.start(sessionId);
+    await settle(h);
+
+    const cached = h.db
+      .prepare<unknown[], { prompt_id: string; model_id: string }>(
+        'SELECT prompt_id, model_id FROM lm_verdict_cache',
+      )
+      .all();
+    expect(cached).toHaveLength(1);
+
+    const res = await request(h.app).get(`/api/sessions/${sessionId}/results`);
+    expect(res.body.config.lm_model_id).toBe(cached[0]!.model_id);
+    expect(res.body.config.lm_prompt_ids.semantic_mode).toBe(cached[0]!.prompt_id);
+    expect(res.body.plan.comparison_misses).toBe(0);
+    expect(res.body.plan.cache_hits.lm).toBe(1);
+    const row = res.body.results[0] as SessionResultRow;
+    expect(row.status).toBe('cached');
+    expect(row.lm).not.toBeNull();
+  });
 });
