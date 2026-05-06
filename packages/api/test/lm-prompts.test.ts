@@ -21,7 +21,7 @@ import {
 } from '../src/services/lm-prompts.js';
 import {
   LM_PROMPT_DEFAULTS,
-  SEMANTIC_MODE_PROMPT,
+  TARGET_LEVEL_FAILURE_PROMPT,
 } from '../src/constants/lm-prompts.js';
 import type { ViewportDef } from '../src/types.js';
 
@@ -192,8 +192,7 @@ describe('hashPrompt', () => {
   });
 });
 
-// TODO(phase-1): rewrite for target_level_failure invocation reason (semantic_mode dropped).
-describe.skip('seed + backfill', () => {
+describe('seed + backfill', () => {
   it('seeds defaults from constants on first call, idempotent on second', () => {
     const db = openDatabase({ path: ':memory:' });
     applySchema(db);
@@ -207,11 +206,11 @@ describe.skip('seed + backfill', () => {
       .all();
     expect(rows.map((r) => r.invocation_reason)).toEqual([
       'ambiguous_pixel_result',
-      'semantic_mode',
+      'target_level_failure',
     ]);
     expect(rows.every((r) => r.source === 'seed')).toBe(true);
-    const semantic = rows.find((r) => r.invocation_reason === 'semantic_mode')!;
-    expect(semantic.prompt_id).toBe(hashPrompt(LM_PROMPT_DEFAULTS.semantic_mode));
+    const targetLevelFailure = rows.find((r) => r.invocation_reason === 'target_level_failure')!;
+    expect(targetLevelFailure.prompt_id).toBe(hashPrompt(LM_PROMPT_DEFAULTS.target_level_failure));
     db.close();
   });
 
@@ -235,7 +234,7 @@ describe.skip('seed + backfill', () => {
         .all(sessionId);
       expect(sessionPrompts.map((p) => p.invocation_reason)).toEqual([
         'ambiguous_pixel_result',
-        'semantic_mode',
+        'target_level_failure',
       ]);
     } finally {
       await h.cleanup();
@@ -243,8 +242,7 @@ describe.skip('seed + backfill', () => {
   });
 });
 
-// TODO(phase-1): rewrite for target_level_failure invocation reason.
-describe.skip('createSession copies defaults', () => {
+describe('createSession copies defaults', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await makeHarness();
@@ -259,12 +257,11 @@ describe.skip('createSession copies defaults', () => {
     expect(list.status).toBe(200);
     expect(list.body.prompts).toHaveLength(2);
     expect(list.body.prompts.map((p: { invocation_reason: string }) => p.invocation_reason).sort())
-      .toEqual(['ambiguous_pixel_result', 'semantic_mode']);
+      .toEqual(['ambiguous_pixel_result', 'target_level_failure']);
   });
 });
 
-// TODO(phase-2): exercises full pipeline incl. semantic mode; rewrite once single-pass is in.
-describe.skip('LM analyze receives the session prompt', () => {
+describe('LM analyze receives the session prompt', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await makeHarness();
@@ -273,31 +270,33 @@ describe.skip('LM analyze receives the session prompt', () => {
     await h.cleanup();
   });
 
-  it('passes the session-scoped prompt id + text into the LM call', async () => {
+  it('passes the session-scoped prompt id + text into the LM call (target_level_failure)', async () => {
     const sessionId = await uploadOnePair(h.app);
+    // Force a target_level_failure LM call: pixel walk reaches tolerant
+    // (pct=1, ssim=0.97), but target=strict requires pct≤0.5 → miss.
     h.evaluator.start(sessionId, {
       viewports: [desktop],
-      equivalence_levels: ['semantic'],
+      target_level: 'strict',
+      invoke_lm: true,
     });
     await settle(h);
 
     expect(h.analyzeCalls).toHaveLength(1);
     const call = h.analyzeCalls[0]!;
-    expect(call.invocationReason).toBe('semantic_mode');
-    expect(call.prompt?.id).toBe(hashPrompt(SEMANTIC_MODE_PROMPT));
-    expect(call.prompt?.text).toBe(SEMANTIC_MODE_PROMPT);
+    expect(call.invocationReason).toBe('target_level_failure');
+    expect(call.prompt?.id).toBe(hashPrompt(TARGET_LEVEL_FAILURE_PROMPT));
+    expect(call.prompt?.text).toBe(TARGET_LEVEL_FAILURE_PROMPT);
 
     const lmRow = h.db
       .prepare<unknown[], { prompt_id: string }>(
         'SELECT prompt_id FROM lm_verdict_cache LIMIT 1',
       )
       .get();
-    expect(lmRow?.prompt_id).toBe(hashPrompt(SEMANTIC_MODE_PROMPT));
+    expect(lmRow?.prompt_id).toBe(hashPrompt(TARGET_LEVEL_FAILURE_PROMPT));
   });
 });
 
-// TODO(phase-2): full-pipeline test depends on single-pass evaluator.
-describe.skip('editing a session prompt invalidates its LM cache', () => {
+describe('editing a session prompt invalidates its LM cache', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await makeHarness();
@@ -309,10 +308,11 @@ describe.skip('editing a session prompt invalidates its LM cache', () => {
   it('cache hits before edit, cache miss after edit, hit again after re-eval', async () => {
     const sessionId = await uploadOnePair(h.app);
 
-    // First evaluation: produces a cached LM verdict.
+    // First evaluation: produces a cached LM verdict via target_level_failure.
     h.evaluator.start(sessionId, {
       viewports: [desktop],
-      equivalence_levels: ['semantic'],
+      target_level: 'strict',
+      invoke_lm: true,
     });
     await settle(h);
     expect(h.analyzeCalls).toHaveLength(1);
@@ -320,29 +320,31 @@ describe.skip('editing a session prompt invalidates its LM cache', () => {
     // Second evaluation, no edit: should be all cache hits.
     const before = h.evaluator.start(sessionId, {
       viewports: [desktop],
-      equivalence_levels: ['semantic'],
+      target_level: 'strict',
+      invoke_lm: true,
     });
     await settle(h);
     expect(h.analyzeCalls).toHaveLength(1); // no new LM call
     const beforeDetail = await request(h.app).get(`/api/evaluations/${before.evaluation_id}`);
     expect(beforeDetail.body.evaluation.cache_hits.lm).toBe(1);
 
-    // Edit the session's semantic_mode prompt.
+    // Edit the session's target_level_failure prompt.
     const edit = await request(h.app)
-      .put(`/api/sessions/${sessionId}/lm-prompts/semantic_mode`)
-      .send({ prompt_text: 'A completely new prompt for semantic equivalence.' });
+      .put(`/api/sessions/${sessionId}/lm-prompts/target_level_failure`)
+      .send({ prompt_text: 'A completely new prompt for second-pass review.' });
     expect(edit.status).toBe(200);
-    expect(edit.body.prompt.prompt_id).not.toBe(hashPrompt(SEMANTIC_MODE_PROMPT));
+    expect(edit.body.prompt.prompt_id).not.toBe(hashPrompt(TARGET_LEVEL_FAILURE_PROMPT));
 
     // Third evaluation: should re-invoke LM (new prompt_id → cache miss).
     h.evaluator.start(sessionId, {
       viewports: [desktop],
-      equivalence_levels: ['semantic'],
+      target_level: 'strict',
+      invoke_lm: true,
     });
     await settle(h);
     expect(h.analyzeCalls).toHaveLength(2);
     expect(h.analyzeCalls[1]!.prompt?.text).toBe(
-      'A completely new prompt for semantic equivalence.',
+      'A completely new prompt for second-pass review.',
     );
     // Two cache rows now exist — one per prompt_id.
     expect(
@@ -351,8 +353,7 @@ describe.skip('editing a session prompt invalidates its LM cache', () => {
   });
 });
 
-// TODO(phase-1): rewrite for target_level_failure URL paths (semantic_mode dropped).
-describe.skip('routes', () => {
+describe('routes', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await makeHarness();
@@ -369,7 +370,7 @@ describe.skip('routes', () => {
 
   it('PUT /api/lm-prompts/defaults/:reason flips source to override', async () => {
     const put = await request(h.app)
-      .put('/api/lm-prompts/defaults/semantic_mode')
+      .put('/api/lm-prompts/defaults/target_level_failure')
       .send({ prompt_text: 'admin-overridden default' });
     expect(put.status).toBe(200);
     expect(put.body.default.source).toBe('override');
@@ -387,7 +388,7 @@ describe.skip('routes', () => {
   it('rejects empty prompt_text', async () => {
     const sessionId = await uploadOnePair(h.app);
     const res = await request(h.app)
-      .put(`/api/sessions/${sessionId}/lm-prompts/semantic_mode`)
+      .put(`/api/sessions/${sessionId}/lm-prompts/target_level_failure`)
       .send({ prompt_text: '' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_body');
@@ -395,7 +396,7 @@ describe.skip('routes', () => {
 
   it('PUT session prompt for unknown session returns 404', async () => {
     const res = await request(h.app)
-      .put('/api/sessions/missing/lm-prompts/semantic_mode')
+      .put('/api/sessions/missing/lm-prompts/target_level_failure')
       .send({ prompt_text: 'x' });
     expect(res.status).toBe(404);
   });

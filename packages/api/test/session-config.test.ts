@@ -15,7 +15,6 @@ import { createApp } from '../src/app.js';
 import { Evaluator } from '../src/services/evaluator.js';
 import {
   applyFilter,
-  isAllowListed,
   resolveEvaluationConfig,
 } from '../src/services/evaluator.js';
 import type { ViewportDef, UrlPairRow } from '../src/types.js';
@@ -168,8 +167,7 @@ async function settle(h: Harness): Promise<void> {
   }
 }
 
-// TODO(phase-1): rewrite for new SessionConfig shape (default_equivalence_level + region_match_config; allow_list dropped).
-describe.skip('CSV metadata extraction', () => {
+describe('CSV metadata extraction', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await makeHarness();
@@ -194,15 +192,19 @@ describe.skip('CSV metadata extraction', () => {
     expect(enHome.subcategory).toBeNull();
   });
 
-  it('returns the freshly-loaded SessionConfig (empty defaults) on creation', async () => {
+  it('returns the freshly-loaded SessionConfig with default knobs on creation', async () => {
     const sessionId = await uploadAltinnSession(h.app);
     const detail = await request(h.app).get(`/api/sessions/${sessionId}`);
     expect(detail.body.config).toEqual({
       default_viewports: [],
       default_capture_options: {},
-      default_equivalence_levels: [],
+      default_equivalence_level: 'tolerant',
+      region_match_config: {
+        growth_margin_px: 8,
+        displacement_tolerance_px: 16,
+        pixel_pct_delta: 0.5,
+      },
       filter_query: {},
-      allow_list: [],
     });
   });
 });
@@ -312,35 +314,25 @@ describe('applyFilter', () => {
   });
 });
 
-// TODO(phase-3): isAllowListed is gone — allow_list is subsumed by acceptances.
-describe.skip('isAllowListed', () => {
-  it('matches on (pair, level, viewport) triple', () => {
-    const allow = [
-      { url_pair_id: 'p1', level: 'tolerant' as const, viewport_name: 'desktop' },
-    ];
-    expect(isAllowListed(allow, 'p1', 'tolerant', 'desktop')).toBe(true);
-    expect(isAllowListed(allow, 'p1', 'tolerant', 'mobile')).toBe(false);
-    expect(isAllowListed(allow, 'p1', 'strict', 'desktop')).toBe(false);
-    expect(isAllowListed(allow, 'p2', 'tolerant', 'desktop')).toBe(false);
-  });
-});
-
-// TODO(phase-1): rewrite for single target_level + region_match_config.
-describe.skip('resolveEvaluationConfig precedence', () => {
+describe('resolveEvaluationConfig precedence', () => {
   it('input overrides session, session overrides system defaults', () => {
     const session = {
       default_viewports: [desktop],
       default_capture_options: { settleDelayMs: 500 },
-      default_equivalence_levels: ['tolerant' as const, 'semantic' as const],
+      default_equivalence_level: 'tolerant' as const,
+      region_match_config: {
+        growth_margin_px: 8,
+        displacement_tolerance_px: 16,
+        pixel_pct_delta: 0.5,
+      },
       filter_query: { language: ['no'] },
-      allow_list: [],
     };
     const cfg = resolveEvaluationConfig(
-      { equivalence_levels: ['strict'] },
+      { target_level: 'strict' },
       session,
       undefined,
     );
-    expect(cfg.equivalence_levels).toEqual(['strict']); // input wins
+    expect(cfg.target_level).toBe('strict'); // input wins
     expect(cfg.viewports).toEqual([desktop]); // session wins (no input)
     expect(cfg.capture_options.settleDelayMs).toBe(500); // session merged
     expect(cfg.filter_query).toEqual({ language: ['no'] });
@@ -349,13 +341,12 @@ describe.skip('resolveEvaluationConfig precedence', () => {
   it('falls back to system defaults when session is empty', () => {
     const cfg = resolveEvaluationConfig(undefined, undefined, undefined);
     expect(cfg.viewports).toHaveLength(1); // default desktop
-    expect(cfg.equivalence_levels).toEqual(['tolerant']);
+    expect(cfg.target_level).toBe('tolerant');
     expect(cfg.filter_query).toEqual({});
   });
 });
 
-// TODO(phase-1): rewrite for new SessionConfig fields.
-describe.skip('PUT /sessions/:id/config and PATCH /sessions/:id', () => {
+describe('PUT /sessions/:id/config and PATCH /sessions/:id', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await makeHarness();
@@ -364,17 +355,17 @@ describe.skip('PUT /sessions/:id/config and PATCH /sessions/:id', () => {
     await h.cleanup();
   });
 
-  it('persists default_viewports / equivalence_levels / filter_query', async () => {
+  it('persists default_viewports / default_equivalence_level / filter_query', async () => {
     const sessionId = await uploadAltinnSession(h.app);
     const put = await request(h.app)
       .put(`/api/sessions/${sessionId}/config`)
       .send({
         default_viewports: [desktop],
-        default_equivalence_levels: ['tolerant', 'semantic'],
+        default_equivalence_level: 'strict',
         filter_query: { language: ['no'] },
       });
     expect(put.status).toBe(200);
-    expect(put.body.config.default_equivalence_levels).toEqual(['tolerant', 'semantic']);
+    expect(put.body.config.default_equivalence_level).toBe('strict');
     expect(put.body.config.filter_query).toEqual({ language: ['no'] });
 
     const get = await request(h.app).get(`/api/sessions/${sessionId}/config`);
@@ -385,7 +376,7 @@ describe.skip('PUT /sessions/:id/config and PATCH /sessions/:id', () => {
     const sessionId = await uploadAltinnSession(h.app);
     const bad = await request(h.app)
       .put(`/api/sessions/${sessionId}/config`)
-      .send({ default_equivalence_levels: ['nonsense'] });
+      .send({ default_equivalence_level: 'nonsense' });
     expect(bad.status).toBe(400);
     expect(bad.body.error).toBe('invalid_config');
   });
@@ -420,8 +411,7 @@ describe.skip('PUT /sessions/:id/config and PATCH /sessions/:id', () => {
   });
 });
 
-// TODO(phase-2/3): evaluator pipeline is being rewritten for single-pass + acceptances.
-describe.skip('evaluator + results respect session config', () => {
+describe('evaluator + results respect session config', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await makeHarness();
@@ -436,7 +426,7 @@ describe.skip('evaluator + results respect session config', () => {
       .put(`/api/sessions/${sessionId}/config`)
       .send({
         default_viewports: [desktop],
-        default_equivalence_levels: ['tolerant'],
+        default_equivalence_level: 'tolerant',
         filter_query: { language: ['no'], category: ['starte-og-drive'] },
       });
 
@@ -451,42 +441,8 @@ describe.skip('evaluator + results respect session config', () => {
     expect(detail.body.evaluation.cache_hits.captures).toBe(4); // 2 pairs × 2 sides
   });
 
-  it('GET /results respects session config and tags allow-listed rows', async () => {
-    const sessionId = await uploadAltinnSession(h.app);
-
-    // Find one NO pair to allow-list.
-    const detail = await request(h.app).get(`/api/sessions/${sessionId}`);
-    const noPair = detail.body.url_pairs.find((p: UrlPairRow) => p.language === 'no');
-    expect(noPair).toBeTruthy();
-
-    await request(h.app)
-      .put(`/api/sessions/${sessionId}/config`)
-      .send({
-        default_viewports: [desktop],
-        default_equivalence_levels: ['tolerant'],
-        filter_query: { language: ['no'] },
-        allow_list: [
-          { url_pair_id: noPair.id, level: 'tolerant', viewport_name: 'desktop' },
-        ],
-      });
-
-    const start = h.evaluator.start(sessionId);
-    expect(start.coalesced).toBe(false);
-    await settle(h);
-
-    const results = await request(h.app).get(`/api/sessions/${sessionId}/results`);
-    expect(results.status).toBe(200);
-    expect(results.body.plan.enabled_pair_count).toBe(2); // language=no
-    expect(results.body.results).toHaveLength(2);
-    const allowed = results.body.results.find(
-      (r: { url_pair_id: string; is_allowed: boolean }) => r.url_pair_id === noPair.id,
-    );
-    expect(allowed.is_allowed).toBe(true);
-    const other = results.body.results.find(
-      (r: { url_pair_id: string; is_allowed: boolean }) => r.url_pair_id !== noPair.id,
-    );
-    expect(other.is_allowed).toBe(false);
-  });
+  // TODO(phase-3): the allow-list test is replaced by acceptance regression
+  // detection. Will be rewritten when acceptances are wired up.
 
   it('per-call url_pair_ids overrides session filter', async () => {
     const sessionId = await uploadAltinnSession(h.app);
@@ -494,7 +450,7 @@ describe.skip('evaluator + results respect session config', () => {
       .put(`/api/sessions/${sessionId}/config`)
       .send({
         default_viewports: [desktop],
-        default_equivalence_levels: ['tolerant'],
+        default_equivalence_level: 'tolerant',
         filter_query: { language: ['no'] },
       });
 

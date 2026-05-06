@@ -1,72 +1,74 @@
-import { getEquivalenceLevel } from '../constants/equivalence.js';
-import type { EquivalenceLevelId, LmInvocationReason } from '../types.js';
+import {
+  EQUIVALENCE_LEVELS,
+  getEquivalenceLevel,
+} from '../constants/equivalence.js';
+import type { EquivalenceLevelId, MatchedAtLevel } from '../types.js';
 
 /**
- * True when this level has a non-zero ambiguity band where a pixel-result
- * could fall in and trigger an LM tiebreaker.
+ * True when the target level has a non-zero ambiguity band where a pixel
+ * result could fall and trigger an LM tiebreaker.
  */
 export function levelMayInvokeLm(id: EquivalenceLevelId): boolean {
   const def = getEquivalenceLevel(id);
   return def.ambiguity_band_percentage > 0;
 }
 
-export interface EquivalenceDecisionInput {
-  level: EquivalenceLevelId;
+export interface ComputeMatchedAtLevelInput {
   changedPixelPercentage: number;
   ssim: number | null;
+  /**
+   * The session's target level. Used only for ambiguity-band detection —
+   * the pixel walk itself is independent of target.
+   */
+  targetLevel: EquivalenceLevelId;
 }
 
-export interface EquivalenceDecision {
-  /** True/false when pixel rules can decide on their own; null when LM tiebreaker is required. */
-  imDeterminedEquivalent: boolean | null;
-  /** True if pixel rules decided directly (no LM needed). */
-  decidedByPixels: boolean;
-  /** True if the result fell inside the configured ambiguity band. */
-  inAmbiguityBand: boolean;
-  /** Reason for invoking LM, if any. Phase 2 also returns 'target_level_failure' here. */
-  lmInvocationReason: LmInvocationReason | null;
+export interface ComputeMatchedAtLevelOutput {
+  /**
+   * Strictest level the pixel metrics confirm. Walks levels strictest →
+   * loosest and returns the first that passes (`pct ≤ threshold` and SSIM
+   * floor satisfied if configured). 'none' when no level matches.
+   */
+  pixelMatchedAtLevel: MatchedAtLevel;
+  /**
+   * True when the pixel result lands inside the *target* level's ambiguity
+   * band — the case where LM is invoked to break the tie.
+   */
+  inTargetAmbiguityBand: boolean;
 }
 
 /**
- * Decide equivalence for a single level using only pixel metrics.
+ * Single-pass equivalence: from one set of pixel metrics, return the
+ * strictest level that passes plus an "in target's ambiguity band" flag
+ * for LM-gating decisions.
  *
- * - `pixel-perfect`: any non-zero pixel change is non-equivalent.
- * - `strict`/`tolerant`/`loose`: equivalent when pct <= threshold and (when configured)
- *   SSIM >= min_ssim. Pct inside the ambiguity band returns null (LM tiebreaker).
+ * Why one pass: levels are monotonic in their pct threshold (each looser
+ * level subsumes the stricter one's pct check). SSIM floors are also
+ * monotonic (looser = lower floor). So walking strictest → loosest and
+ * stopping at the first pass gives the canonical strictness result.
  *
- * TODO(phase-2): replace with `computeMatchedAtLevel` that walks all levels
- * strictest -> loosest in one call, returning the first match. This function
- * is retained as a helper used by that walk.
+ * The ambiguity band is *not* used in the pixel walk itself; it's a
+ * separate signal applied at the target level only, used to decide
+ * whether to invoke LM as a tiebreaker.
  */
-export function decideEquivalence(input: EquivalenceDecisionInput): EquivalenceDecision {
-  const def = getEquivalenceLevel(input.level);
+export function computeMatchedAtLevel(
+  input: ComputeMatchedAtLevelInput,
+): ComputeMatchedAtLevelOutput {
+  const { changedPixelPercentage: pct, ssim, targetLevel } = input;
 
-  const { changedPixelPercentage: pct, ssim } = input;
-  const threshold = def.max_changed_pixel_percentage;
-  const band = def.ambiguity_band_percentage;
-
-  const lowerBand = Math.max(0, threshold - band);
-  const upperBand = threshold + band;
-
-  const inBand = band > 0 && pct >= lowerBand && pct <= upperBand;
-  if (inBand) {
-    return {
-      imDeterminedEquivalent: null,
-      decidedByPixels: false,
-      inAmbiguityBand: true,
-      lmInvocationReason: 'ambiguous_pixel_result',
-    };
+  let pixelMatchedAtLevel: MatchedAtLevel = 'none';
+  for (const level of EQUIVALENCE_LEVELS) {
+    if (pct > level.max_changed_pixel_percentage) continue;
+    if (level.min_ssim !== null && ssim !== null && ssim < level.min_ssim) continue;
+    pixelMatchedAtLevel = level.id;
+    break;
   }
 
-  let equivalent = pct <= threshold;
-  if (equivalent && def.min_ssim !== null && ssim !== null) {
-    equivalent = ssim >= def.min_ssim;
-  }
+  const target = getEquivalenceLevel(targetLevel);
+  const band = target.ambiguity_band_percentage;
+  const lowerBand = Math.max(0, target.max_changed_pixel_percentage - band);
+  const upperBand = target.max_changed_pixel_percentage + band;
+  const inTargetAmbiguityBand = band > 0 && pct >= lowerBand && pct <= upperBand;
 
-  return {
-    imDeterminedEquivalent: equivalent,
-    decidedByPixels: true,
-    inAmbiguityBand: false,
-    lmInvocationReason: null,
-  };
+  return { pixelMatchedAtLevel, inTargetAmbiguityBand };
 }

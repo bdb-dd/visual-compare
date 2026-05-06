@@ -164,8 +164,7 @@ async function settle(h: Harness): Promise<void> {
   }
 }
 
-// TODO(phase-2): rewrite for single-pass evaluator and matched_at_level results.
-describe.skip('evaluator', () => {
+describe('evaluator', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await makeHarness();
@@ -179,7 +178,7 @@ describe.skip('evaluator', () => {
 
     const first = await request(h.app)
       .post(`/api/sessions/${sessionId}/evaluate`)
-      .send({ config: { viewports: [desktop], equivalence_levels: ['tolerant'] } });
+      .send({ config: { viewports: [desktop], target_level: 'tolerant' } });
     expect(first.status).toBe(202);
     expect(first.body.coalesced).toBe(false);
     const evalId1 = first.body.evaluation_id as string;
@@ -190,13 +189,13 @@ describe.skip('evaluator', () => {
     expect(detail1.status).toBe(200);
     expect(detail1.body.evaluation.status).toBe('complete');
     expect(detail1.body.evaluation.capture_run_id).toBeTruthy();
-    expect(detail1.body.evaluation.comparison_run_ids).toHaveLength(1);
+    expect(detail1.body.evaluation.comparison_run_id).toBeTruthy();
     expect(detail1.body.evaluation.cache_hits.captures).toBe(4); // 2 pairs × 2 sides
     expect(detail1.body.evaluation.cache_hits.pixel).toBe(2); // 2 comparisons cached
 
     const second = await request(h.app)
       .post(`/api/sessions/${sessionId}/evaluate`)
-      .send({ config: { viewports: [desktop], equivalence_levels: ['tolerant'] } });
+      .send({ config: { viewports: [desktop], target_level: 'tolerant' } });
     expect(second.status).toBe(202);
     expect(second.body.coalesced).toBe(false);
     const evalId2 = second.body.evaluation_id as string;
@@ -208,8 +207,8 @@ describe.skip('evaluator', () => {
     expect(detail2.body.evaluation.status).toBe('complete');
     // No new capture run because all captures hit the cache.
     expect(detail2.body.evaluation.capture_run_id).toBeNull();
-    // No new comparison runs because pixel cache covered everything.
-    expect(detail2.body.evaluation.comparison_run_ids).toHaveLength(0);
+    // No new comparison run because pixel cache covered everything.
+    expect(detail2.body.evaluation.comparison_run_id).toBeNull();
     expect(detail2.body.evaluation.cache_hits.pixel).toBe(2);
   });
 
@@ -232,12 +231,16 @@ describe.skip('evaluator', () => {
     await settle(h);
   });
 
-  it('triggers the LM cache for semantic mode and reuses it on second eval', async () => {
+  it('LM second pass: invokeLm=true on a target the pixel walk misses populates the LM cache and is reused', async () => {
     const sessionId = await uploadSession(h.app);
 
+    // The stub imagick reports pct=1, ssim=0.97 → tolerant matches by pixel.
+    // Force LM second pass by picking a stricter target the pixel walk misses
+    // (strict requires pct≤0.5).
     h.evaluator.start(sessionId, {
       viewports: [desktop],
-      equivalence_levels: ['semantic'],
+      target_level: 'strict',
+      invoke_lm: true,
     });
     await settle(h);
 
@@ -247,32 +250,33 @@ describe.skip('evaluator', () => {
       )
       .all();
     expect(lmRows).toHaveLength(2);
-    expect(lmRows.every((r) => r.invocation_reason === 'semantic_mode')).toBe(true);
+    expect(lmRows.every((r) => r.invocation_reason === 'target_level_failure')).toBe(true);
 
     const second = h.evaluator.start(sessionId, {
       viewports: [desktop],
-      equivalence_levels: ['semantic'],
+      target_level: 'strict',
+      invoke_lm: true,
     });
     await settle(h);
     const detail = await request(h.app).get(`/api/evaluations/${second.evaluation_id}`);
     expect(detail.body.evaluation.cache_hits.lm).toBe(2);
-    expect(detail.body.evaluation.comparison_run_ids).toHaveLength(0);
+    expect(detail.body.evaluation.comparison_run_id).toBeNull();
   });
 
-  it('GET /results returns per-(pair, viewport, level) verdicts from cache', async () => {
+  it('GET /results returns per-(pair, viewport) verdicts with matched_at_level', async () => {
     const sessionId = await uploadSession(h.app);
 
     // Empty cache → all rows pending.
     const empty = await request(h.app).get(`/api/sessions/${sessionId}/results`);
     expect(empty.status).toBe(200);
-    expect(empty.body.results).toHaveLength(2); // 2 pairs × 1 viewport × 1 level
+    expect(empty.body.results).toHaveLength(2); // 2 pairs × 1 viewport
     for (const r of empty.body.results) expect(r.status).toBe('pending');
     expect(empty.body.plan.capture_misses).toBe(4);
     expect(empty.body.plan.comparison_misses).toBe(2);
 
     h.evaluator.start(sessionId, {
       viewports: [desktop],
-      equivalence_levels: ['tolerant'],
+      target_level: 'tolerant',
     });
     await settle(h);
 
@@ -281,7 +285,9 @@ describe.skip('evaluator', () => {
     expect(populated.body.plan.comparison_misses).toBe(0);
     for (const r of populated.body.results) {
       expect(r.status).toBe('cached');
-      expect(r.is_equivalent).toBe(1); // 1% pct, tolerant threshold = 5
+      // pct=1 with ssim=0.97 → tolerant matches (pct≤5, ssim≥0.95).
+      expect(r.matched_at_level).toBe('tolerant');
+      expect(r.matched_decided_by).toBe('pixel');
       expect(r.pixel.changed_pct).toBe(1);
     }
   });
@@ -291,12 +297,12 @@ describe.skip('evaluator', () => {
 
     h.evaluator.start(sessionId, {
       viewports: [desktop],
-      equivalence_levels: ['tolerant'],
+      target_level: 'tolerant',
     });
     await settle(h);
     h.evaluator.start(sessionId, {
       viewports: [desktop],
-      equivalence_levels: ['tolerant'],
+      target_level: 'tolerant',
     });
     await settle(h);
 
@@ -314,7 +320,7 @@ describe.skip('evaluator', () => {
     const sessionId = await uploadSession(h.app);
     const res = await request(h.app)
       .post(`/api/sessions/${sessionId}/evaluate`)
-      .send({ config: { equivalence_levels: ['nonsense'] } });
+      .send({ config: { target_level: 'nonsense' } });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_config');
   });

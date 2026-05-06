@@ -11,7 +11,8 @@ import {
   extractConnectedComponents,
 } from './imagick.js';
 import { parseConnectedComponents } from './connected-components.js';
-import { decideEquivalence } from './equivalence.js';
+import { computeMatchedAtLevel } from './equivalence.js';
+import { isAtLeastAsStrict } from '../constants/equivalence.js';
 import {
   isAnalyzeError,
   type AnalyzeOutcome,
@@ -25,6 +26,8 @@ import type {
   ComparisonRunRow,
   EquivalenceLevelId,
   LmInvocationReason,
+  MatchedAtLevel,
+  MatchedDecidedBy,
 } from '../types.js';
 import { PIPELINE_VERSION } from '../constants/pipeline.js';
 
@@ -248,7 +251,15 @@ export function startComparisonRunForPairs(
     // single, consistent prompt (and hence a stable cache key).
     const prompts = resolveSessionPrompts(db, sessionId);
     for (const c of comparisons) {
-      await runOneComparison(deps, imagick, c, options.targetLevel, circuit, prompts);
+      await runOneComparison(
+        deps,
+        imagick,
+        c,
+        options.targetLevel,
+        options.invokeLm ?? false,
+        circuit,
+        prompts,
+      );
       ctx.incrementProgress();
     }
   });
@@ -282,7 +293,8 @@ async function runOneComparison(
   deps: ComparisonRunDeps,
   imagick: ComparisonImagick,
   comparison: ComparisonRow,
-  level: EquivalenceLevelId,
+  targetLevel: EquivalenceLevelId,
+  invokeLm: boolean,
   circuit: LmCircuit,
   prompts: SessionPromptMap,
 ): Promise<void> {
@@ -329,23 +341,29 @@ async function runOneComparison(
     const totalArea = ae.width * ae.height;
     const bboxAreaPct = regions.reduce((sum, r) => sum + r.area, 0) / Math.max(1, totalArea) * 100;
 
-    const decision = decideEquivalence({
-      level,
+    const { pixelMatchedAtLevel, inTargetAmbiguityBand } = computeMatchedAtLevel({
       changedPixelPercentage: ae.changedPixelPercentage,
       ssim,
+      targetLevel,
     });
 
-    // LM Studio invocation: triggered when the pixel result lands in the
-    // ambiguity band. Phase 2 will also invoke LM for `target_level_failure`
-    // as a second pass on misses.
+    // LM invocation rules (at most one LM call per comparison):
+    //   1. Target's ambiguity band → `ambiguous_pixel_result` (tiebreaker).
+    //   2. Pixel didn't reach target AND user opted in to LM second-pass
+    //      → `target_level_failure`.
+    // Otherwise the pixel verdict stands.
+    let lmInvocationReason: LmInvocationReason | null = null;
+    if (inTargetAmbiguityBand) {
+      lmInvocationReason = 'ambiguous_pixel_result';
+    } else if (invokeLm && !isAtLeastAsStrict(pixelMatchedAtLevel, targetLevel)) {
+      lmInvocationReason = 'target_level_failure';
+    }
+
     let lmOutcome: AnalyzeOutcome | null = null;
-    // Phase 2 will also assign `target_level_failure` here when the comparison
-    // misses the target and the user opted in to LM second-pass.
-    let lmInvocationReason: LmInvocationReason | null = decision.lmInvocationReason;
     if (lmInvocationReason !== null) {
       if (!deps.lm) {
         throw new Error(
-          `LM Studio is required for level '${level}' (reason: ${lmInvocationReason}) but no LM client was configured. Set LM_STUDIO_BASE_URL and load a model.`,
+          `LM Studio is required (reason: ${lmInvocationReason}) but no LM client was configured. Set LM_STUDIO_BASE_URL and load a model.`,
         );
       }
       // Circuit breaker: skip if a prior comparison in this run already
@@ -366,7 +384,7 @@ async function runOneComparison(
         aPath,
         bPath,
         diffPath,
-        level,
+        level: targetLevel,
         invocationReason: lmInvocationReason,
         changedPixelPercentage: ae.changedPixelPercentage,
         ssim,
@@ -385,26 +403,28 @@ async function runOneComparison(
       circuit.lastError = null;
     }
 
-    // Final verdict: LM trumps pixel decision when LM was invoked.
+    // Final matched_at_level:
+    //   - LM "equivalent" promotes to target.
+    //   - LM "different" leaves it at the pixel walk's result (necessarily
+    //     weaker than target; LM can't downgrade further than pixel said).
+    //   - No LM: pixel result stands.
     const lmEquivalent = lmOutcome && !isAnalyzeError(lmOutcome)
       ? lmOutcome.parsed.equivalent
       : null;
-    const finalEquivalent: boolean | null =
-      lmEquivalent !== null ? lmEquivalent : decision.imDeterminedEquivalent;
-
-    if (finalEquivalent === null) {
-      throw new Error(
-        `Internal: comparison ${comparison.id} is missing a final equivalence verdict`,
-      );
+    let matchedAtLevel: MatchedAtLevel = pixelMatchedAtLevel;
+    let matchedDecidedBy: MatchedDecidedBy = 'pixel';
+    if (lmEquivalent !== null) {
+      matchedDecidedBy = 'lm';
+      if (lmEquivalent) matchedAtLevel = targetLevel;
+      // LM "different" → keep pixelMatchedAtLevel.
     }
 
-    // TODO(phase-2): replace this with `computeMatchedAtLevel` that walks all
-    // levels strictest -> loosest. For phase 1 we only know whether the
-    // comparison passes at the target level; record `target` if so, else
-    // `none`. `matched_decided_by` reflects whether LM was the deciding voice.
-    const matchedAtLevel: 'pixel-perfect' | 'strict' | 'tolerant' | 'loose' | 'none' =
-      finalEquivalent ? level : 'none';
-    const matchedDecidedBy: 'pixel' | 'lm' = lmEquivalent !== null ? 'lm' : 'pixel';
+    // `im_determined_equivalent` records whether pixel rules alone reached
+    // the target. It's a diagnostic — the load-bearing field is matched_at_level.
+    const imDeterminedEquivalentForTarget = isAtLeastAsStrict(
+      pixelMatchedAtLevel,
+      targetLevel,
+    );
 
     const completedAt = new Date().toISOString();
     db.transaction(() => {
@@ -437,9 +457,7 @@ async function runOneComparison(
         componentCount,
         diffHash,
         diffBytes,
-        decision.imDeterminedEquivalent === null
-          ? null
-          : decision.imDeterminedEquivalent ? 1 : 0,
+        imDeterminedEquivalentForTarget ? 1 : 0,
         matchedAtLevel,
         matchedDecidedBy,
         lmInvocationReason,

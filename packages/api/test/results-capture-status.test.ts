@@ -166,8 +166,7 @@ async function settle(h: Harness): Promise<void> {
   }
 }
 
-// TODO(phase-2): rewrite for matched_at_level + acceptance_status fields (semantic level dropped).
-describe.skip('SessionResultRow capture statuses', () => {
+describe('SessionResultRow capture statuses', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await makeHarness();
@@ -180,7 +179,7 @@ describe.skip('SessionResultRow capture statuses', () => {
     const { sessionId } = await uploadOnePair(h.app);
     h.evaluator.start(sessionId, {
       viewports: [desktop],
-      equivalence_levels: ['tolerant'],
+      target_level: 'tolerant',
     });
     await settle(h);
 
@@ -252,18 +251,19 @@ describe.skip('SessionResultRow capture statuses', () => {
   // Regression: the /results route used to call resolveEvaluationConfig with
   // `lm: undefined`, which made the cache lookup use lm_model_id='unknown'
   // while the cache rows themselves were keyed on the real model id. Every
-  // semantic row stayed in `comparison_misses` forever even though the LM
+  // LM-resolved row stayed in `comparison_misses` forever even though the
   // verdicts were already cached.
-  it('semantic /results reflects cached LM verdicts after evaluation', async () => {
+  it('/results reflects cached LM verdicts after evaluation (target_level_failure)', async () => {
     const { sessionId } = await uploadOnePair(h.app);
-    // Persist the session config so /results' default lookup uses semantic.
+    // Persist a session config that forces an LM second pass (strict target,
+    // pixel walk reaches only tolerant under the stub metrics).
     await request(h.app)
       .put(`/api/sessions/${sessionId}/config`)
       .send({
         default_viewports: [desktop],
-        default_equivalence_levels: ['semantic'],
+        default_equivalence_level: 'strict',
       });
-    h.evaluator.start(sessionId);
+    h.evaluator.start(sessionId, { invoke_lm: true });
     await settle(h);
 
     const cached = h.db
@@ -273,9 +273,13 @@ describe.skip('SessionResultRow capture statuses', () => {
       .all();
     expect(cached).toHaveLength(1);
 
-    const res = await request(h.app).get(`/api/sessions/${sessionId}/results`);
+    const res = await request(h.app).get(
+      `/api/sessions/${sessionId}/results?config=${encodeURIComponent(
+        JSON.stringify({ invoke_lm: true }),
+      )}`,
+    );
     expect(res.body.config.lm_model_id).toBe(cached[0]!.model_id);
-    expect(res.body.config.lm_prompt_ids.semantic_mode).toBe(cached[0]!.prompt_id);
+    expect(res.body.config.lm_prompt_ids.target_level_failure).toBe(cached[0]!.prompt_id);
     expect(res.body.plan.comparison_misses).toBe(0);
     expect(res.body.plan.cache_hits.lm).toBe(1);
     const row = res.body.results[0] as SessionResultRow;

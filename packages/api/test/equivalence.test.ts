@@ -1,48 +1,102 @@
 import { describe, expect, it } from 'vitest';
-import { decideEquivalence } from '../src/services/equivalence.js';
+import { computeMatchedAtLevel } from '../src/services/equivalence.js';
 
-describe('decideEquivalence', () => {
-  it('pixel-perfect: 0% is equivalent', () => {
-    const d = decideEquivalence({ level: 'pixel-perfect', changedPixelPercentage: 0, ssim: 1 });
-    expect(d.imDeterminedEquivalent).toBe(true);
-    expect(d.decidedByPixels).toBe(true);
+describe('computeMatchedAtLevel', () => {
+  it('returns pixel-perfect when both metrics are perfect', () => {
+    const r = computeMatchedAtLevel({
+      changedPixelPercentage: 0,
+      ssim: 1,
+      targetLevel: 'tolerant',
+    });
+    expect(r.pixelMatchedAtLevel).toBe('pixel-perfect');
+    expect(r.inTargetAmbiguityBand).toBe(false);
   });
 
-  it('pixel-perfect: any change is non-equivalent', () => {
-    const d = decideEquivalence({ level: 'pixel-perfect', changedPixelPercentage: 0.001, ssim: 1 });
-    expect(d.imDeterminedEquivalent).toBe(false);
+  it('returns strict when pct just above 0 but below strict threshold', () => {
+    // strict: threshold=0.5, band=0.25 → in target band when pct ∈ [0.25, 0.75]
+    const r = computeMatchedAtLevel({
+      changedPixelPercentage: 0.1,
+      ssim: null,
+      targetLevel: 'strict',
+    });
+    expect(r.pixelMatchedAtLevel).toBe('strict');
+    expect(r.inTargetAmbiguityBand).toBe(false);
   });
 
-  it('strict: comfortably below band is equivalent', () => {
-    // strict: threshold=0.5, band=0.25 → ambiguity band [0.25, 0.75]
-    const d = decideEquivalence({ level: 'strict', changedPixelPercentage: 0.1, ssim: null });
-    expect(d.imDeterminedEquivalent).toBe(true);
-    expect(d.decidedByPixels).toBe(true);
+  it('returns tolerant when pct is over strict but under tolerant', () => {
+    const r = computeMatchedAtLevel({
+      changedPixelPercentage: 1,
+      ssim: 0.99,
+      targetLevel: 'tolerant',
+    });
+    expect(r.pixelMatchedAtLevel).toBe('tolerant');
   });
 
-  it('strict: inside ambiguity band invokes LM', () => {
-    const d = decideEquivalence({ level: 'strict', changedPixelPercentage: 0.4, ssim: null });
-    expect(d.imDeterminedEquivalent).toBe(null);
-    expect(d.lmInvocationReason).toBe('ambiguous_pixel_result');
+  it('SSIM floor at tolerant skips to loose when SSIM is below 0.95', () => {
+    // pct=1 satisfies tolerant pct (≤5) but SSIM 0.9 < 0.95 floor.
+    // loose: pct≤15 ✓, SSIM≥0.85 ✓ → loose.
+    const r = computeMatchedAtLevel({
+      changedPixelPercentage: 1,
+      ssim: 0.9,
+      targetLevel: 'tolerant',
+    });
+    expect(r.pixelMatchedAtLevel).toBe('loose');
   });
 
-  it('strict: clearly over threshold is non-equivalent', () => {
-    const d = decideEquivalence({ level: 'strict', changedPixelPercentage: 5, ssim: null });
-    expect(d.imDeterminedEquivalent).toBe(false);
+  it('returns none when pct exceeds the loose threshold', () => {
+    const r = computeMatchedAtLevel({
+      changedPixelPercentage: 20,
+      ssim: 0.9,
+      targetLevel: 'tolerant',
+    });
+    expect(r.pixelMatchedAtLevel).toBe('none');
   });
 
-  it('tolerant: low change + high SSIM is equivalent', () => {
-    const d = decideEquivalence({ level: 'tolerant', changedPixelPercentage: 1, ssim: 0.99 });
-    expect(d.imDeterminedEquivalent).toBe(true);
+  it('returns none when SSIM is below the loose floor', () => {
+    const r = computeMatchedAtLevel({
+      changedPixelPercentage: 10,
+      ssim: 0.5,
+      targetLevel: 'loose',
+    });
+    expect(r.pixelMatchedAtLevel).toBe('none');
   });
 
-  it('tolerant: low change but SSIM below floor is not equivalent', () => {
-    const d = decideEquivalence({ level: 'tolerant', changedPixelPercentage: 1, ssim: 0.5 });
-    expect(d.imDeterminedEquivalent).toBe(false);
+  it('flags inTargetAmbiguityBand when pct lands in the target band', () => {
+    // tolerant: threshold=5, band=2 → band is [3, 7]
+    const r = computeMatchedAtLevel({
+      changedPixelPercentage: 4.5,
+      ssim: 0.99,
+      targetLevel: 'tolerant',
+    });
+    expect(r.inTargetAmbiguityBand).toBe(true);
   });
 
-  it('loose: in ambiguity band invokes LM', () => {
-    const d = decideEquivalence({ level: 'loose', changedPixelPercentage: 14, ssim: 0.9 });
-    expect(d.lmInvocationReason).toBe('ambiguous_pixel_result');
+  it('inTargetAmbiguityBand is false outside the band even if a different level is in its band', () => {
+    // pct=14 is in loose's band ([10, 20]) but not strict's, so when target=strict
+    // we should not flag the band.
+    const r = computeMatchedAtLevel({
+      changedPixelPercentage: 14,
+      ssim: 0.9,
+      targetLevel: 'strict',
+    });
+    expect(r.inTargetAmbiguityBand).toBe(false);
+  });
+
+  it('pixel-perfect target has no ambiguity band', () => {
+    const r = computeMatchedAtLevel({
+      changedPixelPercentage: 0,
+      ssim: null,
+      targetLevel: 'pixel-perfect',
+    });
+    expect(r.inTargetAmbiguityBand).toBe(false);
+  });
+
+  it('null SSIM does not block any level (treated as no signal)', () => {
+    const r = computeMatchedAtLevel({
+      changedPixelPercentage: 1,
+      ssim: null,
+      targetLevel: 'tolerant',
+    });
+    expect(r.pixelMatchedAtLevel).toBe('tolerant');
   });
 });

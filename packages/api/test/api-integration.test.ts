@@ -132,8 +132,7 @@ async function makeHarness(): Promise<Harness> {
   };
 }
 
-// TODO(phase-2): rewrite for targetLevel/invokeLm options + matched_at_level results.
-describe.skip('API integration', () => {
+describe('API integration', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await makeHarness();
@@ -190,7 +189,7 @@ describe.skip('API integration', () => {
       .send({
         session_id: sessionId,
         capture_run_id: captureRunId,
-        options: { equivalenceLevel: 'tolerant' },
+        options: { targetLevel: 'tolerant' },
       });
     expect(compStart.status).toBe(202);
     const compRunId = compStart.body.comparison_run_id as string;
@@ -204,7 +203,9 @@ describe.skip('API integration', () => {
       expect(c.changed_pixel_percentage).toBe(1);
       expect(c.ssim).toBe(0.97);
       expect(c.connected_component_count).toBe(1);
-      expect(c.is_equivalent).toBe(1); // 1% within tolerant threshold + SSIM > 0.95
+      // 1% pct + 0.97 SSIM → tolerant matches by pixel.
+      expect(c.matched_at_level).toBe('tolerant');
+      expect(c.matched_decided_by).toBe('pixel');
     }
 
     // Detail endpoint

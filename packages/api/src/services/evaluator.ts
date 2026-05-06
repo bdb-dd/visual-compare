@@ -20,7 +20,7 @@ import {
   getSessionPrompt,
   type LmPromptInvocationReason,
 } from './lm-prompts.js';
-import { decideEquivalence } from './equivalence.js';
+import { computeMatchedAtLevel } from './equivalence.js';
 import { captureOptsHashFor } from './capture-opts-hash.js';
 import { PIPELINE_VERSION } from '../constants/pipeline.js';
 import {
@@ -30,6 +30,7 @@ import {
 import {
   DEFAULT_EQUIVALENCE_LEVEL,
   DEFAULT_REGION_MATCH_CONFIG,
+  isAtLeastAsStrict,
 } from '../constants/equivalence.js';
 import type {
   CaptureSide,
@@ -382,12 +383,22 @@ export function planEvaluation(
       }
       pixelHits += 1;
 
-      const decision = decideEquivalence({
-        level: config.target_level,
+      const { pixelMatchedAtLevel, inTargetAmbiguityBand } = computeMatchedAtLevel({
         changedPixelPercentage: pixel.changed_pct ?? 0,
         ssim: pixel.ssim,
+        targetLevel: config.target_level,
       });
-      const reason: LmInvocationReason | null = decision.lmInvocationReason;
+      // Same gating as runOneComparison: LM is invoked at most once, with
+      // ambiguity-band taking precedence over target-failure.
+      let reason: LmInvocationReason | null = null;
+      if (inTargetAmbiguityBand) {
+        reason = 'ambiguous_pixel_result';
+      } else if (
+        config.invoke_lm &&
+        !isAtLeastAsStrict(pixelMatchedAtLevel, config.target_level)
+      ) {
+        reason = 'target_level_failure';
+      }
       if (reason !== null) {
         const promptId = lookupPromptId(config, reason);
         const lmHit = promptId
@@ -830,47 +841,52 @@ export function readSessionResults(
           // Default to the pixel-cache comparison_id; the LM branch below
           // overrides it when an LM verdict is the source of truth.
           row.comparison_id = pixel.comparison_id;
-          const decision = decideEquivalence({
-            level: config.target_level,
+          const { pixelMatchedAtLevel, inTargetAmbiguityBand } = computeMatchedAtLevel({
             changedPixelPercentage: pixel.changed_pct ?? 0,
             ssim: pixel.ssim,
+            targetLevel: config.target_level,
           });
-          // TODO(phase-2): replace decideEquivalence (single-level) with
-          // computeMatchedAtLevel (walks all levels). For phase 1, matched_at_level
-          // is target if equivalent at target, else 'none'.
-          let matched: MatchedAtLevel | null = null;
-          let decidedBy: 'pixel' | 'lm' | null = null;
-          if (decision.lmInvocationReason) {
-            const promptId = lookupPromptId(config, decision.lmInvocationReason);
+          // Same gating as the pipeline: LM is invoked at most once.
+          let lmReason: LmInvocationReason | null = null;
+          if (inTargetAmbiguityBand) {
+            lmReason = 'ambiguous_pixel_result';
+          } else if (
+            config.invoke_lm &&
+            !isAtLeastAsStrict(pixelMatchedAtLevel, config.target_level)
+          ) {
+            lmReason = 'target_level_failure';
+          }
+          if (lmReason) {
+            const promptId = lookupPromptId(config, lmReason);
             const lm = promptId
               ? lmCacheLookup.get(
                   aSha,
                   bSha,
                   promptId,
                   config.lm_model_id,
-                  decision.lmInvocationReason,
+                  lmReason,
                   PIPELINE_VERSION,
                 )
               : null;
             if (lm) {
               row.lm = {
-                invocation_reason: decision.lmInvocationReason,
+                invocation_reason: lmReason,
                 verdict: lm.verdict,
                 diff_summary: lm.summary,
                 confidence: lm.confidence,
               };
-              matched = lm.verdict ? config.target_level : 'none';
-              decidedBy = 'lm';
+              row.matched_decided_by = 'lm';
+              row.matched_at_level =
+                lm.verdict === 1 ? config.target_level : pixelMatchedAtLevel;
               row.comparison_id = lm.comparison_id;
               row.status = 'cached';
             }
-          } else if (decision.imDeterminedEquivalent !== null) {
-            matched = decision.imDeterminedEquivalent ? config.target_level : 'none';
-            decidedBy = 'pixel';
+            // No LM cache hit yet → row stays pending; matched_at_level null.
+          } else {
+            row.matched_at_level = pixelMatchedAtLevel;
+            row.matched_decided_by = 'pixel';
             row.status = 'cached';
           }
-          row.matched_at_level = matched;
-          row.matched_decided_by = decidedBy;
         }
       }
       out.push(row);

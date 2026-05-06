@@ -259,8 +259,7 @@ describe('LmClient preflight', () => {
 // Comparison-run start: route gates LM-able levels behind preflight
 // ---------------------------------------------------------------------------
 
-// TODO(phase-2): rewrite for targetLevel + invokeLm options (semantic level dropped).
-describe.skip('comparison-run preflight gate', () => {
+describe('comparison-run preflight gate', () => {
   let storeDir: string;
   let db: ReturnType<typeof openDatabase>;
   let activeQueue: JobQueue | null;
@@ -316,13 +315,13 @@ describe.skip('comparison-run preflight gate', () => {
     return { sessionId, captureRunId };
   }
 
-  it('returns 503 when level is semantic and no lm client is configured', async () => {
+  it('returns 503 when invokeLm is requested and no lm client is configured', async () => {
     const app = makeApp(undefined);
     const { sessionId, captureRunId } = seedSessionAndCaptureRun();
     const r = await request(app).post('/api/comparison-runs').send({
       session_id: sessionId,
       capture_run_id: captureRunId,
-      options: { equivalenceLevel: 'semantic' },
+      options: { targetLevel: 'tolerant', invokeLm: true },
     });
     expect(r.status).toBe(503);
     expect(r.body.error).toBe('lm_unavailable');
@@ -338,7 +337,7 @@ describe.skip('comparison-run preflight gate', () => {
       const r = await request(app).post('/api/comparison-runs').send({
         session_id: sessionId,
         capture_run_id: captureRunId,
-        options: { equivalenceLevel: 'semantic' },
+        options: { targetLevel: 'tolerant', invokeLm: true },
       });
       expect(r.status).toBe(503);
       expect(r.body.error).toBe('lm_unavailable');
@@ -346,13 +345,13 @@ describe.skip('comparison-run preflight gate', () => {
     });
   });
 
-  it('accepts pixel-perfect runs without preflight (band=0)', async () => {
+  it('accepts pixel-perfect runs without preflight (band=0, no invokeLm)', async () => {
     const app = makeApp(undefined); // no LM at all
     const { sessionId, captureRunId } = seedSessionAndCaptureRun();
     const r = await request(app).post('/api/comparison-runs').send({
       session_id: sessionId,
       capture_run_id: captureRunId,
-      options: { equivalenceLevel: 'pixel-perfect' },
+      options: { targetLevel: 'pixel-perfect' },
     });
     expect(r.status).toBe(202);
   });
@@ -420,8 +419,7 @@ describe('GET /api/meta/lm-status', () => {
 // Per-run circuit breaker
 // ---------------------------------------------------------------------------
 
-// TODO(phase-2): full pipeline test depends on single-pass evaluator.
-describe.skip('per-run circuit breaker', () => {
+describe('per-run circuit breaker', () => {
   it('short-circuits remaining LM-required comparisons after 2 failures', async () => {
     const storeDir = await mkdtemp(join(tmpdir(), 'vc-cb-'));
     const db = openDatabase({ path: ':memory:' });
@@ -497,11 +495,12 @@ describe.skip('per-run circuit breaker', () => {
       expect(cap.status).toBe(202);
       await queue.drain();
 
-      // 3. Start a semantic comparison run — every comparison should attempt LM and fail.
+      // 3. Start a comparison run with invokeLm=true on a strict target —
+      //    every comparison should attempt LM (target_level_failure) and fail.
       const comp = await request(app).post('/api/comparison-runs').send({
         session_id: sessionId,
         capture_run_id: cap.body.capture_run_id,
-        options: { equivalenceLevel: 'semantic' },
+        options: { targetLevel: 'strict', invokeLm: true },
       });
       expect(comp.status).toBe(202);
       await queue.drain();

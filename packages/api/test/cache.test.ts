@@ -152,8 +152,7 @@ async function uploadSession(app: Harness['app']): Promise<string> {
   return upload.body.session.id as string;
 }
 
-// TODO(phase-2): rewrite for new pipeline (semantic_mode dropped, target_level_failure introduced).
-describe.skip('cache upserts', () => {
+describe('cache upserts', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await makeHarness();
@@ -196,7 +195,7 @@ describe.skip('cache upserts', () => {
     expect(urls).toEqual(['https://a1.example.com', 'https://b1.example.com']);
   });
 
-  it('writes pixel and lm cache rows when comparisons complete in semantic mode', async () => {
+  it('writes pixel and lm cache rows on a target_level_failure second pass', async () => {
     const sessionId = await uploadSession(h.app);
     const captureStart = await request(h.app)
       .post('/api/capture-runs')
@@ -204,12 +203,14 @@ describe.skip('cache upserts', () => {
     await h.queue.drain();
     const captureRunId = captureStart.body.capture_run_id as string;
 
+    // pct=1, ssim=0.97 → tolerant matches by pixel; target=strict misses;
+    // invokeLm=true triggers target_level_failure LM call.
     const compStart = await request(h.app)
       .post('/api/comparison-runs')
       .send({
         session_id: sessionId,
         capture_run_id: captureRunId,
-        options: { equivalenceLevel: 'semantic' },
+        options: { targetLevel: 'strict', invokeLm: true },
       });
     expect(compStart.status).toBe(202);
     await h.queue.drain();
@@ -233,7 +234,7 @@ describe.skip('cache upserts', () => {
     expect(lmRows[0]).toMatchObject({
       prompt_id: 'test-prompt',
       model_id: 'stub-model',
-      invocation_reason: 'semantic_mode',
+      invocation_reason: 'target_level_failure',
       pipeline_version: PIPELINE_VERSION,
       verdict: 0,
     });
@@ -247,12 +248,14 @@ describe.skip('cache upserts', () => {
     await h.queue.drain();
     const captureRunId = captureStart.body.capture_run_id as string;
 
+    // tolerant target with the stub metrics → pixel matches, no LM, no
+    // ambiguity band hit. invokeLm omitted so no second pass either.
     await request(h.app)
       .post('/api/comparison-runs')
       .send({
         session_id: sessionId,
         capture_run_id: captureRunId,
-        options: { equivalenceLevel: 'tolerant' },
+        options: { targetLevel: 'tolerant' },
       });
     await h.queue.drain();
 
@@ -299,8 +302,7 @@ describe.skip('cache upserts', () => {
   });
 });
 
-// TODO(phase-1): rewrite to use lm_diff_summary column and new comparison schema.
-describe.skip('runCacheBackfill', () => {
+describe('runCacheBackfill', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await makeHarness();
@@ -317,12 +319,14 @@ describe.skip('runCacheBackfill', () => {
     await h.queue.drain();
     const captureRunId = captureStart.body.capture_run_id as string;
 
+    // Force LM invocation via target_level_failure so backfill has an LM row
+    // to copy.
     await request(h.app)
       .post('/api/comparison-runs')
       .send({
         session_id: sessionId,
         capture_run_id: captureRunId,
-        options: { equivalenceLevel: 'semantic' },
+        options: { targetLevel: 'strict', invokeLm: true },
       });
     await h.queue.drain();
 
