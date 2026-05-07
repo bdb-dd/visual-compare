@@ -1,4 +1,6 @@
 import type {
+  AcceptanceRow,
+  BoundingBoxPercent,
   CaptureDto,
   CaptureRunRow,
   ComparisonDetailDto,
@@ -8,6 +10,7 @@ import type {
   EvaluationStatusDto,
   JobAcceptedResponse,
   JobRow,
+  MatchedAtLevel,
   SessionConfig,
   SessionDto,
   SessionResultsDto,
@@ -66,7 +69,10 @@ export const api = {
       body: JSON.stringify(config),
     }),
 
-  getResults: (id: string, configOverride?: Partial<SessionConfig>) => {
+  getResults: (
+    id: string,
+    configOverride?: Partial<SessionConfig> & { invoke_lm?: boolean },
+  ) => {
     const qs =
       configOverride && Object.keys(configOverride).length > 0
         ? `?config=${encodeURIComponent(JSON.stringify(configOverride))}`
@@ -74,7 +80,10 @@ export const api = {
     return request<SessionResultsDto>(`/api/sessions/${id}/results${qs}`);
   },
 
-  evaluate: (id: string, configInput?: Partial<SessionConfig>) =>
+  evaluate: (
+    id: string,
+    configInput?: Partial<SessionConfig> & { invoke_lm?: boolean },
+  ) =>
     request<{ evaluation_id: string; coalesced: boolean }>(
       `/api/sessions/${id}/evaluate`,
       {
@@ -187,6 +196,35 @@ export const api = {
 
   getLmStatus: (force = false) =>
     request<LmStatusDto>(`/api/meta/lm-status${force ? '?force=1' : ''}`),
+
+  listAcceptances: (sessionId: string) =>
+    request<{ acceptances: AcceptanceRow[] }>(`/api/sessions/${sessionId}/acceptances`),
+  createAcceptance: (
+    sessionId: string,
+    body: {
+      url_pair_id: string;
+      viewport_name: string;
+      accepted_level: MatchedAtLevel;
+      accepted_pixel_pct?: number | null;
+      accepted_ssim?: number | null;
+      accepted_diff_regions: BoundingBoxPercent[];
+      accepted_capture_a_sha: string;
+      accepted_capture_b_sha: string;
+      accept_any?: boolean;
+      label?: string | null;
+      notes?: string | null;
+    },
+  ) =>
+    request<{ acceptance: AcceptanceRow }>(`/api/sessions/${sessionId}/acceptances`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  deleteAcceptance: (sessionId: string, acceptanceId: string) =>
+    request<unknown>(
+      `/api/sessions/${sessionId}/acceptances/${acceptanceId}`,
+      { method: 'DELETE' },
+    ),
 };
 
 export interface LmStatusDto {

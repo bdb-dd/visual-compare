@@ -1,27 +1,66 @@
 import { useEffect, useMemo, useRef, type JSX } from 'react';
-import type { SessionResultRow } from '@visual-compare/api/types';
+import type {
+  EquivalenceLevelId,
+  SessionResultRow,
+  SessionResultsSummary,
+} from '@visual-compare/api/types';
 
-export type ResultsFilter = 'all' | 'failed' | 'passed' | 'pending';
+export type ResultsFilter =
+  | 'all'
+  | 'needs_review'
+  | 'accepted'
+  | 'regressed'
+  | 'expanded';
+
+const FILTER_LABELS: Record<ResultsFilter, string> = {
+  all: 'All',
+  needs_review: 'Needs review',
+  accepted: 'Accepted',
+  regressed: 'Regressed',
+  expanded: 'Expanded',
+};
 
 interface Props {
   results: SessionResultRow[];
+  summary: SessionResultsSummary | null;
+  targetLevel: EquivalenceLevelId;
   selectedKey: string | null;
   onSelect: (key: string | null, row: SessionResultRow | null) => void;
   filter: ResultsFilter;
   onFilterChange: (next: ResultsFilter) => void;
+  /** "a" — open the accept dialog for the selected row. */
+  onAcceptShortcut?: (row: SessionResultRow | null) => void;
+  /** "A" — accept with the last-used label, no dialog. */
+  onQuickAcceptShortcut?: (row: SessionResultRow | null) => void;
+  /** "r" — clear the selected row's acceptance. */
+  onClearShortcut?: (row: SessionResultRow | null) => void;
 }
 
-type Verdict = 'failed' | 'passed' | 'accepted' | 'pending' | 'error';
+type Verdict =
+  | 'failed'
+  | 'passed'
+  | 'accepted'
+  | 'regressed'
+  | 'expanded'
+  | 'pending'
+  | 'error';
 
 function captureErrored(r: SessionResultRow): boolean {
   return r.capture_a_status.status === 'error' || r.capture_b_status.status === 'error';
 }
 
+/**
+ * Row verdict drives the glyph and the row's color tint. Acceptance state
+ * takes precedence over the raw matched_at_level — once the user has
+ * accepted a row, its glyph reflects the acceptance bucket.
+ */
 function verdictOf(r: SessionResultRow): Verdict {
-  if (r.acceptance_status === 'accepted') return 'accepted';
   if (r.status === 'pending' || r.matched_at_level === null) {
     return captureErrored(r) ? 'error' : 'pending';
   }
+  if (r.acceptance_status === 'regressed') return 'regressed';
+  if (r.acceptance_status === 'expanded_diff') return 'expanded';
+  if (r.acceptance_status === 'accepted') return 'accepted';
   return r.matched_at_level !== 'none' ? 'passed' : 'failed';
 }
 
@@ -43,6 +82,8 @@ function verdictGlyph(v: Verdict): string {
   if (v === 'failed') return '✗';
   if (v === 'passed') return '✓';
   if (v === 'accepted') return '~';
+  if (v === 'regressed') return '↓';
+  if (v === 'expanded') return '△';
   if (v === 'error') return '!';
   return '…';
 }
@@ -50,20 +91,39 @@ function verdictGlyph(v: Verdict): string {
 function verdictRank(r: SessionResultRow): number {
   const v = verdictOf(r);
   if (v === 'error') return 0;
-  if (v === 'failed') return 1;
-  if (v === 'pending') return 2;
-  if (v === 'accepted') return 3;
-  return 4;
+  if (v === 'regressed') return 1;
+  if (v === 'expanded') return 2;
+  if (v === 'failed') return 3;
+  if (v === 'pending') return 4;
+  if (v === 'accepted') return 5;
+  return 6; // passed
+}
+
+/**
+ * 'needs_review' surfaces rows the user hasn't yet signed off on:
+ * unaccepted rows that didn't pass at the session target, plus any row
+ * whose acceptance regressed or expanded since acceptance. Pending rows
+ * also show up here so the user knows what's coming.
+ */
+function isNeedsReview(r: SessionResultRow): boolean {
+  if (r.status === 'pending' || r.matched_at_level === null) return true;
+  if (r.acceptance_status === 'regressed' || r.acceptance_status === 'expanded_diff') {
+    return true;
+  }
+  if (r.acceptance_status === 'accepted') return false;
+  return r.matched_at_level === 'none';
+}
+
+function rowMatchesFilter(r: SessionResultRow, filter: ResultsFilter): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'needs_review') return isNeedsReview(r);
+  if (filter === 'accepted') return r.acceptance_status === 'accepted';
+  if (filter === 'regressed') return r.acceptance_status === 'regressed';
+  return r.acceptance_status === 'expanded_diff';
 }
 
 function sortAndFilter(rows: SessionResultRow[], filter: ResultsFilter): SessionResultRow[] {
-  const filtered = rows.filter((r) => {
-    const v = verdictOf(r);
-    if (filter === 'all') return true;
-    if (filter === 'failed') return v === 'failed' || v === 'accepted' || v === 'error';
-    if (filter === 'passed') return v === 'passed';
-    return v === 'pending';
-  });
+  const filtered = rows.filter((r) => rowMatchesFilter(r, filter));
   return [...filtered].sort((a, b) => {
     const av = verdictRank(a);
     const bv = verdictRank(b);
@@ -75,14 +135,22 @@ function sortAndFilter(rows: SessionResultRow[], filter: ResultsFilter): Session
 }
 
 function countFor(rows: SessionResultRow[], filter: ResultsFilter): number {
-  return sortAndFilter(rows, filter).length;
+  let n = 0;
+  for (const r of rows) if (rowMatchesFilter(r, filter)) n += 1;
+  return n;
 }
 
+const FILTER_ORDER: ResultsFilter[] = [
+  'all',
+  'needs_review',
+  'accepted',
+  'regressed',
+  'expanded',
+];
+
 function nextFilter(f: ResultsFilter): ResultsFilter {
-  if (f === 'all') return 'failed';
-  if (f === 'failed') return 'passed';
-  if (f === 'passed') return 'pending';
-  return 'all';
+  const idx = FILTER_ORDER.indexOf(f);
+  return FILTER_ORDER[(idx + 1) % FILTER_ORDER.length]!;
 }
 
 function isEditable(el: HTMLElement): boolean {
@@ -112,10 +180,15 @@ function moveSelection(
 
 export function SessionResultsList({
   results,
+  summary,
+  targetLevel,
   selectedKey,
   onSelect,
   filter,
   onFilterChange,
+  onAcceptShortcut,
+  onQuickAcceptShortcut,
+  onClearShortcut,
 }: Props): JSX.Element {
   const visible = useMemo(() => sortAndFilter(results, filter), [results, filter]);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -145,6 +218,11 @@ export function SessionResultsList({
       if (target && isEditable(target)) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
 
+      const selectedRow =
+        selectedKey === null
+          ? null
+          : visible.find((r) => rowKey(r) === selectedKey) ?? null;
+
       if (e.key === 'j' || e.key === 'ArrowDown') {
         e.preventDefault();
         moveSelection(visible, selectedKey, 1, onSelect);
@@ -154,6 +232,15 @@ export function SessionResultsList({
       } else if (e.key === 'f') {
         e.preventDefault();
         onFilterChange(nextFilter(filter));
+      } else if (e.key === 'a' && !e.shiftKey) {
+        e.preventDefault();
+        onAcceptShortcut?.(selectedRow);
+      } else if (e.key === 'A' && e.shiftKey) {
+        e.preventDefault();
+        onQuickAcceptShortcut?.(selectedRow);
+      } else if (e.key === 'r' && !e.shiftKey) {
+        e.preventDefault();
+        onClearShortcut?.(selectedRow);
       } else if (e.key === 'Escape') {
         if (selectedKey !== null) {
           e.preventDefault();
@@ -163,13 +250,23 @@ export function SessionResultsList({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [visible, selectedKey, filter, onSelect, onFilterChange]);
+  }, [
+    visible,
+    selectedKey,
+    filter,
+    onSelect,
+    onFilterChange,
+    onAcceptShortcut,
+    onQuickAcceptShortcut,
+    onClearShortcut,
+  ]);
 
   return (
     <div className="comparison-list">
       <div className="comparison-list-header">
+        {summary && <HistogramStrip summary={summary} targetLevel={targetLevel} />}
         <div className="filter-bar" role="tablist" aria-label="Filter results">
-          {(['all', 'failed', 'passed', 'pending'] as ResultsFilter[]).map((f) => (
+          {FILTER_ORDER.map((f) => (
             <button
               key={f}
               type="button"
@@ -178,12 +275,12 @@ export function SessionResultsList({
               className={`filter-btn ${filter === f ? 'active' : ''}`}
               onClick={() => onFilterChange(f)}
             >
-              {f === 'all' ? 'All' : f === 'failed' ? 'Failed' : f === 'passed' ? 'Passed' : 'Pending'}
+              {FILTER_LABELS[f]}
               <span className="filter-count"> {countFor(results, f)}</span>
             </button>
           ))}
         </div>
-        <div className="muted filter-hint">j/k to navigate · f to cycle filter</div>
+        <div className="muted filter-hint">j/k to navigate · f to cycle filter · a to accept</div>
       </div>
       <div className="comparison-list-rows" ref={listRef}>
         {visible.length === 0 ? (
@@ -226,6 +323,57 @@ export function SessionResultsList({
           })
         )}
       </div>
+    </div>
+  );
+}
+
+const LEVEL_ORDER: Array<keyof SessionResultsSummary['by_level']> = [
+  'pixel-perfect',
+  'strict',
+  'tolerant',
+  'loose',
+  'none',
+  'pending',
+];
+
+const LEVEL_LABEL: Record<keyof SessionResultsSummary['by_level'], string> = {
+  'pixel-perfect': 'pixel-perfect',
+  strict: 'strict',
+  tolerant: 'tolerant',
+  loose: 'loose',
+  none: 'none',
+  pending: 'pending',
+};
+
+/**
+ * Per-level counts strip. The session target is highlighted so users can
+ * see at a glance how many comparisons reach it. Zero-count buckets are
+ * dimmed but still rendered to keep horizontal positions stable across
+ * evaluations.
+ */
+function HistogramStrip({
+  summary,
+  targetLevel,
+}: {
+  summary: SessionResultsSummary;
+  targetLevel: EquivalenceLevelId;
+}): JSX.Element {
+  return (
+    <div className="histogram-strip" aria-label="Counts by matched level">
+      {LEVEL_ORDER.map((lvl) => {
+        const count = summary.by_level[lvl];
+        const isTarget = lvl === targetLevel;
+        return (
+          <div
+            key={lvl}
+            className={`hist-cell ${isTarget ? 'target' : ''} ${count === 0 ? 'empty' : ''}`}
+            title={`${LEVEL_LABEL[lvl]}: ${count}`}
+          >
+            <span className="hist-count">{count}</span>
+            <span className="hist-label">{LEVEL_LABEL[lvl]}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

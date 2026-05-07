@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState, type JSX } from 'react';
+import { Fragment, useCallback, useEffect, useState, type JSX } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ComparisonDetail } from '../components/ComparisonDetail.js';
@@ -8,6 +8,7 @@ import { SessionConfigPanel } from '../components/SessionConfigPanel.js';
 import { SessionResultsList, type ResultsFilter } from '../components/SessionResultsList.js';
 import { UrlPairsEditor } from '../components/UrlPairsEditor.js';
 import type {
+  AcceptanceRow,
   CaptureRunRow,
   ComparisonRunRow,
   EquivalenceLevelId,
@@ -34,6 +35,7 @@ export function SessionDetailPage(): JSX.Element {
   const [levels, setLevels] = useState<EquivalenceLevelDef[]>([]);
   const [defaultLevel, setDefaultLevel] = useState<EquivalenceLevelId>('tolerant');
   const [results, setResults] = useState<SessionResultsDto | null>(null);
+  const [acceptances, setAcceptances] = useState<AcceptanceRow[]>([]);
   const [evaluations, setEvaluations] = useState<EvaluationStatusDto[]>([]);
   const [captureRuns, setCaptureRuns] = useState<CaptureRunRow[]>([]);
   const [comparisonRuns, setComparisonRuns] = useState<ComparisonRunRow[]>([]);
@@ -43,13 +45,37 @@ export function SessionDetailPage(): JSX.Element {
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('review');
   const [detailTab, setDetailTab] = useState<DetailTab>('comparison');
   const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
-  const [resultsFilter, setResultsFilter] = useState<ResultsFilter>('failed');
+  const [resultsFilter, setResultsFilter] = useState<ResultsFilter>('needs_review');
   const [selectedRow, setSelectedRow] = useState<SessionResultRow | null>(null);
+  /**
+   * Whether the next evaluation (and the current /results plan) should
+   * include LM second-pass for target misses. Lifted up from
+   * PlanAndEvaluate so refreshResults can pass the same flag — otherwise
+   * the plan reports "All cached" even when LM cache misses exist.
+   */
+  const [invokeLm, setInvokeLm] = useState(false);
+  /**
+   * Monotonic counter incremented when the keyboard shortcut for "open
+   * accept dialog" fires. ComparisonDetail watches it and opens the form
+   * on each tick. This avoids passing a boolean that we'd then need to
+   * remember to reset.
+   */
+  const [acceptDialogTrigger, setAcceptDialogTrigger] = useState(0);
+  const [lastUsedLabel, setLastUsedLabel] = useState<string | null>(null);
 
   const refreshResults = useCallback(async () => {
     try {
-      const r = await api.getResults(id);
+      const r = await api.getResults(id, invokeLm ? { invoke_lm: true } : undefined);
       setResults(r);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [id, invokeLm]);
+
+  const refreshAcceptances = useCallback(async () => {
+    try {
+      const r = await api.listAcceptances(id);
+      setAcceptances(r.acceptances);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -111,14 +137,65 @@ export function SessionDetailPage(): JSX.Element {
   useEffect(() => {
     if (!session) return;
     void refreshResults();
+    void refreshAcceptances();
     void refreshEvaluations();
     void refreshHistory();
-  }, [session, refreshResults, refreshEvaluations, refreshHistory]);
+  }, [session, refreshResults, refreshAcceptances, refreshEvaluations, refreshHistory]);
 
   const handleEvaluationComplete = () => {
     void refreshResults();
     void refreshEvaluations();
     void refreshHistory();
+  };
+
+  const handleAcceptShortcut = (row: SessionResultRow | null) => {
+    if (!row?.matched_at_level || !row.capture_a_sha || !row.capture_b_sha) return;
+    setSidebarTab('review');
+    setDetailTab('comparison');
+    setAcceptDialogTrigger((v) => v + 1);
+  };
+
+  const handleQuickAcceptShortcut = async (row: SessionResultRow | null) => {
+    if (!session) return;
+    if (!row?.matched_at_level || !row.capture_a_sha || !row.capture_b_sha) return;
+    if (!row.comparison_id) return;
+    try {
+      const detail = await api.getComparisonDetail(row.comparison_id);
+      const regions = detail.differences
+        .filter((d) => d.source === 'imagick' && d.bounding_box)
+        .map((d) => d.bounding_box!);
+      await api.createAcceptance(session.id, {
+        url_pair_id: row.url_pair_id,
+        viewport_name: row.viewport_name,
+        accepted_level: row.matched_at_level,
+        accepted_pixel_pct: row.pixel?.changed_pct ?? null,
+        accepted_ssim: row.pixel?.ssim ?? null,
+        accepted_diff_regions: regions,
+        accepted_capture_a_sha: row.capture_a_sha,
+        accepted_capture_b_sha: row.capture_b_sha,
+        accept_any: false,
+        label: lastUsedLabel,
+      });
+      void refreshAcceptances();
+      void refreshResults();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleClearShortcut = async (row: SessionResultRow | null) => {
+    if (!session || !row) return;
+    const target = acceptances.find(
+      (a) => a.url_pair_id === row.url_pair_id && a.viewport_name === row.viewport_name,
+    );
+    if (!target) return;
+    try {
+      await api.deleteAcceptance(session.id, target.id);
+      void refreshAcceptances();
+      void refreshResults();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const handleConfigSaved = (next: SessionConfig) => {
@@ -194,6 +271,8 @@ export function SessionDetailPage(): JSX.Element {
           <PlanAndEvaluate
             sessionId={session.id}
             results={results}
+            invokeLm={invokeLm}
+            onInvokeLmChange={setInvokeLm}
             onEvaluationComplete={handleEvaluationComplete}
           />
         </div>
@@ -227,6 +306,7 @@ export function SessionDetailPage(): JSX.Element {
           {sidebarTab === 'review' ? (
             <ReviewSidebar
               results={results}
+              targetLevel={config.default_equivalence_level}
               filter={resultsFilter}
               onFilterChange={setResultsFilter}
               selectedKey={selectedRowKey}
@@ -235,6 +315,9 @@ export function SessionDetailPage(): JSX.Element {
                 setSelectedRow(row);
                 if (key !== null) setDetailTab('comparison');
               }}
+              onAcceptShortcut={handleAcceptShortcut}
+              onQuickAcceptShortcut={(r) => void handleQuickAcceptShortcut(r)}
+              onClearShortcut={(r) => void handleClearShortcut(r)}
             />
           ) : (
             <SessionConfigPanel
@@ -284,7 +367,24 @@ export function SessionDetailPage(): JSX.Element {
 
           {detailTab === 'comparison' &&
             (selectedRow?.comparison_id ? (
-              <ComparisonDetail id={selectedRow.comparison_id} />
+              <ComparisonDetail
+                id={selectedRow.comparison_id}
+                row={selectedRow}
+                sessionId={session.id}
+                acceptance={
+                  acceptances.find(
+                    (a) =>
+                      a.url_pair_id === selectedRow.url_pair_id &&
+                      a.viewport_name === selectedRow.viewport_name,
+                  ) ?? null
+                }
+                openAcceptDialogTrigger={acceptDialogTrigger}
+                onAcceptanceChanged={(label) => {
+                  if (label !== undefined) setLastUsedLabel(label);
+                  void refreshAcceptances();
+                  void refreshResults();
+                }}
+              />
             ) : selectedRow ? (
               <PendingRowDetail row={selectedRow} />
             ) : (
@@ -480,21 +580,27 @@ function parseViewports(optionsJson: string): string {
 
 interface ReviewSidebarProps {
   results: SessionResultsDto | null;
+  targetLevel: EquivalenceLevelId;
   filter: ResultsFilter;
   onFilterChange: (next: ResultsFilter) => void;
   selectedKey: string | null;
   onSelect: (key: string | null, row: SessionResultRow | null) => void;
+  onAcceptShortcut?: (row: SessionResultRow | null) => void;
+  onQuickAcceptShortcut?: (row: SessionResultRow | null) => void;
+  onClearShortcut?: (row: SessionResultRow | null) => void;
 }
 
 function ReviewSidebar({
   results,
+  targetLevel,
   filter,
   onFilterChange,
   selectedKey,
   onSelect,
+  onAcceptShortcut,
+  onQuickAcceptShortcut,
+  onClearShortcut,
 }: ReviewSidebarProps): JSX.Element {
-  const summaries = useMemo(() => summariseByLevel(results?.results ?? []), [results]);
-
   if (!results) {
     return <p className="muted" style={{ padding: 12 }}>Loading results…</p>;
   }
@@ -507,55 +613,19 @@ function ReviewSidebar({
   }
 
   return (
-    <>
-      <div className="level-summaries">
-        {summaries.map((s) => (
-          <div key={s.level} className="level-summary">
-            <strong>{s.level}</strong>
-            <span className="chip pass">{s.pass}</span>
-            <span className="chip fail">{s.fail}</span>
-            {s.accepted > 0 && <span className="chip allowed">{s.accepted}</span>}
-            {s.pending > 0 && <span className="chip pending">{s.pending}</span>}
-          </div>
-        ))}
-      </div>
-      <SessionResultsList
-        results={results.results}
-        selectedKey={selectedKey}
-        onSelect={onSelect}
-        filter={filter}
-        onFilterChange={onFilterChange}
-      />
-    </>
+    <SessionResultsList
+      results={results.results}
+      summary={results.summary}
+      targetLevel={targetLevel}
+      selectedKey={selectedKey}
+      onSelect={onSelect}
+      filter={filter}
+      onFilterChange={onFilterChange}
+      onAcceptShortcut={onAcceptShortcut}
+      onQuickAcceptShortcut={onQuickAcceptShortcut}
+      onClearShortcut={onClearShortcut}
+    />
   );
-}
-
-// TODO(phase-5): replace this per-level summary with the per-`matched_at_level`
-// histogram described in the plan. For phase 1 we just bucket by the matched
-// level (or 'none') so the existing UI surface compiles.
-interface LevelSummary {
-  level: string;
-  pass: number;
-  fail: number;
-  accepted: number;
-  pending: number;
-}
-
-function summariseByLevel(rows: SessionResultRow[]): LevelSummary[] {
-  const byLevel = new Map<string, LevelSummary>();
-  for (const r of rows) {
-    const bucket = r.matched_at_level ?? 'pending';
-    let s = byLevel.get(bucket);
-    if (!s) {
-      s = { level: bucket, pass: 0, fail: 0, accepted: 0, pending: 0 };
-      byLevel.set(bucket, s);
-    }
-    if (r.acceptance_status === 'accepted') s.accepted += 1;
-    else if (r.status === 'pending' || r.matched_at_level === null) s.pending += 1;
-    else if (r.matched_at_level !== 'none') s.pass += 1;
-    else s.fail += 1;
-  }
-  return Array.from(byLevel.values()).sort((a, b) => a.level.localeCompare(b.level));
 }
 
 function PendingRowDetail({ row }: { row: SessionResultRow }): JSX.Element {
