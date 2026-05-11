@@ -1,14 +1,34 @@
 # Cluster-driven Review: Data Model, UI Flow, and Validation Plan
 
-Status: proposal v0.2 — taxonomy validated, ready for Phase A implementation.
-Branch: `cluster-review-design` (worktree at `cluster-review-design/`).
+Status: **shipped** — Phases A through E landed on this branch as six commits
+on top of `plan-improved-visual-compare`. The cluster review system is
+end-to-end usable. This document was originally the design; what follows
+has been amended in place to reflect what was actually built. Where the
+implementation diverged from the original design, the reason is noted.
+
+Branch: `cluster-review-design`.
 Reviewer: BDB.
 
-Companion documents in this worktree:
-- `experiments/findings.md` — Experiment A + B results (v0 measurement, v1 simulation)
-- `experiments/v1-taxonomy.md` — locked-in spec for the cluster-signature taxonomy
+Commits on this branch:
+| Phase | Commit | What landed |
+|---|---|---|
+| Design | `7529cd8` | Design doc + experiments + v3 prompt prep (held off-by-default) |
+| A | `2e18e59` | Schema + signature service + read-only API + 32 tests |
+| B | `08ba524` | Read-only cluster review UI (ClustersPage, ClusterDetailPage) |
+| C | `ce6df73` | v3 prompt + v1 cluster signatures activated by default |
+| D | `86d7b63` | Cluster Accept / Reject with rule-owned fan-out + 15 tests |
+| E | `91ec21c` | Category bulk-accept + applySessionRules + Anomaly queue + 9 tests |
+
+Companion documents:
+- `experiments/findings.md` — Experiment A + B results
+- `experiments/v1-taxonomy.md` — locked-in taxonomy spec
 - `experiments/experiment_a_v0_leverage.py`, `experiment_a_cluster_inspection.py`, `experiment_b_v1_simulation.py` — reproducible measurement scripts
-- `packages/api/src/services/lm.ts` — ready-to-merge prompt + schema changes for v3 (held behind `DEFAULT_PROMPT_VERSION='v2'` until Phase C cutover)
+- `PHASE_C_NOTES.md` — per-session upgrade procedure for the v3 prompt cutover
+- `packages/api/src/services/cluster-signature.ts` — v0 + v1 signature implementation
+- `packages/api/src/services/clusters.ts` — cluster materialisation
+- `packages/api/src/services/acceptance-rules.ts` — cluster + category rule fan-out
+- `packages/api/src/routes/clusters.ts` — read + mutation endpoints
+- `packages/web/src/pages/{ClustersPage,ClusterDetailPage,AnomaliesPage}.tsx` — UI
 
 ## 1. Problem
 
@@ -156,7 +176,23 @@ Runtime normalisation is intentionally minimal: trim, lowercase, collapse whites
 
 The v0 top-50 number (99.2%) was higher than v1's (77.5%) but inflated by lumping. v1's tail is longer because v1 reflects the actual diversity of distinct changes; each v1 cluster is now something a reviewer can act on as a single decision.
 
-**Code path.** `packages/api/src/services/lm.ts` on this branch has the full v3 prompt, the extended zod schema (optional v1 fields for back-compat with v2 cached responses), a strict `LM_JSON_SCHEMA_V3` sent to LM Studio, and a `jsonSchemaForPromptVersion(version)` helper that routes by prompt-version label. `DEFAULT_PROMPT_VERSION` stays at `'v2'`; Phase C is the cutover.
+**Code path.** `packages/api/src/services/lm.ts` carries the extended zod
+schema (v1 fields optional for v2-era cache back-compat), the strict
+`LM_JSON_SCHEMA_V3` sent to LM Studio, and a content-based schema router.
+
+*What shipped, slightly different from the original sketch.* The early
+design routed by a `'v3'` prompt-version label. That broke on the
+session-scoped prompt path where `args.prompt.id` is a sha256 hash, not a
+version string. The fix (in Phase C, `ce6df73`) is content detection:
+`usesV1Taxonomy(text)` checks for `'changeType'` AND `'regionRole'` in the
+prompt body; `jsonSchemaForPrompt(text)` routes accordingly. A prompt that
+teaches the v1 taxonomy gets the v3 schema; everything else gets v2. The
+storage label `DEFAULT_PROMPT_VERSION` is now `'v3'` and used only as an
+audit / cache-key annotation.
+
+The v3 prompt body itself lives in `constants/lm-prompts.ts` as the
+canonical source — `SYSTEM_PROMPT_V3` was originally duplicated in
+`lm.ts` but was removed in Phase C to keep one source of truth.
 
 ### v2 — semantic backstop (not planned)
 
@@ -164,7 +200,12 @@ If v1's canonical-label scheme proves too brittle in practice, a fallback would 
 
 ## 5. UI flow
 
-Three top-level views, replacing the current single results list as the primary triage surface (the list view stays available as an "advanced" tab).
+Three React pages shipped, plus a button on the existing session detail
+page to enter the cluster review surface. Tab-stripping with the existing
+results list (originally proposed) was deferred — the cluster pages live
+under `/sessions/:id/clusters` as a parallel surface that the session
+header links to. Reviewers who want the row-by-row view stay on the
+existing session detail.
 
 ### 5.1 Category index (entry point)
 
@@ -189,7 +230,21 @@ Layout sketch:
 
 Categories are derived from `region_role` (header+nav merged for display; anomalies = clusters with `pair_count == 1`). Within each category, clusters are sorted by `pair_count` desc — biggest leverage first.
 
-The category-level "Accept all" is a one-click affordance backed by an `acceptance_rules` row with `scope='category'`. It's intentionally a separate gesture from cluster-level accept; we expect it to be used sparingly (and offer a confirm step that shows the 1-2 sample diffs that would be auto-accepted).
+*What shipped, slightly different.* The proposal sketch shows one "Accept
+all" per category. The actual UI surfaces one bulk-accept button per
+`(region_role, change_type)` subgroup inside the category — because a
+single category like "Main content" usually contains multiple distinct
+change types (`element_added`, `text_changed`, `element_removed`, ...) and
+each is a different decision. Each subgroup button is labelled
+`<change_type> · open/total` and disabled when every cluster in that
+subgroup is already accepted. A confirm dialog shows the cluster count,
+total pair count, and a 3-sample list before committing.
+
+There's an additional category called **Untagged (v0 fallback)** that
+holds clusters lacking `region_role`/`change_type` — imagick rows and
+v2-era LM responses that pre-date the v3 prompt. It has no bulk-accept
+button (the API requires both tags). It exists for visibility and shrinks
+as sessions are re-evaluated under v3.
 
 ### 5.2 Cluster detail
 
@@ -215,32 +270,97 @@ Clicking a cluster opens a focused view:
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-Key affordances:
-- **Crop view**, not full screenshot. Show only the cluster's bbox region from A, B, and diff. The point of clustering is to surface the *same change shown once*; full screenshots reintroduce noise.
-- **Sample rotation** — clicking a different member swaps the crops. This catches false positives in the cluster (a row whose change *isn't* actually the footer-year edit) without forcing the reviewer to open each one.
-- **Split cluster** is the escape hatch: select a subset of members and pull them out into a new cluster (re-tagged manually, or sent to anomaly queue).
-- **Per-member override** — clicking a member opens the existing per-row ComparisonDetail in a side panel; the existing per-row Accept stays available as a fallback.
+Key affordances (what actually shipped):
+
+- **Full-screenshot triple with bbox overlay**, not the crop view originally
+  proposed. The existing `ImageWithBoxes` component does the highlighting;
+  cropping would have required a separate image pipeline. The bbox overlay
+  was the cheaper-to-ship answer for the same UX intent ("show the change
+  in context, not the whole page as noise"). Crop view remains a candidate
+  improvement.
+- **Member focus** — clicking a member's `◧` button replaces the bbox
+  overlay with that member's bbox (description and bbox swap on top of the
+  representative's image triple). Catches the false-positive case the
+  proposal raised; full-image swap would require an extra fetch per
+  member, deferred.
+- **Per-member drill-down** — each member row has an "Open →" link that
+  navigates to the existing `/comparisons/:id` detail page for full
+  context.
+- **Accept / Reject buttons** (Phase D) — Accept opens a confirm dialog
+  with up to 5 sample member URLs + an optional Label / Notes textarea.
+  Reject is a simpler counterpart. State drives enablement: Accept
+  disabled when already accepted, Reject disabled when not yet accepted.
+  An action banner reports counts after success
+  ("✓ Cluster accepted — N acceptances created (M pre-existing preserved)").
+- **Split cluster** is shown but disabled with a "Coming in a later phase"
+  tooltip. Not in scope for A-E; would need a UI for selecting members
+  + a service for splitting a signature into two, which the schema
+  doesn't currently support.
 
 ### 5.3 Anomaly queue
 
-Default-sorted by descending pair-area or severity. This is where most of the actual reviewer attention should end up *after* the bulk pass is done. UI is closer to the existing one-row-at-a-time review.
+Shipped at `/sessions/:id/anomalies` as a flat list of singleton clusters
+(`pair_count = 1`), sorted by severity desc (high → medium → low → null),
+then by region_role and change_type. Each row shows: severity pill +
+tags (region/change/label) + the LM description + the URL + the review
+state. Clicking a row navigates to the cluster detail page where Accept
+/ Reject already work.
+
+Reachable from the ClustersPage header via an "Anomaly queue →" button.
 
 ### 5.4 Keyboard model
 
-Cluster view inherits the current bindings (`a` accept, `r` reject) but rebound to cluster scope. Member-level shortcuts (`m`+`a`, `m`+`r`) for overrides. Worth pinning the cheatsheet visibly given the dual-scope ambiguity.
+Deferred. No cluster-scope keyboard shortcuts in this rollout. Worth
+adding once UX feedback identifies the most common reviewer paths.
 
 ## 6. Decision propagation
 
-A cluster-level `accept` does the following, atomically:
-1. Inserts `acceptance_rules(scope='cluster', signature, signature_version)`.
-2. For each `differences` row with this signature, look up its `comparison_id`, then ensure an `acceptances` row exists for that `(session, url_pair, viewport)` with the cluster's metadata snapshotted in (label, notes, current pixel pct, current regions). Existing per-row acceptances are *preserved* (not overwritten) — they may have stricter notes the reviewer added by hand.
+What shipped, end-to-end:
+
+**Cluster Accept** (Phase D, `acceptCluster` in `acceptance-rules.ts`).
+Atomically:
+1. Inserts `acceptance_rules(scope='cluster', signature, signature_version, label, notes, created_by)`.
+2. For every `(pair, viewport)` the cluster's signature touches, INSERT
+   acceptances ON CONFLICT DO NOTHING with the comparison's current
+   snapshot (matched_at_level, pixel pct, ssim, **the full comparison's
+   region set** — not just the cluster's bboxes), tagged with the rule's
+   id. Manual acceptances at conflicting keys are preserved as-is.
 3. Sets `difference_clusters.review_state = 'accepted'`.
 
-A cluster-level `reject` does the reverse for any acceptances created by *this rule* (we track rule_id on the inserted acceptances; manually-created acceptances are left alone), and sets `review_state = 'rejected'`. Rejected clusters stay visible in their category so the reviewer can drill into specific members.
+**Cluster Reject** (`revokeClusterAcceptance`). Atomically deletes the
+rule and acceptances WHERE `acceptance_rule_id` matches; sets cluster's
+`review_state = 'rejected'`. Manually-created acceptances and rows from
+other rules are untouched.
 
-On the next evaluation run:
-- New `differences` rows get signed at write time.
-- For each new signature, if an `acceptance_rules` row exists, the rule fan-out runs again for the newly-added members. This is what "decisions persist across runs" means concretely.
+**Category Accept** (Phase E, `acceptCategory`). Inserts an
+`acceptance_rules` row with `scope='category'` carrying
+`(category_region_role, category_change_type)`, finds every cluster in
+the session matching that tuple at the same `signature_version`, and
+runs the per-cluster fan-out across each one. Clusters that already have
+`review_state='accepted'` are **skipped and counted separately** — their
+own cluster rule already covers them, no need to double-up.
+
+**Category Revoke** (`revokeCategory`). Deletes rule-owned acceptances
+and the rule. **Smart cluster-state rollback**: for each cluster the
+rule had touched, count remaining rule-owned acceptances via the
+signature join. If zero → flip the cluster back to `'open'`. If non-zero
+(another rule still covers it) → leave it `'accepted'`. So a cluster
+protected by both a cluster rule *and* a category rule survives the
+category-rule revoke with its 'accepted' state intact.
+
+**Decisions persist across runs** (`applySessionRules`). Wired into the
+backfill script and the `/clusters?recompute=1` API path. Walks every
+rule on the session and replays its fan-out — INSERT ON CONFLICT DO
+NOTHING makes it safe to re-run. New clusters that match a rule (new
+sidebar pages landed since the rule was authored) get rule-tagged
+acceptances and their `review_state` flips to `'accepted'`. The
+"decisions persist across runs" promise is concrete behavior, not just a
+design intent.
+
+`recomputeClusters` stays a pure structural pass — it doesn't call
+`applySessionRules` internally. That separation avoids a circular module
+import and keeps the structural rebuild cheap; callers that want both
+(backfill, recompute API) invoke them in sequence.
 
 ## 7. Validation plan
 
@@ -261,22 +381,27 @@ Below kept as a record of what was measured and what's left.
 
 **Disconfirming evidence found**: cluster #7 (83 pairs) collapsed 4 distinct changes, and the "sidebar nav added" change split across 3 separate clusters. Both became the motivating cases for v1, and both are resolved under the v1 taxonomy.
 
-### Experiment B — does v1 separate what v0 collapsed?  [done (simulation), live test deferred to Phase C]
+### Experiment B — does v1 separate what v0 collapsed?  [simulation done; live spot-check done; full live measurement pending]
 
-**Done so far**: post-hoc simulation in `experiment_b_v1_simulation.py`. Existing LM `description` text was mapped to v1 tags via a rule-based classifier faithful to the taxonomy spec, then re-clustered.
+**Simulation** (`experiment_b_v1_simulation.py`): both v0 failure modes
+resolved (sidebar merge, cluster #7 split). A third failure mode
+(breadcrumb verb-of-change splitting) discovered and fixed by adding the
+`text_changed`-for-single-element-edits rule to the taxonomy.
 
-- Both v0 failure modes resolved (sidebar merge, cluster #7 split).
-- A third failure mode discovered and fixed mid-iteration: breadcrumb changes were splitting by verb-of-change. The `text_changed`-for-single-element-edits rule was added to the taxonomy.
+**Live spot-check** (Phase C smoke-test): 5 random comparisons under the
+v3 prompt, 10 differences total, 10/10 valid canonical v1 tags via the
+strict json_schema path. Including the cluster-#7-style case (list
+items replaced) and the breadcrumb special rule under multi-diff load.
+The live LM behaviour matches the simulator's prediction.
 
-**Pass criterion (simulation)**: both v0 failure modes resolved without introducing new ones. **Met.** Top clusters under v1 are semantically coherent on inspection.
+**Still pending**: full recall/precision measurement on a curated set of
+~10 known shared changes per session, after the user has re-evaluated a
+session under v3. The pass criterion was recall ≥ 0.85, precision ≥
+0.90. The five-comparison spot-check suggests we'll clear it, but a
+formal measurement against a labelled set would be required before
+trusting category bulk-accepts at scale.
 
-**Live test deferred to Phase C**: the real validation happens once the v3 prompt is live and the actual LM is emitting tags from images, not the simulator working off existing descriptions. At that point, measure:
-- **Recall** on a curated set of ~10 known shared changes per session.
-- **Precision** by sampling the top 10 v1 clusters and counting members that don't belong.
-
-**Pass criterion (live)**: recall ≥ 0.85, precision ≥ 0.90. Below precision 0.90 we hold mass-accept (Phase D) behind another iteration.
-
-### Experiment C — does the UI flow actually feel faster?  [not started — Phase B and B-end]
+### Experiment C — does the UI flow actually feel faster?  [not started]
 
 **Goal**: validate that the cluster-first UX wins on wall-clock time *and* that reviewers trust the bulk gestures.
 
@@ -296,39 +421,143 @@ Below kept as a record of what was measured and what's left.
 
 All three are reasonable v2 directions but only worth building once we know v1 clusters are trustworthy.
 
-## 8. Phased rollout
+## 8. Phased rollout (shipped)
 
-Phase order revised after Experiment A: v1 signature ships **before** any
-mass-accept gesture, because v0 alone isn't safe for bulk-accept (cluster
-#7-style precision failures). Read-only browsing on v0 is fine; the
-dangerous operation is the fan-out.
+All five phases landed. v1 signature ships *before* mass-accept, because
+v0 alone isn't safe for bulk-accept (the cluster #7-style precision
+failures Experiment A surfaced).
 
-1. **Phase A — schema + v0 backfill + read-only API.** Add `signature`/`signature_version` columns to `differences`, add `difference_clusters` table, add `acceptance_rules` table (empty for now), add a `/sessions/:id/clusters` API that returns clusters for inspection. Backfill v0 signatures on existing LM-sourced differences. (~1-2 days.)
-2. **Phase B — read-only cluster browsing UI.** Category index + cluster detail views, no acceptance affordances yet. Reviewers can browse; cluster #7-style false equivalences are visible but harmless (no mass action available). Gives us Experiment C's "time to triage" baseline. (~3-5 days.)
-3. **Phase C — ship v1 signature.** Flip `DEFAULT_PROMPT_VERSION` from `'v2'` to `'v3'` (the `lm.ts` patch on this branch is already prepared and tested). Run the LM second pass on a representative subset; re-cluster under v1; measure recall/precision on curated known-shared changes. If pass criteria hold, recluster the whole session under `signature_version='v1'` and surface v1 clusters in the UI instead of v0. (~2-3 days.)
-4. **Phase D — mass-accept on v1.** Wire up the cluster-accept/reject buttons, the `acceptance_rules` row creation, and the fan-out into `acceptances`. Add the "show me N sample members" friction step before any large-cluster bulk-accept. (~2-3 days.)
-5. **Phase E — Category bulk-accept + anomaly queue.** Only after v1 mass-accept is trusted in practice. (~1-2 days.)
+1. **Phase A — schema + v0 backfill + read-only API. [done, `2e18e59`]**
+   `signature` / `signature_version` columns + v1 taxonomy columns on
+   `differences`; `difference_clusters` and `acceptance_rules` tables;
+   `cluster-signature.ts` service; `clusters.ts` materialisation;
+   `GET /api/sessions/:id/clusters` and `GET .../clusters/:id`; backfill
+   script. 32 new tests.
+2. **Phase B — read-only cluster browsing UI. [done, `08ba524`]**
+   `ClustersPage` (category index with subgroups, filter chips, sample
+   diff per cluster); `ClusterDetailPage` (representative image triple +
+   bbox overlay + member list); routes wired; "Cluster review" link in
+   the existing session header. ~300 lines of dark-theme CSS.
+3. **Phase C — v3 prompt + v1 cluster signatures by default. [done, `ce6df73`]**
+   `DEFAULT_PROMPT_VERSION='v3'`; `constants/lm-prompts.ts` carries the
+   taxonomy body (single source of truth); `usesV1Taxonomy` /
+   `jsonSchemaForPrompt` route the JSON schema by prompt content;
+   `seedLmPromptDefaults` now upserts seed-sourced rows so existing dev
+   DBs auto-upgrade on next boot. Per-session upgrade procedure for
+   customised prompts documented in `PHASE_C_NOTES.md`. Live LM
+   smoke-test confirmed 10/10 v1 tags across 5 random comparisons.
+4. **Phase D — cluster Accept / Reject. [done, `86d7b63`]**
+   `acceptance_rule_id` column on `acceptances` for provenance;
+   `acceptCluster` / `revokeClusterAcceptance` services with
+   transactional fan-out; POST `.../clusters/:id/accept` and `.../reject`
+   endpoints; functional buttons + Accept/Reject dialogs +
+   "✓ accepted, N created" banner in `ClusterDetailPage`. 15 new tests.
+5. **Phase E — Category bulk-accept + Anomaly queue. [done, `91ec21c`]**
+   `acceptCategory` / `revokeCategory` with smart cluster-state rollback;
+   `applySessionRules` for cross-run persistence (wired into backfill
+   and `?recompute=1` API); POST/DELETE `.../clusters/category-accept`
+   endpoints; per-subgroup bulk-accept buttons in `ClustersPage`;
+   `AnomaliesPage` for the singleton long-tail. 9 new tests.
+
+### Deferred to future phases
+
+- **Split cluster.** UI affordance visible but disabled. Would need a
+  selection UI for picking member subsets + a service that splits a
+  signature in two (requires schema thought — a "parent signature"
+  concept, or just retagging members manually).
+- **Crop view** in cluster detail. Currently full screenshot + bbox
+  overlay via `ImageWithBoxes`. Crops would reduce noise on large
+  comparisons but need a separate image extraction pipeline.
+- **Keyboard model** for the cluster review surface.
+- **Cross-session memory.** Acceptance rules currently live within one
+  session. Sharing them across sessions ("we always accept this kind of
+  change in our nav rollouts") is a candidate future feature.
+- **Auto-suggested category bulk-accepts** based on confidence priors.
+- **Active-learning sampling** of cluster members for the friction step.
 
 ## 9. Open questions
 
-Resolved (formerly here):
-- ~~"Sessions with non-LM diffs"~~ — decided: imagick uses v0 fallback, isn't part of cluster review unit.
-- ~~"Smallest cluster worth surfacing"~~ — decided: yes, surface singletons; uniform UI.
+Resolved during implementation:
+- ~~Sessions with non-LM diffs~~ — imagick uses v0 fallback, isn't part of
+  the cluster review unit.
+- ~~Smallest cluster worth surfacing~~ — yes; singletons live in the
+  Anomalies group / `/anomalies` page.
+- ~~Rule revocation semantics for cluster split~~ — moot until split lands.
+  Phase E's smart cluster-state rollback for category revoke shows the
+  pattern (count remaining rule-owned acceptances; reopen only if zero).
+- ~~Stale prompt cache on v2 → v3 cutover~~ — documented in
+  `PHASE_C_NOTES.md`. First evaluation after the cutover does re-run the
+  LM for every comparison that needs one; that's intended.
 
 Still open:
 
-- **Signature stability across re-runs.** For the v0 fallback path, if a tiny pixel jitter shifts a bbox into a different grid cell, the signature flips. Less of a concern for v1 (signature isn't centroid-based) but worth measuring once Phase C is live.
-- **Per-viewport clusters vs merged at display time.** Current design keys signatures by viewport. A header change on both desktop and mobile becomes two clusters. Pro: avoids cross-viewport accept-leak. Con: doubles reviewer count for changes that legitimately span viewports. Lean toward collapsing at *display* time (group by `(region_role, change_type, element_label)` and show viewport facets inline) without changing the signature.
-- **Rule revocation semantics.** If a reviewer accepts cluster X, then later splits cluster X into X1+X2, do X1's pre-existing acceptances survive? Proposed: yes, the rule is re-tagged to X1 (the "majority" half); X2's members get their acceptances revoked. Confirm before Phase D.
-- **Live precision/recall measurement.** The simulation in Experiment B is a proxy. Phase C needs the live measurement on a curated change-set before Phase D's mass-accept gesture is wired up. Curated set TBD; recommend ~10 known shared changes per session, hand-picked by skimming the v0 top-10 clusters.
-- **Stale prompt-cache invalidation on the v2 → v3 cutover.** When `DEFAULT_PROMPT_VERSION` flips to `'v3'`, all previously-cached LM verdicts will miss the cache (cache key includes prompt_id, which is the hash of the system prompt text). That's intended — but means the first run after the cutover is a full LM re-evaluation. Worth callling out so it isn't a surprise.
+- **Signature stability across re-runs.** v0 fallback uses bbox centroid
+  quantised to a 10×10 grid — a small pixel jitter that moves the centroid
+  across a cell boundary will flip the signature. Worth measuring once a
+  v3 session has been re-evaluated twice. Not a concern for v1 (signature
+  is content-based, not bbox-based).
+- **Per-viewport clusters vs merged at display time.** Signatures
+  currently key by viewport. A header change on both desktop and mobile
+  becomes two clusters. We have no multi-viewport sessions in the dev DB
+  to test against; revisit when one appears.
+- **Live precision/recall measurement on a curated change set.** The
+  Phase C spot-check (5 comparisons) suggests v1 clears the recall ≥
+  0.85 / precision ≥ 0.90 bar, but a formal measurement on ~10 known
+  shared changes per session is still pending. Worth running before
+  inviting other reviewers to mass-accept on a fresh session.
+- **Experiment C** (does the UI feel faster than row-by-row?). Not yet
+  run. The right shape is BDB + one other reviewer A/B-ing the same
+  session between the existing row-by-row UI and the cluster review,
+  measuring time-to-complete-pass and post-hoc disagreement rate on
+  bulk-accepted clusters.
+- **`acceptance_rule_id` column adoption in existing services.** The
+  manual acceptance path (`services/acceptances.ts:upsertAcceptance`)
+  leaves `acceptance_rule_id` NULL, which is correct. But the existing
+  ComparisonDetail page that handles per-row acceptance doesn't surface
+  rule provenance ("this acceptance was created by cluster rule X").
+  Adding a "this row came from a cluster decision" indicator would help
+  reviewers understand why a comparison is already accepted.
 
 ## 10. What this proposal does *not* commit to
 
-- Any change to the equivalence pipeline, matched_at_level semantics, or pixel comparison logic.
-- Any change to the existing `acceptances` table shape — it stays the per-row source of truth.
-- Clustering imagick-sourced differences as first-class review units. They stay in the schema as pixel-level evidence in per-comparison drill-downs.
-- Cross-session learning, embeddings, or any ML beyond the LM that's already in the pipeline.
-- Mobile/tablet-specific UI work; cluster UI is desktop-first.
+(Restated for the record — these all held through the rollout.)
 
-If we keep that surface area small, every phase above is a contained, reversible change.
+- ~~No change to the equivalence pipeline, matched_at_level semantics, or
+  pixel comparison logic.~~ Held — the pipeline emits the new taxonomy
+  fields on `differences` rows, but the equivalence decision logic is
+  untouched.
+- ~~No change to the existing `acceptances` table shape.~~ One additive
+  column (`acceptance_rule_id`) was added in Phase D — backwards-compatible.
+- ~~Imagick differences as first-class review units.~~ Held — imagick
+  rows stay in `differences` with v0 signatures, surfaced only in the
+  Untagged category of the cluster index for visibility.
+- ~~Cross-session learning, embeddings, or any new ML.~~ Held — every
+  decision uses only the existing LM via the v3 prompt.
+- ~~Mobile/tablet-specific UI work.~~ Held — cluster UI is desktop-first.
+
+The surface stayed small. Every phase was independently shippable; we
+could stop at any commit and the system would still be coherent.
+
+## 11. What to do next
+
+If the cluster review surface is going to be used in earnest:
+
+1. **Run a real evaluation under v3 on the sitemap session.** Reset the
+   session's prompts to defaults (per `PHASE_C_NOTES.md`), recapture or
+   re-evaluate. Watch v1 clusters land in the Header & Navigation /
+   Main content / Footer categories instead of the v0 "Untagged" bucket.
+2. **Use the system to triage one real session.** Time it; note the
+   gestures that felt missing. That's the input for Experiment C and for
+   prioritising Split / keyboard / crop-view.
+3. **If precision feels right, open a PR** against
+   `plan-improved-visual-compare` to merge the branch back. The
+   commits are scoped and reviewable individually.
+
+If concerns surface during real use, the proposal's safety hooks are
+still in place:
+- v0 fallback signatures keep the Untagged category functional even when
+  v3 prompt edits drift.
+- Manual acceptances at any (pair, viewport) key always win over cluster
+  rules.
+- Category and cluster revoke are non-destructive of manual data;
+  reviewers can roll back any rule without losing per-row work.
