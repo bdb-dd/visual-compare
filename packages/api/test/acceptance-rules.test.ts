@@ -108,15 +108,36 @@ describe('acceptCluster', () => {
       expect(a.notes).toBe('looks fine');
     }
 
-    // The acceptance for cmp1 should carry BOTH bbox regions (sidebar +
-    // breadcrumb), not just the sidebar — the snapshot is per comparison.
+    // The acceptance snapshot is imagick-only — that's what
+    // parseImagickRegions reads back at read time. The seed used only
+    // LM-source differences, so both pairs end up with empty snapshots.
+    // (When real comparisons run, the imagick CC pass populates these.)
     const p1 = acceptances.find((a) => a.url_pair_id === 'p1')!;
-    const regions = JSON.parse(p1.accepted_diff_regions_json);
-    expect(regions).toHaveLength(2);
-
-    // cmp2 only has the sidebar diff.
+    expect(JSON.parse(p1.accepted_diff_regions_json)).toEqual([]);
     const p2 = acceptances.find((a) => a.url_pair_id === 'p2')!;
-    expect(JSON.parse(p2.accepted_diff_regions_json)).toHaveLength(1);
+    expect(JSON.parse(p2.accepted_diff_regions_json)).toEqual([]);
+  });
+
+  it('snapshot includes imagick regions but excludes LM regions', () => {
+    const { sessionId, cluster } = seed(db);
+    // Inject an imagick CC on cmp1 so we can verify the filter.
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO differences
+         (id, comparison_id, source, description, severity, bounding_box_json,
+          change_type, region_role, element_label, signature, signature_version, created_at)
+       VALUES ('im-cc-1', 'cmp1', 'imagick', 'Region of 5px (gray(0))', NULL,
+               '{"x":40,"y":60,"width":2,"height":2}',
+               NULL, NULL, NULL, 'sigZ', 'v0', ?)`,
+    ).run(now);
+
+    acceptCluster(db, sessionId, cluster.id);
+    const p1 = db.prepare(
+      `SELECT accepted_diff_regions_json FROM acceptances WHERE url_pair_id = ?`,
+    ).get('p1') as { accepted_diff_regions_json: string };
+    const regions = JSON.parse(p1.accepted_diff_regions_json);
+    expect(regions).toHaveLength(1);
+    expect(regions[0]).toEqual({ x: 40, y: 60, width: 2, height: 2 });
   });
 
   it('preserves a pre-existing manual acceptance (DO NOTHING on conflict)', () => {
