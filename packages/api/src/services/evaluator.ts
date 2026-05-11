@@ -489,7 +489,7 @@ export interface EvaluatorDeps {
 interface EvaluationRow {
   id: string;
   session_id: string;
-  status: 'pending' | 'running' | 'complete' | 'error';
+  status: 'pending' | 'running' | 'complete' | 'error' | 'cancelled';
   capture_run_id: string | null;
   comparison_run_id: string | null;
   cache_hits: string;
@@ -500,12 +500,35 @@ interface EvaluationRow {
   completed_at: string | null;
 }
 
+interface PendingEvaluation {
+  promise: Promise<void>;
+  controller: AbortController;
+}
+
 export class Evaluator {
   #deps: EvaluatorDeps;
-  #pending = new Map<string, Promise<void>>();
+  #pending = new Map<string, PendingEvaluation>();
 
   constructor(deps: EvaluatorDeps) {
     this.#deps = deps;
+  }
+
+  /**
+   * Cooperative cancel. Aborts the per-evaluation signal so the capture /
+   * comparison limit-loops stop pulling new work, and the orchestrator
+   * marks the row `'cancelled'` when the in-flight phase resolves.
+   *
+   * Returns the disposition: `cancelled` when we set the abort, `noop` when
+   * the evaluation isn't in flight (already terminal, or unknown id).
+   * Pre-flight in the DB happens in the route layer so it can return 404 /
+   * 409 with proper status codes.
+   */
+  cancel(evaluationId: string): 'cancelled' | 'noop' {
+    const entry = this.#pending.get(evaluationId);
+    if (!entry) return 'noop';
+    if (entry.controller.signal.aborted) return 'noop';
+    entry.controller.abort();
+    return 'cancelled';
   }
 
   /**
@@ -549,7 +572,14 @@ export class Evaluator {
       now,
     );
 
-    const promise = this.#orchestrate(evaluationId, sessionId, config, initialPlan)
+    const controller = new AbortController();
+    const promise = this.#orchestrate(
+      evaluationId,
+      sessionId,
+      config,
+      initialPlan,
+      controller.signal,
+    )
       .catch((err) => {
         // Already recorded inside #orchestrate; swallow so unhandled rejection
         // doesn't crash the process.
@@ -559,20 +589,20 @@ export class Evaluator {
       .finally(() => {
         this.#pending.delete(evaluationId);
       });
-    this.#pending.set(evaluationId, promise);
+    this.#pending.set(evaluationId, { promise, controller });
 
     return { evaluation_id: evaluationId, coalesced: false };
   }
 
   /** Promise that resolves once the named evaluation finishes orchestrating. */
   waitFor(evaluationId: string): Promise<void> | undefined {
-    return this.#pending.get(evaluationId);
+    return this.#pending.get(evaluationId)?.promise;
   }
 
   /** Wait for every in-flight evaluation. Used by tests. */
   async drainAll(): Promise<void> {
     while (this.#pending.size > 0) {
-      const pending = [...this.#pending.values()];
+      const pending = [...this.#pending.values()].map((p) => p.promise);
       await Promise.all(pending);
     }
   }
@@ -582,11 +612,19 @@ export class Evaluator {
     sessionId: string,
     config: EvaluationConfig,
     initialPlan: EvaluationPlan,
+    signal: AbortSignal,
   ): Promise<void> {
     const { db, queue } = this.#deps;
     db.prepare(`UPDATE evaluations SET status = 'running' WHERE id = ?`).run(evaluationId);
 
     try {
+      // Pre-phase abort check: nothing has been queued yet, so we can mark
+      // cancelled immediately without waiting on a job's drain.
+      if (signal.aborted) {
+        this.#finalizeCancelled(evaluationId, null, null);
+        return;
+      }
+
       // 1) Capture run for missing captures.
       let captureRunId: string | null = null;
       if (initialPlan.capture_misses.length > 0) {
@@ -614,6 +652,7 @@ export class Evaluator {
         const captureResult = startCaptureRun(this.#deps, {
           sessionId,
           options: captureOpts,
+          signal,
         });
         captureRunId = captureResult.capture_run_id;
         db.prepare(`UPDATE evaluations SET capture_run_id = ? WHERE id = ?`).run(
@@ -622,6 +661,11 @@ export class Evaluator {
         );
         const wait = queue.waitForJob(captureResult.job_id);
         if (wait) await wait;
+      }
+
+      if (signal.aborted) {
+        this.#finalizeCancelled(evaluationId, captureRunId, null);
+        return;
       }
 
       // 2) Re-plan now that captures are written. Determine remaining
@@ -662,10 +706,16 @@ export class Evaluator {
             invokeLm: config.invoke_lm,
           }),
           pairs,
+          signal,
         });
         comparisonRunId = result.comparison_run_id;
         const wait = queue.waitForJob(result.job_id);
         if (wait) await wait;
+      }
+
+      if (signal.aborted) {
+        this.#finalizeCancelled(evaluationId, captureRunId, comparisonRunId);
+        return;
       }
 
       // 4) Recompute cache_hits from the final state and mark complete.
@@ -692,6 +742,28 @@ export class Evaluator {
       ).run(message, new Date().toISOString(), evaluationId);
       throw err;
     }
+  }
+
+  /**
+   * Mark the evaluation row `cancelled` and persist whichever run ids were
+   * already attached. Best-effort cache_hits recompute is skipped — the
+   * partial counts aren't meaningful and risk confusing the history view.
+   */
+  #finalizeCancelled(
+    evaluationId: string,
+    captureRunId: string | null,
+    comparisonRunId: string | null,
+  ): void {
+    this.#deps.db
+      .prepare(
+        `UPDATE evaluations
+           SET status = 'cancelled',
+               capture_run_id = COALESCE(capture_run_id, ?),
+               comparison_run_id = COALESCE(comparison_run_id, ?),
+               completed_at = ?
+         WHERE id = ?`,
+      )
+      .run(captureRunId, comparisonRunId, new Date().toISOString(), evaluationId);
   }
 
   #loadCapturesForMisses(

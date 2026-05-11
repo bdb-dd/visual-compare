@@ -68,7 +68,7 @@ export function createApp(deps: AppDeps): Express {
     }),
   );
   app.use('/api/comparisons', comparisonsRouter(deps.db));
-  app.use('/api/evaluations', evaluationsRouter(deps.db));
+  app.use('/api/evaluations', evaluationsRouter(deps.db, evaluator));
   app.use('/api/jobs', jobsRouter(deps.db));
   app.use('/api/lm-prompts', lmPromptsRouter(deps.db));
   app.use('/api/meta', metaRouter({ lm: deps.lm }));

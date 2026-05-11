@@ -154,6 +154,12 @@ export interface StartComparisonRunForPairsInput {
   captureRunId: string;
   options: ComparisonRunOptionsParsed;
   pairs: ExplicitComparisonPair[];
+  /**
+   * Optional signal for cooperative cancellation. The limit-loop checks
+   * `aborted` before each new comparison; in-flight ImageMagick / LM work
+   * runs to completion.
+   */
+  signal?: AbortSignal;
 }
 
 export function startComparisonRun(
@@ -203,7 +209,7 @@ export function startComparisonRunForPairs(
   input: StartComparisonRunForPairsInput,
 ): StartComparisonRunResult {
   const { db, queue } = deps;
-  const { sessionId, captureRunId, options, pairs } = input;
+  const { sessionId, captureRunId, options, pairs, signal } = input;
   const imagick = deps.imagick ?? realImagick;
 
   if (pairs.length === 0) {
@@ -272,6 +278,17 @@ export function startComparisonRunForPairs(
     await Promise.all(
       comparisons.map((c) =>
         limit(async () => {
+          // Cooperative cancel: skip pending comparisons once the evaluation
+          // is aborted. The currently-running ones finish — ImageMagick
+          // subprocesses don't take an AbortSignal in this codepath.
+          if (signal?.aborted) {
+            db.prepare(
+              `UPDATE comparisons SET status = 'error', completed_at = ?
+                 WHERE id = ? AND status = 'pending'`,
+            ).run(new Date().toISOString(), c.id);
+            ctx.incrementProgress();
+            return;
+          }
           await runOneComparison(
             deps,
             imagick,
