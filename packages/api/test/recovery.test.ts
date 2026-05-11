@@ -68,8 +68,18 @@ describe('recoverInterruptedRuns', () => {
         VALUES (?, ?, ?, ?, ?, ?, 'processing', ?)`,
     ).run(procCompId, compRunId, pairId, processingCapId, pendingCapId, 'desktop', now);
 
+    const insertEval = db.prepare(
+      `INSERT INTO evaluations
+        (id, session_id, config_snapshot_json, enabled_pair_count, status, started_at)
+        VALUES (?, ?, '{}', 1, ?, ?)`,
+    );
+    const runningEvalId = randomUUID();
+    const pendingEvalId = randomUUID();
+    insertEval.run(runningEvalId, sessionId, 'running', now);
+    insertEval.run(pendingEvalId, sessionId, 'pending', now);
+
     const result = recoverInterruptedRuns(db);
-    expect(result).toEqual({ jobs: 2, captures: 1, comparisons: 1 });
+    expect(result).toEqual({ jobs: 2, captures: 1, comparisons: 1, evaluations: 1 });
 
     const runningJobAfter = db.prepare<[string], { status: string; error_message: string | null }>(
       'SELECT status, error_message FROM jobs WHERE id = ?',
@@ -95,5 +105,18 @@ describe('recoverInterruptedRuns', () => {
       'SELECT status, error_message FROM comparisons WHERE id = ?',
     ).get(procCompId);
     expect(procCompAfter).toEqual({ status: 'error', error_message: INTERRUPTED_BY_RESTART });
+
+    const runningEvalAfter = db.prepare<
+      [string],
+      { status: string; error_message: string | null; completed_at: string | null }
+    >('SELECT status, error_message, completed_at FROM evaluations WHERE id = ?').get(runningEvalId);
+    expect(runningEvalAfter?.status).toBe('error');
+    expect(runningEvalAfter?.error_message).toBe(INTERRUPTED_BY_RESTART);
+    expect(runningEvalAfter?.completed_at).not.toBeNull();
+
+    const pendingEvalAfter = db.prepare<[string], { status: string }>(
+      'SELECT status FROM evaluations WHERE id = ?',
+    ).get(pendingEvalId);
+    expect(pendingEvalAfter?.status).toBe('pending');
   });
 });

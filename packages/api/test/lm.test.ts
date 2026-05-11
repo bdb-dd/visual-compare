@@ -84,14 +84,14 @@ describe('extractFirstJsonObject', () => {
 });
 
 describe('buildPromptUserInstruction', () => {
-  it('frames target_level_failure as a second-pass review', () => {
+  it('frames target_level_failure as a second-pass review and includes pixel metrics', () => {
     const text = buildPromptUserInstruction({
       level: 'tolerant',
       invocationReason: 'target_level_failure',
       changedPixelPercentage: 12.3,
       ssim: 0.7,
     });
-    expect(text).toMatch(/Target equivalence level/);
+    expect(text).toMatch(/did not pass/i);
     expect(text).toMatch(/12\.300/);
     expect(text).toMatch(/0\.7000/);
   });
@@ -104,7 +104,31 @@ describe('buildPromptUserInstruction', () => {
       ssim: 0.92,
     });
     expect(text).toMatch(/tiebreaker/i);
-    expect(text).toMatch(/tolerant/);
+  });
+
+  it('does not echo the level name in the user instruction (regression guard)', () => {
+    // The LM was rationalizing around explicit project rules by anchoring
+    // on the level name ("the level is tolerant, so…"). The level governs
+    // whether LM is invoked, not how the LM should weigh content.
+    const text = buildPromptUserInstruction({
+      level: 'tolerant',
+      invocationReason: 'target_level_failure',
+      changedPixelPercentage: null,
+      ssim: null,
+    });
+    expect(text).not.toMatch(/tolerant/);
+    expect(text).not.toMatch(/Target equivalence level/);
+  });
+
+  it('tells the LM to apply project rules as absolute', () => {
+    const text = buildPromptUserInstruction({
+      level: 'tolerant',
+      invocationReason: 'target_level_failure',
+      changedPixelPercentage: null,
+      ssim: null,
+    });
+    expect(text).toMatch(/project rules/i);
+    expect(text).toMatch(/absolute/i);
   });
 
   it('omits the metrics line when both are null', () => {

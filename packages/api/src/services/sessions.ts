@@ -223,11 +223,34 @@ export function rowToSessionConfig(row: SessionRow): SessionConfig {
       {},
     ),
     default_equivalence_level: row.default_equivalence_level ?? DEFAULT_EQUIVALENCE_LEVEL,
-    region_match_config: parseJsonField<RegionMatchConfig>(
-      row.region_match_config_json,
-      { ...DEFAULT_REGION_MATCH_CONFIG },
+    region_match_config: normaliseRegionMatchConfig(
+      parseJsonField<Record<string, unknown>>(row.region_match_config_json, {}),
     ),
     filter_query: parseJsonField<FilterQuery>(row.filter_query, {}),
+  };
+}
+
+/**
+ * Tolerate legacy column shapes when reading config back from the DB. Older
+ * rows used px-named knobs (`growth_margin_px`, `displacement_tolerance_px`)
+ * before phase 3 switched the units to percent. We map those forward and
+ * fill in any missing knobs from defaults so the result always satisfies
+ * the strict zod schema on the way back out.
+ */
+function normaliseRegionMatchConfig(raw: Record<string, unknown>): RegionMatchConfig {
+  const num = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  return {
+    growth_margin_pct:
+      num(raw.growth_margin_pct) ??
+      num(raw.growth_margin_px) ??
+      DEFAULT_REGION_MATCH_CONFIG.growth_margin_pct,
+    displacement_tolerance_pct:
+      num(raw.displacement_tolerance_pct) ??
+      num(raw.displacement_tolerance_px) ??
+      DEFAULT_REGION_MATCH_CONFIG.displacement_tolerance_pct,
+    pixel_pct_delta:
+      num(raw.pixel_pct_delta) ?? DEFAULT_REGION_MATCH_CONFIG.pixel_pct_delta,
   };
 }
 

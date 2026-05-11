@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState, type JSX } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ComparisonDetail } from '../components/ComparisonDetail.js';
@@ -142,6 +142,112 @@ export function SessionDetailPage(): JSX.Element {
     void refreshHistory();
   }, [session, refreshResults, refreshAcceptances, refreshEvaluations, refreshHistory]);
 
+  // Live refresh while work is outstanding. Uses the delta protocol on
+  // /results: each tick fetches a tiny payload (plan + summary +
+  // latest_evaluation + changed_pair_keys + cursor) without the row array.
+  // If anything actually changed since the last cursor, we make a second
+  // call with ?keys=... to fetch just those rows and merge them in. This
+  // keeps polling bandwidth ~O(1) regardless of session size — full
+  // /results (which can be megabytes for 5K-pair sessions) only fires on
+  // initial mount and on user-triggered refreshes.
+  const evalRunning =
+    evaluations[0]?.status === 'running' || evaluations[0]?.status === 'pending';
+  const shouldPoll =
+    evalRunning ||
+    (results?.plan.capture_misses ?? 0) > 0 ||
+    (results?.plan.comparison_misses ?? 0) > 0;
+  // Cursor is updated in-place via a ref so the polling effect doesn't have
+  // to depend on it (which would tear down/restart the interval each tick).
+  const cursorRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!session || !shouldPoll) return;
+    if (cursorRef.current === null) cursorRef.current = new Date().toISOString();
+    let cancelled = false;
+    const tick = async () => {
+      const since = cursorRef.current ?? new Date().toISOString();
+      try {
+        const delta = await api.getResults(
+          id,
+          invokeLm ? { invoke_lm: true } : undefined,
+          { since },
+        );
+        if (cancelled) return;
+        // Update header counts + summary chips + latest eval from the
+        // (small) delta payload, leaving the rows array untouched.
+        setResults((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            plan: delta.plan,
+            summary: delta.summary,
+            // Keep results from the previous payload; we'll merge changed
+            // rows below if needed.
+            results: prev.results,
+          };
+        });
+        if (delta.latest_evaluation) {
+          setEvaluations((prev) => {
+            const head = delta.latest_evaluation!;
+            if (prev[0]?.id === head.id) {
+              const next = [...prev];
+              next[0] = head;
+              return next;
+            }
+            // Fresh evaluation we hadn't seen — prepend; full re-fetch is
+            // unnecessary and adds round-trips.
+            return [head, ...prev.filter((e) => e.id !== head.id)];
+          });
+        }
+        if (delta.cursor) cursorRef.current = delta.cursor;
+
+        const changed = delta.changed_pair_keys ?? [];
+        if (changed.length === 0) return;
+
+        const rowsResponse = await api.getResults(
+          id,
+          invokeLm ? { invoke_lm: true } : undefined,
+          { keys: changed },
+        );
+        if (cancelled) return;
+        // Merge the changed rows into the existing array, keyed by
+        // url_pair_id::viewport_name. New rows (didn't exist before) are
+        // appended; existing rows are replaced in place to preserve order.
+        setResults((prev) => {
+          if (!prev) return prev;
+          const byKey = new Map<string, SessionResultRow>();
+          for (const r of rowsResponse.results) {
+            byKey.set(`${r.url_pair_id}::${r.viewport_name}`, r);
+          }
+          const merged = prev.results.map((r) => {
+            const k = `${r.url_pair_id}::${r.viewport_name}`;
+            const updated = byKey.get(k);
+            if (updated) {
+              byKey.delete(k);
+              return updated;
+            }
+            return r;
+          });
+          for (const r of byKey.values()) merged.push(r);
+          return { ...prev, results: merged };
+        });
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      }
+    };
+    const handle = window.setInterval(() => void tick(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+  }, [session, shouldPoll, id, invokeLm]);
+
+  // Reset the cursor whenever a full refresh happens (initial load or
+  // explicit user actions). The next delta poll then picks up changes since
+  // that moment.
+  useEffect(() => {
+    if (results) cursorRef.current = new Date().toISOString();
+  }, [results?.session_id]);
+
   const handleEvaluationComplete = () => {
     void refreshResults();
     void refreshEvaluations();
@@ -274,6 +380,7 @@ export function SessionDetailPage(): JSX.Element {
             invokeLm={invokeLm}
             onInvokeLmChange={setInvokeLm}
             onEvaluationComplete={handleEvaluationComplete}
+            latestEvaluation={lastEval ?? null}
           />
         </div>
       </header>
@@ -326,10 +433,7 @@ export function SessionDetailPage(): JSX.Element {
               viewports={viewports}
               levels={levels}
               defaults={{ viewportName: defaultViewportName, level: defaultLevel }}
-              onSaved={(next) => {
-                handleConfigSaved(next);
-                setSidebarTab('review');
-              }}
+              onSaved={handleConfigSaved}
             />
           )}
         </aside>
@@ -370,6 +474,7 @@ export function SessionDetailPage(): JSX.Element {
               <ComparisonDetail
                 id={selectedRow.comparison_id}
                 row={selectedRow}
+                targetLevel={config.default_equivalence_level}
                 sessionId={session.id}
                 acceptance={
                   acceptances.find(
@@ -629,9 +734,28 @@ function ReviewSidebar({
 }
 
 function PendingRowDetail({ row }: { row: SessionResultRow }): JSX.Element {
-  const sides: Array<{ side: 'A' | 'B'; url: string; info: SessionResultRow['capture_a_status'] }> = [
-    { side: 'A', url: row.url_a, info: row.capture_a_status },
-    { side: 'B', url: row.url_b, info: row.capture_b_status },
+  type SideInfo = {
+    side: 'A' | 'B';
+    url: string;
+    info: SessionResultRow['capture_a_status'];
+    sha: string | null;
+    isMissing: boolean;
+  };
+  const sides: SideInfo[] = [
+    {
+      side: 'A',
+      url: row.url_a,
+      info: row.capture_a_status,
+      sha: row.capture_a_sha,
+      isMissing: row.pair_outcome === 'a_missing' || row.pair_outcome === 'both_missing',
+    },
+    {
+      side: 'B',
+      url: row.url_b,
+      info: row.capture_b_status,
+      sha: row.capture_b_sha,
+      isMissing: row.pair_outcome === 'b_missing' || row.pair_outcome === 'both_missing',
+    },
   ];
   const anyError = sides.some((s) => s.info.status === 'error');
 
@@ -655,21 +779,74 @@ function PendingRowDetail({ row }: { row: SessionResultRow }): JSX.Element {
           </p>
         </>
       )}
-      <div className="capture-status-list">
+      <div className="capture-status-grid">
         {sides.map((s) => (
-          <div key={s.side} className={`capture-status capture-status-${s.info.status}`}>
-            <div className="capture-status-head">
-              <span className={`chip ${s.info.status === 'error' ? 'fail' : s.info.status === 'complete' ? 'pass' : 'pending'}`}>
-                Side {s.side} · {s.info.status === 'in_progress' ? 'in progress' : s.info.status}
-              </span>
-              <span className="muted" style={{ wordBreak: 'break-all', fontSize: 12 }}>{s.url}</span>
-            </div>
-            {s.info.error_message && (
-              <pre className="capture-error">{s.info.error_message}</pre>
-            )}
-          </div>
+          <PendingSideCard key={s.side} {...s} />
         ))}
       </div>
+    </div>
+  );
+}
+
+function PendingSideCard({
+  side,
+  url,
+  info,
+  sha,
+  isMissing,
+}: {
+  side: 'A' | 'B';
+  url: string;
+  info: SessionResultRow['capture_a_status'];
+  sha: string | null;
+  isMissing: boolean;
+}): JSX.Element {
+  const chipClass =
+    info.status === 'error' ? 'fail' : info.status === 'complete' ? 'pass' : 'pending';
+  const statusLabel = info.status === 'in_progress' ? 'in progress' : info.status;
+  const imageSrc = sha ? `/images/sha256/${sha.slice(0, 2)}/${sha}.png` : null;
+  const placeholder = isMissing
+    ? 'Page missing on this side'
+    : info.status === 'in_progress'
+      ? 'Capture in progress…'
+      : info.status === 'error'
+        ? 'Capture failed'
+        : 'Not captured yet';
+
+  return (
+    <div className={`capture-status capture-status-${info.status}`}>
+      <div className="capture-status-head">
+        <span className={`chip ${chipClass}`}>Side {side} · {statusLabel}</span>
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="capture-status-url"
+          title={url}
+        >
+          {url}
+        </a>
+      </div>
+      {imageSrc ? (
+        <a
+          href={imageSrc}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="capture-status-image-link"
+        >
+          <img
+            src={imageSrc}
+            alt={`Side ${side} screenshot`}
+            loading="lazy"
+            className="capture-status-image"
+          />
+        </a>
+      ) : (
+        <div className="capture-status-placeholder">{placeholder}</div>
+      )}
+      {info.error_message && (
+        <pre className="capture-error">{info.error_message}</pre>
+      )}
     </div>
   );
 }

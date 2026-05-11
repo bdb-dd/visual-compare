@@ -13,6 +13,13 @@ export interface EquivalenceLevelDef {
   // Minimum SSIM (0-1) accepted as a perceptual signal for `tolerant`/`loose`
   // levels. `pixel-perfect` and `strict` ignore SSIM.
   min_ssim: number | null;
+  // ImageMagick tolerance applied to the per-pixel diff at this level. Higher
+  // values absorb more anti-aliasing / sub-pixel-shift noise at the cost of
+  // missing subtle real changes. Each session picks one level as its target
+  // and that target's tolerance drives the compareAe call. The pixel-cache
+  // key includes the level so the same captures can be measured at different
+  // tolerances without colliding.
+  tolerance: { fuzzPercent: number; blurSigma: number };
 }
 
 // Levels are ordered strictest -> loosest. The single-pass pipeline walks them
@@ -25,6 +32,7 @@ export const EQUIVALENCE_LEVELS: EquivalenceLevelDef[] = [
     max_changed_pixel_percentage: 0,
     ambiguity_band_percentage: 0,
     min_ssim: null,
+    tolerance: { fuzzPercent: 0, blurSigma: 0 },
   },
   {
     id: 'strict',
@@ -33,6 +41,7 @@ export const EQUIVALENCE_LEVELS: EquivalenceLevelDef[] = [
     max_changed_pixel_percentage: 0.5,
     ambiguity_band_percentage: 0.25,
     min_ssim: null,
+    tolerance: { fuzzPercent: 5, blurSigma: 0 },
   },
   {
     id: 'tolerant',
@@ -41,6 +50,7 @@ export const EQUIVALENCE_LEVELS: EquivalenceLevelDef[] = [
     max_changed_pixel_percentage: 5,
     ambiguity_band_percentage: 2,
     min_ssim: 0.95,
+    tolerance: { fuzzPercent: 10, blurSigma: 0.5 },
   },
   {
     id: 'loose',
@@ -49,6 +59,7 @@ export const EQUIVALENCE_LEVELS: EquivalenceLevelDef[] = [
     max_changed_pixel_percentage: 15,
     ambiguity_band_percentage: 5,
     min_ssim: 0.85,
+    tolerance: { fuzzPercent: 18, blurSigma: 1.0 },
   },
 ];
 

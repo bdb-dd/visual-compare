@@ -506,15 +506,46 @@ describe('per-run circuit breaker', () => {
       await queue.drain();
 
       const result = await request(app).get(`/api/comparison-runs/${comp.body.comparison_run_id}`);
-      const errored = result.body.comparisons.filter((c: { status: string }) => c.status === 'error');
-      expect(errored).toHaveLength(4);
-      // Threshold is 2 → after 2 failures the breaker opens, remaining 2 are short-circuited.
+      const rows = result.body.comparisons as Array<{
+        status: string;
+        matched_at_level: string | null;
+        matched_decided_by: string | null;
+        lm_invocation_reason: string | null;
+        lm_determined_equivalent: number | null;
+        error_message: string | null;
+        changed_pixel_percentage: number | null;
+        ssim: number | null;
+      }>;
+      // Per the IM/LM persistence split: LM failures no longer poison the
+      // row. All 4 are 'complete' with the IM verdict; lm_determined_
+      // equivalent is null because LM never produced a decision. The
+      // breaker is still asserted via analyzeCalls (only 2 LM calls fired
+      // before the circuit opened and short-circuited the rest).
+      expect(rows.filter((c) => c.status === 'complete')).toHaveLength(4);
+      expect(rows.filter((c) => c.status === 'error')).toHaveLength(0);
       expect(analyzeCalls).toBe(2);
-      const messages = errored.map((c: { error_message: string }) => c.error_message);
-      const circuitMsgs = messages.filter((m: string) => m.startsWith('lm_circuit_open:'));
-      const directMsgs = messages.filter((m: string) => m.startsWith('LM Studio failed:'));
-      expect(circuitMsgs).toHaveLength(2);
-      expect(directMsgs).toHaveLength(2);
+      // Every row carries the IM verdict (matched_decided_by='pixel'), with
+      // lm_invocation_reason recording that an LM call was attempted but
+      // produced no verdict.
+      for (const r of rows) {
+        expect(r.matched_decided_by).toBe('pixel');
+        expect(r.lm_invocation_reason).toBe('target_level_failure');
+        expect(r.lm_determined_equivalent).toBeNull();
+        expect(r.changed_pixel_percentage).not.toBeNull();
+        expect(r.ssim).not.toBeNull();
+      }
+      // The split-persistence contract also requires that pixel_compare_cache
+      // got populated for all 4 — otherwise a re-eval after fixing LM would
+      // wastefully re-run the IM pipeline. lm_verdict_cache stays empty
+      // because no LM verdict was produced.
+      const pixelCacheCount = db
+        .prepare<unknown[], { n: number }>(`SELECT COUNT(*) AS n FROM pixel_compare_cache`)
+        .get();
+      expect(pixelCacheCount?.n).toBe(4);
+      const lmCacheCount = db
+        .prepare<unknown[], { n: number }>(`SELECT COUNT(*) AS n FROM lm_verdict_cache`)
+        .get();
+      expect(lmCacheCount?.n).toBe(0);
     } finally {
       db.close();
       await rm(storeDir, { recursive: true, force: true });

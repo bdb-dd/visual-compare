@@ -1,7 +1,27 @@
 import type { Db } from '../db/client.js';
 import { captureOptsHashFor } from './capture-opts-hash.js';
 import { captureRunOptionsSchema } from './capture.js';
-import { PIPELINE_VERSION } from '../constants/pipeline.js';
+import { pipelineVersionFor } from '../constants/pipeline.js';
+import {
+  DEFAULT_EQUIVALENCE_LEVEL,
+  EQUIVALENCE_LEVEL_IDS,
+} from '../constants/equivalence.js';
+import type { EquivalenceLevelId } from '../types.js';
+
+function parseTargetLevel(optionsJson: string): EquivalenceLevelId {
+  try {
+    const parsed = JSON.parse(optionsJson) as { targetLevel?: unknown };
+    if (
+      typeof parsed.targetLevel === 'string' &&
+      (EQUIVALENCE_LEVEL_IDS as string[]).includes(parsed.targetLevel)
+    ) {
+      return parsed.targetLevel as EquivalenceLevelId;
+    }
+  } catch {
+    // fall through
+  }
+  return DEFAULT_EQUIVALENCE_LEVEL;
+}
 
 export interface BackfillResult {
   capture_cache_inserted: number;
@@ -91,6 +111,10 @@ export function runCacheBackfill(db: Db): BackfillResult {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
+  // Backfill leaves user_instruction_id at the column default (''). Legacy
+  // rows predate the user-instruction template hash, so we can't reconstruct
+  // the id; the empty-string default ensures lookups under any current
+  // template id naturally miss and the LM is re-invoked next eval.
   const insertLm = db.prepare(
     `INSERT OR IGNORE INTO lm_verdict_cache
        (capture_a_sha, capture_b_sha, prompt_id, model_id,
@@ -119,16 +143,19 @@ export function runCacheBackfill(db: Db): BackfillResult {
         lm_determined_equivalent: number | null;
         completed_at: string | null;
         created_at: string;
+        run_options_json: string | null;
       }
     >(
-      `SELECT id, capture_a_id, capture_b_id,
-              changed_pixel_percentage, ssim, bounding_box_area_percentage,
-              connected_component_count, im_diff_sha256,
-              lm_invocation_reason, lm_model, lm_prompt_version,
-              lm_diff_summary, lm_confidence, lm_determined_equivalent,
-              completed_at, created_at
-         FROM comparisons
-        WHERE status = 'complete'`,
+      `SELECT c.id, c.capture_a_id, c.capture_b_id,
+              c.changed_pixel_percentage, c.ssim, c.bounding_box_area_percentage,
+              c.connected_component_count, c.im_diff_sha256,
+              c.lm_invocation_reason, c.lm_model, c.lm_prompt_version,
+              c.lm_diff_summary, c.lm_confidence, c.lm_determined_equivalent,
+              c.completed_at, c.created_at,
+              cr.options_json AS run_options_json
+         FROM comparisons c
+         LEFT JOIN comparison_runs cr ON cr.id = c.comparison_run_id
+        WHERE c.status = 'complete'`,
     )
     .all();
 
@@ -141,11 +168,15 @@ export function runCacheBackfill(db: Db): BackfillResult {
     const b = captureSha.get(cmp.capture_b_id);
     if (!a?.screenshot_sha256 || !b?.screenshot_sha256) continue;
     const ts = cmp.completed_at ?? cmp.created_at;
+    const targetLevel = cmp.run_options_json
+      ? parseTargetLevel(cmp.run_options_json)
+      : DEFAULT_EQUIVALENCE_LEVEL;
+    const pipelineVersion = pipelineVersionFor(targetLevel);
 
     const pixelInfo = insertPixel.run(
       a.screenshot_sha256,
       b.screenshot_sha256,
-      PIPELINE_VERSION,
+      pipelineVersion,
       cmp.changed_pixel_percentage,
       cmp.ssim,
       cmp.bounding_box_area_percentage,
@@ -168,7 +199,7 @@ export function runCacheBackfill(db: Db): BackfillResult {
         cmp.lm_prompt_version,
         cmp.lm_model,
         cmp.lm_invocation_reason,
-        PIPELINE_VERSION,
+        pipelineVersion,
         cmp.lm_determined_equivalent,
         cmp.lm_diff_summary,
         cmp.lm_confidence,

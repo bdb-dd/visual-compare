@@ -10,6 +10,9 @@ import type {
   EvaluationStatusDto,
   JobAcceptedResponse,
   JobRow,
+  LmPromptDto,
+  LmPromptInvocationReasonDto,
+  LmPromptUpdateBodyDto,
   MatchedAtLevel,
   SessionConfig,
   SessionDto,
@@ -72,12 +75,25 @@ export const api = {
   getResults: (
     id: string,
     configOverride?: Partial<SessionConfig> & { invoke_lm?: boolean },
+    /**
+     * Optional delta-poll / selective fetch parameters. `since` returns a
+     * tiny payload (no rows, just plan/summary/latest_evaluation +
+     * `changed_pair_keys` + `cursor`); `keys` returns rows for those
+     * compound `<url_pair_id>::<viewport_name>` keys only. Both omitted
+     * means full row dump (initial load semantics).
+     */
+    opts?: { since?: string; keys?: string[] },
   ) => {
-    const qs =
-      configOverride && Object.keys(configOverride).length > 0
-        ? `?config=${encodeURIComponent(JSON.stringify(configOverride))}`
-        : '';
-    return request<SessionResultsDto>(`/api/sessions/${id}/results${qs}`);
+    const params = new URLSearchParams();
+    if (configOverride && Object.keys(configOverride).length > 0) {
+      params.set('config', JSON.stringify(configOverride));
+    }
+    if (opts?.since) params.set('since', opts.since);
+    if (opts?.keys && opts.keys.length > 0) params.set('keys', opts.keys.join(','));
+    const qs = params.toString();
+    return request<SessionResultsDto>(
+      `/api/sessions/${id}/results${qs ? `?${qs}` : ''}`,
+    );
   },
 
   evaluate: (
@@ -224,6 +240,27 @@ export const api = {
     request<unknown>(
       `/api/sessions/${sessionId}/acceptances/${acceptanceId}`,
       { method: 'DELETE' },
+    ),
+
+  listSessionPrompts: (sessionId: string) =>
+    request<{ prompts: LmPromptDto[] }>(`/api/sessions/${sessionId}/lm-prompts`),
+  putSessionPrompt: (
+    sessionId: string,
+    reason: LmPromptInvocationReasonDto,
+    body: LmPromptUpdateBodyDto,
+  ) =>
+    request<{ prompt: LmPromptDto }>(
+      `/api/sessions/${sessionId}/lm-prompts/${reason}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    ),
+  resetSessionPrompt: (sessionId: string, reason: LmPromptInvocationReasonDto) =>
+    request<{ prompt: LmPromptDto }>(
+      `/api/sessions/${sessionId}/lm-prompts/${reason}/reset`,
+      { method: 'POST' },
     ),
 };
 

@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { createApp } from './app.js';
 import { openDatabase } from './db/client.js';
 import { applySchema } from './db/schema.js';
+import { runColumnMigrations } from './db/migrations.js';
 import { recoverInterruptedRuns } from './db/recovery.js';
 import { runCacheBackfill } from './services/cache-backfill.js';
 import {
@@ -27,12 +28,17 @@ mkdirSync(IMAGES_DIR, { recursive: true });
 
 const db = openDatabase({ path: DB_PATH });
 applySchema(db);
+const migrationResult = runColumnMigrations(db);
+if (migrationResult.columns_added > 0) {
+  // eslint-disable-next-line no-console
+  console.log(`[migrations] columns_added=${migrationResult.columns_added}`);
+}
 
 const recovery = recoverInterruptedRuns(db);
-if (recovery.jobs + recovery.captures + recovery.comparisons > 0) {
+if (recovery.jobs + recovery.captures + recovery.comparisons + recovery.evaluations > 0) {
   // eslint-disable-next-line no-console
   console.log(
-    `[recovery] flipped to error: jobs=${recovery.jobs} captures=${recovery.captures} comparisons=${recovery.comparisons}`,
+    `[recovery] flipped to error: jobs=${recovery.jobs} captures=${recovery.captures} comparisons=${recovery.comparisons} evaluations=${recovery.evaluations}`,
   );
 }
 

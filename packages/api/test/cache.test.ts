@@ -16,7 +16,7 @@ import { createApp } from '../src/app.js';
 import { runCacheBackfill } from '../src/services/cache-backfill.js';
 import { captureOptsHashFor } from '../src/services/capture-opts-hash.js';
 import { captureRunOptionsSchema } from '../src/services/capture.js';
-import { PIPELINE_VERSION } from '../src/constants/pipeline.js';
+import { pipelineVersionFor } from '../src/constants/pipeline.js';
 import type { ViewportDef } from '../src/types.js';
 
 const desktop: ViewportDef = {
@@ -221,7 +221,7 @@ describe('cache upserts', () => {
       )
       .all();
     expect(pixelRows).toHaveLength(1);
-    expect(pixelRows[0]!.pipeline_version).toBe(PIPELINE_VERSION);
+    expect(pixelRows[0]!.pipeline_version).toBe(pipelineVersionFor('strict'));
     expect(pixelRows[0]!.changed_pct).toBe(1);
     expect(pixelRows[0]!.ssim).toBe(0.97);
 
@@ -235,7 +235,7 @@ describe('cache upserts', () => {
       prompt_id: 'test-prompt',
       model_id: 'stub-model',
       invocation_reason: 'target_level_failure',
-      pipeline_version: PIPELINE_VERSION,
+      pipeline_version: pipelineVersionFor('strict'),
       verdict: 0,
     });
   });

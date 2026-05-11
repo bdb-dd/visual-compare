@@ -3,7 +3,7 @@ import { mkdir, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { z } from 'zod';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type Page, type Response } from 'playwright';
 import type { Db } from '../db/client.js';
 import { createLimit } from './concurrency.js';
 import type { ArtifactStore } from './artifact-store.js';
@@ -68,7 +68,22 @@ export interface CaptureWorkerResult {
   metadata?: Record<string, unknown>;
   /** Wall time of the capture in ms. */
   durationMs: number;
+  /** HTTP response status from the navigation, or null when unavailable. */
+  httpStatus?: number | null;
+  /**
+   * True when the rendered page is treated as a missing-page (HTTP 4xx/5xx
+   * or the title matches the soft-404 regex). Stubs that don't care can omit
+   * this; the orchestrator treats `undefined` as `false`.
+   */
+  isMissing?: boolean;
 }
+
+/**
+ * Hardcoded soft-404 marker. Matches the most common English/Norwegian
+ * "page not found" page titles. Intentionally not session-configurable yet
+ * — bump to a session field if a target site has a quirky 404 page.
+ */
+const MISSING_PAGE_TITLE_RE = /(page not found|not found|404|finner ikke)/i;
 
 /** A real Playwright-backed capture worker. One persistent browser, many contexts. */
 export function createPlaywrightCaptureWorker(): CaptureWorker {
@@ -96,18 +111,29 @@ export function createPlaywrightCaptureWorker(): CaptureWorker {
     });
     const page = await context.newPage();
     try {
-      await applyReadinessSequence(page, url, options);
+      const navResponse = await applyReadinessSequence(page, url, options);
       const tempDir = join(tmpdir(), 'visual-compare-captures');
       await mkdir(tempDir, { recursive: true });
       const tempPath = join(tempDir, `${randomUUID()}.png`);
       await page.screenshot({ path: tempPath, fullPage: false, type: 'png' });
+
+      const httpStatus = navResponse?.status() ?? null;
+      const title = await page.title().catch(() => '');
+      const isMissing =
+        (httpStatus !== null && httpStatus >= 400) ||
+        MISSING_PAGE_TITLE_RE.test(title);
+
       return {
         tempPath,
         durationMs: Date.now() - startedAt,
+        httpStatus,
+        isMissing,
         metadata: {
           viewport: { width: viewport.width, height: viewport.height },
           deviceScaleFactor: viewport.deviceScaleFactor,
           finalUrl: page.url(),
+          pageTitle: title || null,
+          httpStatus,
         },
       };
     } finally {
@@ -126,13 +152,20 @@ export function createPlaywrightCaptureWorker(): CaptureWorker {
   return { capture, shutdown };
 }
 
-/** Default readiness sequence per the plan. `networkidle` is opt-in. */
+/**
+ * Default readiness sequence per the plan. `networkidle` is opt-in.
+ *
+ * Returns the navigation response so the caller can inspect HTTP status for
+ * missing-page classification. Playwright returns `null` when no main-frame
+ * navigation actually happened (e.g. about:blank). Errors during goto bubble
+ * up to the worker's catch block as before.
+ */
 async function applyReadinessSequence(
   page: Page,
   url: string,
   options: CaptureRunOptionsParsed,
-): Promise<void> {
-  await page.goto(url, { waitUntil: 'load', timeout: 30_000 });
+): Promise<Response | null> {
+  const response = await page.goto(url, { waitUntil: 'load', timeout: 30_000 });
   await page.evaluate(() => document.fonts?.ready ?? Promise.resolve()).catch(() => {});
 
   if (options.waitForSelector) {
@@ -172,6 +205,8 @@ async function applyReadinessSequence(
   if (options.useNetworkIdle) {
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
   }
+
+  return response;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +341,9 @@ async function runOneCapture(
                screenshot_byte_size = ?,
                metadata_json = ?,
                duration_ms = ?,
-               captured_at = ?
+               captured_at = ?,
+               http_status = ?,
+               is_missing = ?
          WHERE id = ?`,
       ).run(
         sha256,
@@ -314,6 +351,8 @@ async function runOneCapture(
         result.metadata ? JSON.stringify(result.metadata) : null,
         result.durationMs,
         capturedAt,
+        result.httpStatus ?? null,
+        result.isMissing ? 1 : 0,
         capture.id,
       );
       db.prepare(

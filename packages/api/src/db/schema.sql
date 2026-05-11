@@ -113,6 +113,13 @@ CREATE TABLE captures (
   duration_ms INTEGER,
   captured_at TEXT,
   created_at TEXT NOT NULL,
+  -- HTTP response status from page.goto(). Null for legacy rows or when the
+  -- response wasn't surfaced (e.g. about:blank, data:, navigation aborted).
+  http_status INTEGER,
+  -- 1 when this capture is treated as a "missing page": http_status >= 400
+  -- OR the rendered title matches the hardcoded soft-404 regex. Used to
+  -- short-circuit visual comparison for pairs where one side doesn't exist.
+  is_missing INTEGER NOT NULL DEFAULT 0 CHECK(is_missing IN (0, 1)),
   UNIQUE(capture_run_id, url_pair_id, side, viewport_name)
 );
 
@@ -155,6 +162,12 @@ CREATE TABLE comparisons (
   im_determined_equivalent INTEGER,
   matched_at_level TEXT CHECK(matched_at_level IN ('pixel-perfect', 'strict', 'tolerant', 'loose', 'none')),
   matched_decided_by TEXT CHECK(matched_decided_by IN ('pixel', 'lm')),
+  -- Coarse classification surfacing whether one side is a missing page.
+  -- 'both_present' rows run the full visual diff; the others short-circuit
+  -- and leave changed_pct/ssim/etc. null. Defaults to 'both_present' so
+  -- legacy rows behave as before.
+  pair_outcome TEXT NOT NULL DEFAULT 'both_present'
+    CHECK(pair_outcome IN ('both_present', 'a_missing', 'b_missing', 'both_missing')),
   lm_invocation_reason TEXT CHECK(lm_invocation_reason IN ('ambiguous_pixel_result', 'target_level_failure', 'manual_retry')),
   lm_model TEXT,
   lm_prompt_version TEXT,
@@ -220,19 +233,25 @@ CREATE TABLE pixel_compare_cache (
 
 CREATE INDEX idx_pixel_compare_cache_comparison ON pixel_compare_cache(comparison_id);
 
+-- user_instruction_id is sha256 of the per-call user instruction template
+-- (with sentinel inputs that strip out per-call values like pixel metrics).
+-- It's part of the cache key so that edits to buildPromptUserInstruction
+-- auto-invalidate verdicts derived under the old wording — without
+-- requiring a PIPELINE_VERSION bump that would also invalidate pixel cache.
 CREATE TABLE lm_verdict_cache (
-  capture_a_sha     TEXT NOT NULL,
-  capture_b_sha     TEXT NOT NULL,
-  prompt_id         TEXT NOT NULL,
-  model_id          TEXT NOT NULL,
-  invocation_reason TEXT NOT NULL,
-  pipeline_version  TEXT NOT NULL,
-  verdict           INTEGER,
-  summary           TEXT,
-  confidence        REAL,
-  comparison_id     TEXT NOT NULL REFERENCES comparisons(id) ON DELETE CASCADE,
-  created_at        TEXT NOT NULL,
-  PRIMARY KEY (capture_a_sha, capture_b_sha, prompt_id, model_id, invocation_reason, pipeline_version)
+  capture_a_sha       TEXT NOT NULL,
+  capture_b_sha       TEXT NOT NULL,
+  prompt_id           TEXT NOT NULL,
+  user_instruction_id TEXT NOT NULL DEFAULT '',
+  model_id            TEXT NOT NULL,
+  invocation_reason   TEXT NOT NULL,
+  pipeline_version    TEXT NOT NULL,
+  verdict             INTEGER,
+  summary             TEXT,
+  confidence          REAL,
+  comparison_id       TEXT NOT NULL REFERENCES comparisons(id) ON DELETE CASCADE,
+  created_at          TEXT NOT NULL,
+  PRIMARY KEY (capture_a_sha, capture_b_sha, prompt_id, user_instruction_id, model_id, invocation_reason, pipeline_version)
 );
 
 CREATE INDEX idx_lm_verdict_cache_comparison ON lm_verdict_cache(comparison_id);
@@ -299,11 +318,17 @@ CREATE INDEX idx_acceptances_label ON acceptances(label);
 -- prompt_id is sha256(prompt_text), giving a stable cache key.
 -- ---------------------------------------------------------------------------
 
+-- prompt_text is the assembled, send-ready system prompt that's hashed into
+-- prompt_id and used as a cache key. guidance_json holds the structured
+-- inputs (toggles + freeform house rules) that were assembled into
+-- prompt_text; non-null = "structured" mode and the UI's editor knows how to
+-- round-trip; null = "advanced" mode, prompt_text is verbatim user-authored.
 CREATE TABLE lm_prompt_defaults (
   invocation_reason TEXT PRIMARY KEY,
   prompt_text       TEXT NOT NULL,
   prompt_id         TEXT NOT NULL,
   source            TEXT NOT NULL CHECK(source IN ('seed', 'override')),
+  guidance_json     TEXT,
   updated_at        TEXT NOT NULL
 );
 
@@ -312,6 +337,7 @@ CREATE TABLE lm_prompts (
   invocation_reason TEXT NOT NULL,
   prompt_text       TEXT NOT NULL,
   prompt_id         TEXT NOT NULL,
+  guidance_json     TEXT,
   updated_at        TEXT NOT NULL,
   PRIMARY KEY (session_id, invocation_reason)
 );

@@ -21,6 +21,7 @@ import {
 } from '../services/sessions.js';
 import {
   evaluationConfigInputSchema,
+  listChangedPairKeysSince,
   listEvaluations,
   loadSessionPromptIds,
   planEvaluation,
@@ -31,11 +32,15 @@ import {
 } from '../services/evaluator.js';
 import { parseEvaluationRow } from './evaluations.js';
 import {
+  buildSessionPromptView,
   getSessionPrompt,
   listSessionPrompts,
+  resetSessionPromptToDefault,
   updateSessionPrompt,
+  updateSessionPromptStructured,
   type LmPromptInvocationReason,
 } from '../services/lm-prompts.js';
+import { promptGuidanceSchema } from '../services/lm-prompt-guidance.js';
 import {
   invalidateCapturesInputSchema,
   invalidateSessionCaptures,
@@ -47,11 +52,19 @@ import {
   upsertAcceptance,
 } from '../services/acceptances.js';
 import { z } from 'zod';
+import type { PairOutcome } from '../types.js';
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MiB
 });
+
+const PAIR_OUTCOME_VALUES = new Set<string>([
+  'both_present',
+  'a_missing',
+  'b_missing',
+  'both_missing',
+]);
 
 export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Router {
   const router = Router();
@@ -238,8 +251,82 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
     const sessionConfig = getSessionConfig(db, id) ?? undefined;
     const promptIds = loadSessionPromptIds(db, id, lm);
     const config = resolveEvaluationConfig(parsed.data, sessionConfig, lm, promptIds);
+
+    // Delta poll mode: ?since=<iso> returns a tiny payload (plan + summary +
+    // latest_evaluation + changed_pair_keys + cursor) without the rows. The
+    // client follows up with ?keys=<list> to fetch the actual changed rows.
+    // Captured BEFORE we run any queries so a comparison completing during
+    // this request still gets reported on the next tick.
+    const sinceParam = req.query.since;
+    const since =
+      typeof sinceParam === 'string' && /\d{4}-\d{2}-\d{2}T/.test(sinceParam)
+        ? sinceParam
+        : null;
+    if (since) {
+      const cursor = new Date().toISOString();
+      const plan = planEvaluation(db, id, config);
+      // The delta poll only needs counts + per-bucket summary, so we still
+      // run readSessionResults to compute summary. This is the heavy part of
+      // a normal /results call but it's CPU-only on the server (no rows
+      // serialized to the client). If it ever becomes a bottleneck we can
+      // extend summariseResults to accept the planner output directly.
+      const fullResults = readSessionResults(db, id, config);
+      const summary = summariseResults(fullResults, config.target_level);
+      const changed = listChangedPairKeysSince(db, id, since);
+      const evalRows = listEvaluations(db, id);
+      const latestEvaluation = evalRows.length > 0
+        ? parseEvaluationRow(db, evalRows[0]!)
+        : null;
+      res.json({
+        session_id: id,
+        config,
+        plan: {
+          enabled_pair_count: plan.enabled_pair_count,
+          capture_misses: plan.capture_misses.length,
+          comparison_misses: plan.comparison_misses.length,
+          cache_hits: plan.cache_hits,
+        },
+        results: [],
+        summary,
+        changed_pair_keys: changed,
+        cursor,
+        latest_evaluation: latestEvaluation,
+      });
+      return;
+    }
+
     const plan = planEvaluation(db, id, config);
     const results = readSessionResults(db, id, config);
+
+    // Optional pair_outcome filter. Summary is computed over the unfiltered
+    // set so chip counts reflect totals regardless of the active filter.
+    const summary = summariseResults(results, config.target_level);
+    const outcomeParam = req.query.outcome;
+    const outcomeFilter =
+      typeof outcomeParam === 'string' && PAIR_OUTCOME_VALUES.has(outcomeParam)
+        ? (outcomeParam as PairOutcome)
+        : null;
+
+    // ?keys=<a::b,c::d> returns only the rows for those compound keys —
+    // used by the polling client after a delta tick reports changed_pair_keys.
+    // Unknown keys are silently dropped (consistent with summary chips
+    // computed over the unfiltered set).
+    const keysParam = req.query.keys;
+    const keysFilter =
+      typeof keysParam === 'string' && keysParam.length > 0
+        ? new Set(keysParam.split(',').filter((k) => k.includes('::')))
+        : null;
+
+    let filteredResults = results;
+    if (outcomeFilter) {
+      filteredResults = filteredResults.filter((r) => r.pair_outcome === outcomeFilter);
+    }
+    if (keysFilter) {
+      filteredResults = filteredResults.filter((r) =>
+        keysFilter.has(`${r.url_pair_id}::${r.viewport_name}`),
+      );
+    }
+
     res.json({
       session_id: id,
       config,
@@ -249,8 +336,8 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
         comparison_misses: plan.comparison_misses.length,
         cache_hits: plan.cache_hits,
       },
-      results,
-      summary: summariseResults(results, config.target_level),
+      results: filteredResults,
+      summary,
     });
   });
 
@@ -264,13 +351,16 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
       res.status(404).json({ error: 'not_found' });
       return;
     }
-    res.json({ prompts: listSessionPrompts(db, id) });
+    const rows = listSessionPrompts(db, id);
+    res.json({ prompts: rows.map((r) => buildSessionPromptView(db, r)) });
   });
 
   const promptReasonSchema = z.enum(['target_level_failure', 'ambiguous_pixel_result']);
-  const promptBodySchema = z
-    .object({ prompt_text: z.string().min(1) })
-    .strict();
+  // Discriminated union: structured (toggles + house_rules) or advanced (raw text).
+  const promptBodySchema = z.discriminatedUnion('mode', [
+    z.object({ mode: z.literal('structured'), guidance: promptGuidanceSchema }).strict(),
+    z.object({ mode: z.literal('advanced'), prompt_text: z.string().min(1) }).strict(),
+  ]);
 
   router.get('/:id/lm-prompts/:reason', (req, res) => {
     const id = req.params.id;
@@ -288,7 +378,7 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
       res.status(404).json({ error: 'not_found' });
       return;
     }
-    res.json({ prompt: row });
+    res.json({ prompt: buildSessionPromptView(db, row) });
   });
 
   router.put('/:id/lm-prompts/:reason', (req, res) => {
@@ -314,13 +404,43 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
       });
       return;
     }
-    const updated = updateSessionPrompt(
+    const reason = reasonParse.data as LmPromptInvocationReason;
+    const updated =
+      bodyParse.data.mode === 'structured'
+        ? updateSessionPromptStructured(db, id, reason, bodyParse.data.guidance)
+        : updateSessionPrompt(db, id, reason, bodyParse.data.prompt_text);
+    if (!updated) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json({ prompt: buildSessionPromptView(db, updated) });
+  });
+
+  router.post('/:id/lm-prompts/:reason/reset', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    if (!getSession(db, id)) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const reasonParse = promptReasonSchema.safeParse(req.params.reason);
+    if (!reasonParse.success) {
+      res.status(400).json({ error: 'invalid_reason' });
+      return;
+    }
+    const updated = resetSessionPromptToDefault(
       db,
       id,
       reasonParse.data as LmPromptInvocationReason,
-      bodyParse.data.prompt_text,
     );
-    res.json({ prompt: updated });
+    if (!updated) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json({ prompt: buildSessionPromptView(db, updated) });
   });
 
   router.post('/:id/url-pairs', (req, res) => {
@@ -409,7 +529,7 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
       return;
     }
     const rows = listEvaluations(db, id);
-    res.json({ evaluations: rows.map(parseEvaluationRow) });
+    res.json({ evaluations: rows.map((row) => parseEvaluationRow(db, row)) });
   });
 
   // -------------------------------------------------------------------------
