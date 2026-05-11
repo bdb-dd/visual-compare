@@ -3,8 +3,11 @@ import { openDatabase, type Db } from '../src/db/client.js';
 import { applySchema } from '../src/db/schema.js';
 import { recomputeClusters, listClusters } from '../src/services/clusters.js';
 import {
+  acceptCategory,
   acceptCluster,
+  applySessionRules,
   ClusterRuleError,
+  revokeCategory,
   revokeClusterAcceptance,
 } from '../src/services/acceptance-rules.js';
 
@@ -212,5 +215,241 @@ describe('revokeClusterAcceptance', () => {
     expect(second.rule.id).not.toBe(first.rule.id);
     expect(second.acceptances_created).toBe(2);
     expect(second.cluster.review_state).toBe('accepted');
+  });
+});
+
+describe('acceptCategory', () => {
+  // Extended seed that adds a SECOND cluster sharing the same
+  // (region_role, change_type) as the sidebar one, plus a cluster with
+  // different tags that must NOT match the category rule.
+  function seedCategory(db: Db): { sessionId: string } {
+    const { sessionId } = seed(db);
+    const now = new Date().toISOString();
+    db.exec(`
+      INSERT INTO url_pairs (id, session_id, url_a, url_b, row_index, created_at)
+        VALUES ('p3', '${sessionId}', 'https://a3', 'https://b3', 2, '${now}');
+      INSERT INTO captures (id, capture_run_id, url_pair_id, side, url, status, screenshot_sha256, viewport_name, created_at)
+        VALUES
+          ('cap5', 'cr1', 'p3', 'a', 'https://a3', 'complete', '${'a'.repeat(64)}', 'desktop', '${now}'),
+          ('cap6', 'cr1', 'p3', 'b', 'https://b3', 'complete', '${'b'.repeat(64)}', 'desktop', '${now}');
+      INSERT INTO comparisons (id, comparison_run_id, url_pair_id, capture_a_id, capture_b_id, viewport_name, status, changed_pixel_percentage, ssim, matched_at_level, created_at)
+        VALUES ('cmp3', 'cmr1', 'p3', 'cap5', 'cap6', 'desktop', 'complete', 6.0, 0.93, 'loose', '${now}');
+    `);
+    const insertDiff = db.prepare(
+      `INSERT INTO differences
+         (id, comparison_id, source, description, severity, bounding_box_json,
+          change_type, region_role, element_label, signature, signature_version, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    // Second sidebar-nav cluster — same (region_role, change_type) but
+    // different element_label → different signature.
+    insertDiff.run('d4', 'cmp3', 'lm', 'top nav added', 'high',
+      '{"x":0,"y":0,"width":100,"height":10}',
+      'element_added', 'nav_primary', 'top navigation',
+      'sigC', 'v1', now);
+    // Unrelated cluster — different (region_role, change_type), must NOT
+    // be touched by the sidebar category rule.
+    insertDiff.run('d5', 'cmp3', 'lm', 'footer text', 'low',
+      '{"x":0,"y":95,"width":100,"height":5}',
+      'text_changed', 'footer', 'footer',
+      'sigD', 'v1', now);
+    recomputeClusters(db, sessionId);
+    return { sessionId };
+  }
+
+  it('accepts all clusters in (region_role, change_type) and fans out across them', () => {
+    const { sessionId } = seedCategory(db);
+    const result = acceptCategory(db, sessionId, {
+      region_role: 'nav_primary',
+      change_type: 'element_added',
+      label: 'all nav-added',
+    });
+    expect(result.clusters_accepted).toBe(2);  // sigA + sigC
+    expect(result.acceptances_created).toBe(3); // p1 + p2 (sigA) + p3 (sigC)
+
+    // Both nav_primary clusters are 'accepted' now.
+    const clusters = listClusters(db, sessionId);
+    const nav = clusters.filter((c) => c.region_role === 'nav_primary');
+    expect(nav.every((c) => c.review_state === 'accepted')).toBe(true);
+
+    // The footer (unrelated) cluster is still 'open'.
+    const footer = clusters.find((c) => c.region_role === 'footer')!;
+    expect(footer.review_state).toBe('open');
+
+    // Acceptances are tagged with the rule id.
+    const tagged = db.prepare(
+      `SELECT COUNT(*) AS c FROM acceptances WHERE acceptance_rule_id = ?`,
+    ).get(result.rule.id) as { c: number };
+    expect(tagged.c).toBe(3);
+  });
+
+  it('skips clusters that already have an existing cluster rule', () => {
+    const { sessionId } = seedCategory(db);
+    const clusters = listClusters(db, sessionId);
+    const sigA = clusters.find((c) => c.signature === 'sigA')!;
+    acceptCluster(db, sessionId, sigA.id);
+
+    const result = acceptCategory(db, sessionId, {
+      region_role: 'nav_primary',
+      change_type: 'element_added',
+    });
+    expect(result.clusters_skipped_already_accepted).toBe(1);
+    expect(result.clusters_accepted).toBe(1); // only sigC was newly accepted
+  });
+
+  it('preserves manual acceptances and counts them as preserved', () => {
+    const { sessionId } = seedCategory(db);
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO acceptances
+         (id, session_id, url_pair_id, viewport_name, accepted_level,
+          accepted_pixel_pct, accepted_ssim, accepted_diff_regions_json,
+          accepted_capture_a_sha, accepted_capture_b_sha, accept_any,
+          label, notes, created_at, updated_at)
+       VALUES ('manual-1', ?, 'p1', 'desktop', 'tolerant', 4.0, 0.99, '[]',
+               ?, ?, 0, 'manual', 'set by user', ?, ?)`,
+    ).run(sessionId, 'a'.repeat(64), 'b'.repeat(64), now, now);
+
+    const result = acceptCategory(db, sessionId, {
+      region_role: 'nav_primary',
+      change_type: 'element_added',
+    });
+    expect(result.acceptances_preserved).toBeGreaterThanOrEqual(1);
+
+    const p1 = db.prepare(
+      `SELECT acceptance_rule_id, label FROM acceptances WHERE id = 'manual-1'`,
+    ).get() as { acceptance_rule_id: string | null; label: string };
+    expect(p1.acceptance_rule_id).toBeNull();
+    expect(p1.label).toBe('manual');
+  });
+});
+
+describe('revokeCategory', () => {
+  function seedCategoryFor(db: Db): { sessionId: string } {
+    const { sessionId } = seed(db);
+    const now = new Date().toISOString();
+    db.exec(`
+      INSERT INTO url_pairs (id, session_id, url_a, url_b, row_index, created_at)
+        VALUES ('p3', '${sessionId}', 'https://a3', 'https://b3', 2, '${now}');
+      INSERT INTO captures (id, capture_run_id, url_pair_id, side, url, status, screenshot_sha256, viewport_name, created_at)
+        VALUES
+          ('cap5', 'cr1', 'p3', 'a', 'https://a3', 'complete', '${'a'.repeat(64)}', 'desktop', '${now}'),
+          ('cap6', 'cr1', 'p3', 'b', 'https://b3', 'complete', '${'b'.repeat(64)}', 'desktop', '${now}');
+      INSERT INTO comparisons (id, comparison_run_id, url_pair_id, capture_a_id, capture_b_id, viewport_name, status, changed_pixel_percentage, ssim, matched_at_level, created_at)
+        VALUES ('cmp3', 'cmr1', 'p3', 'cap5', 'cap6', 'desktop', 'complete', 6.0, 0.93, 'loose', '${now}');
+    `);
+    const insertDiff = db.prepare(
+      `INSERT INTO differences (id, comparison_id, source, description, severity,
+         bounding_box_json, change_type, region_role, element_label,
+         signature, signature_version, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    insertDiff.run('d4', 'cmp3', 'lm', 'top nav added', 'high',
+      '{"x":0,"y":0,"width":100,"height":10}',
+      'element_added', 'nav_primary', 'top navigation',
+      'sigC', 'v1', now);
+    recomputeClusters(db, sessionId);
+    return { sessionId };
+  }
+
+  it('deletes rule-owned acceptances and reopens clusters that lost all rule coverage', () => {
+    const { sessionId } = seedCategoryFor(db);
+    const accept = acceptCategory(db, sessionId, {
+      region_role: 'nav_primary',
+      change_type: 'element_added',
+    });
+    expect(listClusters(db, sessionId).filter((c) => c.region_role === 'nav_primary').every((c) => c.review_state === 'accepted')).toBe(true);
+
+    const result = revokeCategory(db, sessionId, accept.rule.id);
+    expect(result.acceptances_revoked).toBe(3);
+    expect(result.clusters_reopened).toBe(2);
+
+    const nav = listClusters(db, sessionId).filter((c) => c.region_role === 'nav_primary');
+    expect(nav.every((c) => c.review_state === 'open')).toBe(true);
+
+    // Rule row is gone.
+    const rule = db.prepare(`SELECT id FROM acceptance_rules WHERE id = ?`)
+      .get(accept.rule.id);
+    expect(rule).toBeUndefined();
+  });
+
+  it('keeps clusters accepted when a surviving cluster-rule still covers them', () => {
+    const { sessionId } = seedCategoryFor(db);
+    const sigA = listClusters(db, sessionId).find((c) => c.signature === 'sigA')!;
+    acceptCluster(db, sessionId, sigA.id);
+
+    const category = acceptCategory(db, sessionId, {
+      region_role: 'nav_primary',
+      change_type: 'element_added',
+    });
+    // category rule didn't touch sigA (already accepted), but did touch sigC.
+
+    revokeCategory(db, sessionId, category.rule.id);
+    // sigA stays accepted because its own cluster rule is still there.
+    const after = listClusters(db, sessionId).find((c) => c.signature === 'sigA')!;
+    expect(after.review_state).toBe('accepted');
+    // sigC re-opens.
+    const afterC = listClusters(db, sessionId).find((c) => c.signature === 'sigC')!;
+    expect(afterC.review_state).toBe('open');
+  });
+
+  it('throws not_found for an unknown rule id', () => {
+    seed(db);
+    expect(() => revokeCategory(db, 's1', 'no-such-rule')).toThrow(ClusterRuleError);
+  });
+});
+
+describe('applySessionRules', () => {
+  it('no-ops when the session has no rules', () => {
+    const { sessionId } = seed(db);
+    const result = applySessionRules(db, sessionId);
+    expect(result.rules_processed).toBe(0);
+    expect(result.acceptances_created).toBe(0);
+  });
+
+  it('re-applies a rule to a newly-landed cluster (decisions persist across runs)', () => {
+    const { sessionId, cluster } = seed(db);
+    acceptCluster(db, sessionId, cluster.id);
+    // Simulate "new evaluation" — same signature lands on a new url_pair.
+    const now = new Date().toISOString();
+    db.exec(`
+      INSERT INTO url_pairs (id, session_id, url_a, url_b, row_index, created_at)
+        VALUES ('p-new', '${sessionId}', 'https://a-new', 'https://b-new', 99, '${now}');
+      INSERT INTO captures (id, capture_run_id, url_pair_id, side, url, status, screenshot_sha256, viewport_name, created_at)
+        VALUES
+          ('cap-new-a', 'cr1', 'p-new', 'a', 'https://a-new', 'complete', '${'c'.repeat(64)}', 'desktop', '${now}'),
+          ('cap-new-b', 'cr1', 'p-new', 'b', 'https://b-new', 'complete', '${'d'.repeat(64)}', 'desktop', '${now}');
+      INSERT INTO comparisons (id, comparison_run_id, url_pair_id, capture_a_id, capture_b_id, viewport_name, status, changed_pixel_percentage, ssim, matched_at_level, created_at)
+        VALUES ('cmp-new', 'cmr1', 'p-new', 'cap-new-a', 'cap-new-b', 'desktop', 'complete', 5.5, 0.92, 'loose', '${now}');
+    `);
+    db.prepare(
+      `INSERT INTO differences (id, comparison_id, source, description, severity,
+         bounding_box_json, change_type, region_role, element_label,
+         signature, signature_version, created_at)
+       VALUES ('d-new', 'cmp-new', 'lm', 'sidebar added', 'high',
+               '{"x":0,"y":10,"width":25,"height":80}',
+               'element_added', 'nav_primary', 'sidebar navigation',
+               'sigA', 'v1', ?)`,
+    ).run(now);
+    recomputeClusters(db, sessionId);
+
+    const before = db.prepare(
+      `SELECT COUNT(*) AS c FROM acceptances WHERE session_id = ?`,
+    ).get(sessionId) as { c: number };
+    const result = applySessionRules(db, sessionId);
+    const after = db.prepare(
+      `SELECT COUNT(*) AS c FROM acceptances WHERE session_id = ?`,
+    ).get(sessionId) as { c: number };
+
+    expect(result.acceptances_created).toBe(1);
+    expect(after.c).toBe(before.c + 1);
+  });
+
+  it('is idempotent — a second pass adds nothing', () => {
+    const { sessionId, cluster } = seed(db);
+    acceptCluster(db, sessionId, cluster.id);
+    applySessionRules(db, sessionId);
+    const second = applySessionRules(db, sessionId);
+    expect(second.acceptances_created).toBe(0);
   });
 });

@@ -273,6 +273,63 @@ describe('POST /api/sessions/:id/clusters/:cluster_id/reject', () => {
   });
 });
 
+describe('POST /api/sessions/:id/clusters/category-accept', () => {
+  let h: Harness;
+  beforeEach(async () => { h = await makeHarness(); });
+  afterEach(async () => { await h.cleanup(); });
+
+  function patchInShas(): void {
+    h.db.exec(`
+      UPDATE captures SET screenshot_sha256 = REPLACE(printf('%064d', CAST(SUBSTR(id, 4) AS INTEGER)), ' ', '0');
+    `);
+  }
+
+  it('creates a category rule and fans out across matching clusters', async () => {
+    const sessionId = seed(h.db);
+    patchInShas();
+
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/category-accept`)
+      .send({ region_role: 'nav_primary', change_type: 'element_added', label: 'all nav-added' });
+    expect(res.status).toBe(200);
+    expect(res.body.rule.scope).toBe('category');
+    expect(res.body.rule.category_region_role).toBe('nav_primary');
+    expect(res.body.rule.category_change_type).toBe('element_added');
+    expect(res.body.clusters_accepted).toBe(1); // only sigA matches
+    expect(res.body.acceptances_created).toBe(2);
+  });
+
+  it('rejects malformed body', async () => {
+    const sessionId = seed(h.db);
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/category-accept`)
+      .send({ region_role: 'nav_primary' }); // missing change_type
+    expect(res.status).toBe(400);
+  });
+
+  it('DELETE revokes the category rule', async () => {
+    const sessionId = seed(h.db);
+    patchInShas();
+    const create = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/category-accept`)
+      .send({ region_role: 'nav_primary', change_type: 'element_added' });
+    const ruleId = create.body.rule.id;
+
+    const del = await request(h.app)
+      .delete(`/api/sessions/${sessionId}/clusters/category-accept/${ruleId}`);
+    expect(del.status).toBe(200);
+    expect(del.body.acceptances_revoked).toBe(2);
+    expect(del.body.clusters_reopened).toBe(1);
+  });
+
+  it('DELETE returns 404 for an unknown rule id', async () => {
+    const sessionId = seed(h.db);
+    const res = await request(h.app)
+      .delete(`/api/sessions/${sessionId}/clusters/category-accept/no-such-rule`);
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('GET /api/sessions/:id/clusters/:cluster_id', () => {
   let h: Harness;
   beforeEach(async () => { h = await makeHarness(); });

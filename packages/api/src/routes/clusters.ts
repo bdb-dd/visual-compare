@@ -8,8 +8,11 @@ import {
   recomputeClusters,
 } from '../services/clusters.js';
 import {
+  acceptCategory,
   acceptCluster,
+  applySessionRules,
   ClusterRuleError,
+  revokeCategory,
   revokeClusterAcceptance,
 } from '../services/acceptance-rules.js';
 import type {
@@ -47,6 +50,9 @@ export function clustersRouter(db: Db): Router {
     }
     if (req.query.recompute === '1') {
       recomputeClusters(db, sessionId);
+      // After a structural rebuild, re-apply standing rules so any new
+      // clusters that match an existing rule get their fan-out acceptances.
+      applySessionRules(db, sessionId);
     }
 
     const filter = parseReviewState(req.query.review_state);
@@ -176,6 +182,65 @@ export function clustersRouter(db: Db): Router {
       if (err instanceof ClusterRuleError) {
         const status = err.code === 'not_found' ? 404 : 409;
         res.status(status).json({ error: err.code, message: err.message });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  // Phase E — Category rules. POST creates an acceptance_rules row with
+  // scope='category' and fans out across every matching cluster in the
+  // session. DELETE revokes it (deletes rule-owned acceptances and
+  // re-opens clusters that no longer have any rule coverage).
+  const categoryAcceptBodySchema = z.object({
+    region_role: z.string().min(1).max(64),
+    change_type: z.string().min(1).max(64),
+    signature_version: z.string().max(8).optional(),
+    label: z.string().max(120).optional(),
+    notes: z.string().max(2000).optional(),
+    created_by: z.string().max(120).optional(),
+  }).strict();
+  router.post('/category-accept', (req, res) => {
+    const sessionId = (req.params as { id?: string }).id;
+    if (!sessionId) {
+      res.status(400).json({ error: 'invalid_request' });
+      return;
+    }
+    const body = categoryAcceptBodySchema.safeParse(req.body ?? {});
+    if (!body.success) {
+      res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+      return;
+    }
+    const result = acceptCategory(db, sessionId, {
+      region_role: body.data.region_role,
+      change_type: body.data.change_type,
+      signature_version: body.data.signature_version,
+      label: body.data.label,
+      notes: body.data.notes,
+      createdBy: body.data.created_by,
+    });
+    res.status(200).json({
+      rule: result.rule,
+      clusters_accepted: result.clusters_accepted,
+      clusters_skipped_already_accepted: result.clusters_skipped_already_accepted,
+      acceptances_created: result.acceptances_created,
+      acceptances_preserved: result.acceptances_preserved,
+    });
+  });
+
+  router.delete('/category-accept/:rule_id', (req, res) => {
+    const sessionId = (req.params as { id?: string }).id;
+    const ruleId = (req.params as { rule_id?: string }).rule_id;
+    if (!sessionId || !ruleId) {
+      res.status(400).json({ error: 'invalid_request' });
+      return;
+    }
+    try {
+      const result = revokeCategory(db, sessionId, ruleId);
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof ClusterRuleError) {
+        res.status(404).json({ error: err.code, message: err.message });
         return;
       }
       throw err;

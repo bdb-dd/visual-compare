@@ -308,6 +308,36 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
+  acceptCategory: (
+    sessionId: string,
+    body: {
+      region_role: string;
+      change_type: string;
+      signature_version?: string;
+      label?: string;
+      notes?: string;
+      created_by?: string;
+    },
+  ) =>
+    request<{
+      rule: import('@visual-compare/api/types').AcceptanceRuleRow;
+      clusters_accepted: number;
+      clusters_skipped_already_accepted: number;
+      acceptances_created: number;
+      acceptances_preserved: number;
+    }>(`/api/sessions/${sessionId}/clusters/category-accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  revokeCategoryRule: (sessionId: string, ruleId: string) =>
+    request<{
+      rule_id: string;
+      acceptances_revoked: number;
+      clusters_reopened: number;
+    }>(`/api/sessions/${sessionId}/clusters/category-accept/${ruleId}`, {
+      method: 'DELETE',
+    }),
 };
 
 export interface LmStatusDto {
