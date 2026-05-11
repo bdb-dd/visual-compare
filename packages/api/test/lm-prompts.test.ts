@@ -652,4 +652,20 @@ describe('user_instruction_id participates in the LM cache key', () => {
     expect(tlf1).not.toBe(apr);
     expect(tlf1).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  it('userInstructionTemplateId is keyed on the payload shape so includeDiffImage toggles invalidate cached verdicts', () => {
+    // Same reason, different payload shape ⇒ different hash. Without
+    // this, toggling LM_STUDIO_INCLUDE_DIFF_IMAGE would silently reuse
+    // a cached verdict the model formed against the OTHER image set.
+    const withDiff = userInstructionTemplateId('target_level_failure', {
+      includeDiffImage: true,
+    });
+    const noDiff = userInstructionTemplateId('target_level_failure', {
+      includeDiffImage: false,
+    });
+    expect(withDiff).not.toBe(noDiff);
+    // Backward compatibility: the no-arg form must match `includeDiffImage:true`
+    // (the legacy shape) so historical cache rows stay addressable.
+    expect(userInstructionTemplateId('target_level_failure')).toBe(withDiff);
+  });
 });

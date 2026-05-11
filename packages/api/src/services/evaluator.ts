@@ -106,6 +106,13 @@ export interface EvaluationConfig {
    */
   lm_prompt_ids: Partial<Record<LmPromptInvocationReason, string>>;
   lm_model_id: string;
+  /**
+   * Mirrors `LmConfig.includeDiffImage` so the planner / readSessionResults
+   * can compute the same `userInstructionTemplateId` the write path used.
+   * Read from the live LM client at resolve time; the cache key
+   * incorporates this so toggling it forces a re-run of LM.
+   */
+  lm_include_diff_image: boolean;
 }
 
 export interface PlannedCapture {
@@ -210,6 +217,12 @@ export function resolveEvaluationConfig(
     filter_query: session?.filter_query ?? {},
     lm_prompt_ids: promptIds,
     lm_model_id,
+    // Defaults to `true` to match `userInstructionTemplateId`'s default
+    // and keep cache lookups consistent with rows written before this
+    // flag existed (which all used the "AB+diff" payload shape).
+    // Production deployments override via the env reader, which defaults
+    // the env value to `false` once the toggle exists.
+    lm_include_diff_image: lm?.config.includeDiffImage ?? true,
   };
 }
 
@@ -436,7 +449,7 @@ export function planEvaluation(
               aSha,
               bSha,
               promptId,
-              userInstructionTemplateId(reason),
+              userInstructionTemplateId(reason, { includeDiffImage: config.lm_include_diff_image }),
               config.lm_model_id,
               reason,
               pipelineVersion,
@@ -1112,7 +1125,9 @@ export function readSessionResults(
                   aSha,
                   bSha,
                   promptId,
-                  userInstructionTemplateId(lmReason),
+                  userInstructionTemplateId(lmReason, {
+                    includeDiffImage: config.lm_include_diff_image,
+                  }),
                   config.lm_model_id,
                   lmReason,
                   pipelineVersion,

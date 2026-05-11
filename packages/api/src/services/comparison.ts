@@ -725,7 +725,16 @@ async function runOneComparison(
                 completedAt,
               );
             }
-            const userInstructionId = userInstructionTemplateId(lmInvocationReason);
+            const userInstructionId = userInstructionTemplateId(lmInvocationReason, {
+              // The cache key must reflect the exact payload shape the LM
+              // saw, so a toggle of LM_STUDIO_INCLUDE_DIFF_IMAGE forces a
+              // re-run rather than reusing a verdict the model formed
+              // against a different image set. Defaulting to `true` here
+              // matches `userInstructionTemplateId`'s own default and
+              // preserves backward compatibility with cached rows + test
+              // stubs that don't set `includeDiffImage`.
+              includeDiffImage: deps.lm?.config.includeDiffImage ?? true,
+            });
             db.prepare(
               `INSERT INTO lm_verdict_cache
                  (capture_a_sha, capture_b_sha, prompt_id, user_instruction_id, model_id,
