@@ -3,7 +3,10 @@ import {
   buildPromptUserInstruction,
   coerceLmPayload,
   extractFirstJsonObject,
+  jsonSchemaForPromptVersion,
   lmResponseSchema,
+  LM_JSON_SCHEMA,
+  LM_JSON_SCHEMA_V3,
   readLmConfigFromEnv,
 } from '../src/services/lm.js';
 
@@ -56,6 +59,105 @@ describe('lmResponseSchema', () => {
       ],
     });
     expect(r.success).toBe(false);
+  });
+});
+
+describe('v1 cluster-signature taxonomy (v3 prompt)', () => {
+  it('parses a v2-shaped payload (no v1 fields) unchanged', () => {
+    // v2 cached responses must keep parsing — fields are .optional() in zod.
+    const payload = {
+      equivalent: false,
+      confidence: 0.8,
+      summary: 'Different.',
+      differences: [
+        {
+          description: 'Headline differs.',
+          severity: 'high' as const,
+          boundingBox: { x: 10, y: 5, width: 80, height: 8 },
+        },
+      ],
+    };
+    const r = lmResponseSchema.safeParse(payload);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.differences[0]!.changeType).toBeUndefined();
+      expect(r.data.differences[0]!.regionRole).toBeUndefined();
+      expect(r.data.differences[0]!.elementLabel).toBeUndefined();
+    }
+  });
+
+  it('parses a v3-shaped payload with the new taxonomy fields', () => {
+    const payload = {
+      equivalent: false,
+      confidence: 0.92,
+      summary: 'Sidebar nav added.',
+      differences: [
+        {
+          description: 'A sidebar navigation menu has been added on the left side of the page.',
+          severity: 'high' as const,
+          boundingBox: { x: 0, y: 10, width: 22, height: 70 },
+          changeType: 'element_added' as const,
+          regionRole: 'nav_primary' as const,
+          elementLabel: 'sidebar navigation',
+        },
+      ],
+    };
+    const r = lmResponseSchema.safeParse(payload);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.differences[0]!.changeType).toBe('element_added');
+      expect(r.data.differences[0]!.regionRole).toBe('nav_primary');
+      expect(r.data.differences[0]!.elementLabel).toBe('sidebar navigation');
+    }
+  });
+
+  it('rejects an unknown changeType', () => {
+    const r = lmResponseSchema.safeParse({
+      equivalent: false,
+      confidence: 0.5,
+      summary: '...',
+      differences: [
+        {
+          description: 'x',
+          severity: 'low',
+          boundingBox: { x: 0, y: 0, width: 1, height: 1 },
+          changeType: 'not_a_real_type',
+        },
+      ],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects an elementLabel over 64 chars', () => {
+    const r = lmResponseSchema.safeParse({
+      equivalent: false,
+      confidence: 0.5,
+      summary: '...',
+      differences: [
+        {
+          description: 'x',
+          severity: 'low',
+          boundingBox: { x: 0, y: 0, width: 1, height: 1 },
+          elementLabel: 'x'.repeat(65),
+        },
+      ],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('jsonSchemaForPromptVersion picks v3 only for v3-prefixed versions', () => {
+    expect(jsonSchemaForPromptVersion('v3')).toBe(LM_JSON_SCHEMA_V3);
+    expect(jsonSchemaForPromptVersion('v3.1')).toBe(LM_JSON_SCHEMA_V3);
+    expect(jsonSchemaForPromptVersion('v2')).toBe(LM_JSON_SCHEMA);
+    expect(jsonSchemaForPromptVersion('v1')).toBe(LM_JSON_SCHEMA);
+    expect(jsonSchemaForPromptVersion('')).toBe(LM_JSON_SCHEMA);
+  });
+
+  it('v3 strict JSON schema requires the three taxonomy fields', () => {
+    const diffSchema = LM_JSON_SCHEMA_V3.schema.properties.differences.items;
+    expect(diffSchema.required).toEqual(
+      expect.arrayContaining(['changeType', 'regionRole', 'elementLabel']),
+    );
   });
 });
 

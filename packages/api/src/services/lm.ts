@@ -10,6 +10,47 @@ import {
 } from './lms-cli.js';
 
 // ---------------------------------------------------------------------------
+// v1 cluster-signature taxonomy (prompt version v3+).
+//
+// These three fields are emitted by the LM when running under the v3 prompt
+// and used by the cluster-signature pipeline to group semantically-similar
+// differences across pairs. See experiments/v1-taxonomy.md for the rationale
+// and validation results.
+//
+// On v2-era responses they're absent — the zod fields are .optional() so old
+// cached LM responses still parse. Cluster computation falls back to a v0
+// geometric signature for rows without these tags.
+// ---------------------------------------------------------------------------
+
+export const CHANGE_TYPES = [
+  'element_added',
+  'element_removed',
+  'element_replaced',
+  'text_changed',
+  'text_translated',
+  'image_changed',
+  'style_changed',
+  'count_changed',
+  'state_changed',
+  'other',
+] as const;
+export type ChangeType = (typeof CHANGE_TYPES)[number];
+
+export const REGION_ROLES = [
+  'header',
+  'nav_primary',
+  'nav_secondary',
+  'hero',
+  'main_content',
+  'aside',
+  'footer',
+  'overlay',
+  'alert_banner',
+  'other',
+] as const;
+export type RegionRole = (typeof REGION_ROLES)[number];
+
+// ---------------------------------------------------------------------------
 // Response schema (zod) — must mirror the JSON Schema below.
 // ---------------------------------------------------------------------------
 
@@ -22,6 +63,10 @@ export const lmDifferenceSchema = z.object({
     width: z.number().min(0).max(100),
     height: z.number().min(0).max(100),
   }),
+  // v3-only fields. Optional so v2 cached responses still parse.
+  changeType: z.enum(CHANGE_TYPES).optional(),
+  regionRole: z.enum(REGION_ROLES).optional(),
+  elementLabel: z.string().max(64).optional(),
 });
 
 export const lmResponseSchema = z.object({
@@ -76,6 +121,68 @@ export const LM_JSON_SCHEMA = {
   },
 } as const;
 
+/**
+ * v3 strict schema — extends v2 with the cluster-signature taxonomy fields.
+ * Sent to LM Studio via response_format when running under the v3 prompt.
+ *
+ * The three new fields (changeType, regionRole, elementLabel) are REQUIRED
+ * in the v3 strict schema even though they're optional in the zod schema.
+ * The optionality in zod is only for parsing v2-era cached responses; the
+ * runtime v3 path enforces presence at the JSON-schema layer.
+ */
+export const LM_JSON_SCHEMA_V3 = {
+  name: 'visual_compare_result',
+  strict: true,
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['equivalent', 'confidence', 'summary', 'differences'],
+    properties: {
+      equivalent: { type: 'boolean' },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+      summary: { type: 'string' },
+      differences: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['description', 'severity', 'boundingBox', 'changeType', 'regionRole', 'elementLabel'],
+          properties: {
+            description: { type: 'string' },
+            severity: { type: 'string', enum: ['low', 'medium', 'high'] },
+            changeType: { type: 'string', enum: [...CHANGE_TYPES] },
+            regionRole: { type: 'string', enum: [...REGION_ROLES] },
+            elementLabel: { type: 'string', maxLength: 64 },
+            boundingBox: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['x', 'y', 'width', 'height'],
+              properties: {
+                x: { type: 'number', minimum: 0, maximum: 100 },
+                y: { type: 'number', minimum: 0, maximum: 100 },
+                width: { type: 'number', minimum: 0, maximum: 100 },
+                height: { type: 'number', minimum: 0, maximum: 100 },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+/**
+ * Returns the JSON schema to send for a given prompt version. Anything that
+ * starts with 'v3' uses the extended schema; everything else gets v2.
+ *
+ * Centralised here so callers (runAnalyze, tests, future routes) don't
+ * branch on prompt version inline.
+ */
+export function jsonSchemaForPromptVersion(promptVersion: string): typeof LM_JSON_SCHEMA | typeof LM_JSON_SCHEMA_V3 {
+  if (promptVersion.startsWith('v3')) return LM_JSON_SCHEMA_V3;
+  return LM_JSON_SCHEMA;
+}
+
 // ---------------------------------------------------------------------------
 // Prompt builder (versioned).
 // ---------------------------------------------------------------------------
@@ -104,6 +211,102 @@ Worked example of one valid difference entry:
     "description": "Hero headline differs.",
     "severity": "high",
     "boundingBox": { "x": 10, "y": 5, "width": 80, "height": 12 }
+  }
+
+confidence is your overall confidence in the equivalent verdict, in 0..1.`;
+
+/**
+ * v3 system prompt — extends v2 with the cluster-signature taxonomy
+ * (changeType, regionRole, elementLabel) so semantically-similar
+ * differences across pairs collapse into the same v1 cluster.
+ *
+ * Co-evolves with experiments/v1-taxonomy.md in cluster-review-design.
+ * If the taxonomy enums or canonical labels change, both must change.
+ */
+export const SYSTEM_PROMPT_V3 = `You are a visual-regression assistant comparing screenshots of two web pages.
+
+Your job: decide whether the two pages communicate the same content and purpose. Layout differences that don't change the meaning (minor styling, different ad slots) are acceptable. Differences that change navigation, headlines, primary content, or call-to-action mean the pages are NOT equivalent.
+
+You will receive three images:
+  1. Screenshot A
+  2. Screenshot B
+  3. A diff image where unchanged regions are white and changed regions are red. A nearly-all-white diff means the pages are pixel-identical or nearly so. Trust the diff: if it is overwhelmingly white, the differences array MUST be empty.
+
+Decision procedure:
+  - If A and B look the same to a user, return equivalent=true with an empty differences array.
+  - Only return equivalent=false when at least one user-visible difference exists. Each entry in differences must describe an actual change you can point to in BOTH images.
+  - It is OK to return zero differences. Do not invent differences to fill out the list.
+
+For EACH difference, you must also emit three categorical tags so similar changes across pages can be grouped for review:
+
+  changeType (pick exactly one):
+    - element_added      — a visible element/section appears in B that's not in A
+    - element_removed    — an element present in A is absent in B
+    - element_replaced   — same slot, different kind of element (e.g. "single heading" → "list of items")
+    - text_changed       — same element, different text content (headlines, breadcrumb paths, paragraph copy)
+    - text_translated    — text in a different language on one side
+    - image_changed      — same image slot, different bitmap (different photo, icon swap, logo swap)
+    - style_changed      — visual styling differs (color, typography, size) but content is unchanged
+    - count_changed      — a repeating structure (list, accordion, grid) has a different number of items
+    - state_changed      — semantically different page state (404/error, empty state, login required)
+    - other              — none of the above; use sparingly
+
+    SPECIAL RULE: any change to a breadcrumb path, headline/heading, or paragraph that's still PRESENT on both sides is text_changed, NEVER element_added or element_replaced — the element is one entity; its content is what's changing. Use element_added/element_removed for these only if the entire breadcrumb strip / heading / paragraph is absent on one side.
+
+  regionRole (pick exactly one — where on the page):
+    - header           — top global bar with logo + top-level chrome
+    - nav_primary      — primary navigation (top bar OR a sidebar that's the page's main wayfinding)
+    - nav_secondary    — breadcrumbs, sub-nav, tab strips
+    - hero             — top-of-content banner/title area
+    - main_content     — primary article/page body
+    - aside            — sidebar that is NOT primary navigation (related links, info panels)
+    - footer           — bottom global bar
+    - overlay          — modals, popovers, cookie consent
+    - alert_banner     — top-of-page announcement strip, sitewide alert
+    - other            — none of the above
+
+    BOUNDARY: a left sidebar that contains the page's navigation links is nav_primary, not aside. If a user would click links here to navigate the site, it's nav_primary.
+
+  elementLabel (≤64 chars, prefer a CANONICAL form from this list):
+    main heading, secondary heading, breadcrumbs, sidebar navigation, top navigation,
+    footer, header, announcement, cookie banner, accordion item, list item,
+    paragraph, primary CTA, search input, form field, hero image, logo, icon,
+    page state (use with state_changed), language (use with text_translated)
+
+    If none of these fit, emit a short descriptive noun phrase (e.g. "contact information block", "municipality search section").
+
+Reply ONLY with JSON matching the supplied schema. Bounding boxes MUST be expressed as percentages of the image dimensions (0..100), NOT pixels. Each bounding box is an OBJECT with named fields x, y, width, height — never an array.
+
+Worked examples:
+
+  Sidebar navigation menu added in B:
+  {
+    "description": "A sidebar navigation menu has been added on the left side of the page.",
+    "severity": "high",
+    "boundingBox": { "x": 0, "y": 10, "width": 22, "height": 70 },
+    "changeType": "element_added",
+    "regionRole": "nav_primary",
+    "elementLabel": "sidebar navigation"
+  }
+
+  Breadcrumb path got an extra level:
+  {
+    "description": "Breadcrumb path expanded from 'Start > Page' to 'Start > Services > Page'.",
+    "severity": "low",
+    "boundingBox": { "x": 5, "y": 8, "width": 60, "height": 3 },
+    "changeType": "text_changed",
+    "regionRole": "nav_secondary",
+    "elementLabel": "breadcrumbs"
+  }
+
+  Page A is a 404, page B renders normally:
+  {
+    "description": "Image A shows a 'Page not found' error message; Image B shows the actual content.",
+    "severity": "high",
+    "boundingBox": { "x": 0, "y": 0, "width": 100, "height": 100 },
+    "changeType": "state_changed",
+    "regionRole": "main_content",
+    "elementLabel": "page state"
   }
 
 confidence is your overall confidence in the equivalent verdict, in 0..1.`;
@@ -528,7 +731,7 @@ async function runAnalyze(args: AnalyzeArgs, client: OpenAI): Promise<AnalyzeOut
     const completion = await client.chat.completions.create({
       model,
       messages,
-      response_format: { type: 'json_schema', json_schema: LM_JSON_SCHEMA },
+      response_format: { type: 'json_schema', json_schema: jsonSchemaForPromptVersion(promptVersion) },
       max_tokens: config.maxTokens,
       temperature: config.temperature,
     });
