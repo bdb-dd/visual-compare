@@ -400,10 +400,12 @@ export interface EvaluationProgress {
   total: number;
 }
 
+export type EvaluationStatus = 'pending' | 'running' | 'complete' | 'error' | 'cancelled';
+
 export interface EvaluationStatusDto {
   id: string;
   session_id: string;
-  status: 'pending' | 'running' | 'complete' | 'error';
+  status: EvaluationStatus;
   capture_run_id: string | null;
   comparison_run_id: string | null;
   cache_hits: EvaluationCacheHits;

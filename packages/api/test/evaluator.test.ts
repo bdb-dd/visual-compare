@@ -106,6 +106,7 @@ interface Harness {
   db: Db;
   queue: JobQueue;
   evaluator: Evaluator;
+  artifactStore: ReturnType<typeof createArtifactStore>;
   storeDir: string;
   cleanup: () => Promise<void>;
 }
@@ -133,6 +134,7 @@ async function makeHarness(): Promise<Harness> {
     db,
     queue,
     evaluator,
+    artifactStore,
     storeDir,
     cleanup: async () => {
       await rm(storeDir, { recursive: true, force: true });
@@ -342,3 +344,130 @@ describe('evaluator', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('evaluator cancel', () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await makeHarness();
+  });
+  afterEach(async () => {
+    await h.cleanup();
+  });
+
+  it('cancel before orchestration runs marks the evaluation cancelled', async () => {
+    const sessionId = await uploadSession(h.app);
+    const start = h.evaluator.start(sessionId, {
+      viewports: [desktop],
+      target_level: 'tolerant',
+    });
+    // Cancel synchronously after start() — the orchestrator is queued but
+    // hasn't run yet. The pre-phase abort check should short-circuit and
+    // finalize as 'cancelled' without any capture work.
+    const disposition = h.evaluator.cancel(start.evaluation_id);
+    expect(disposition).toBe('cancelled');
+
+    await settle(h);
+
+    const detail = await request(h.app).get(`/api/evaluations/${start.evaluation_id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.evaluation.status).toBe('cancelled');
+    expect(detail.body.evaluation.completed_at).toBeTruthy();
+
+    // No captures were dispatched (stub would have written rows otherwise).
+    const captureRows = h.db
+      .prepare<unknown[], { count: number }>(
+        `SELECT COUNT(*) AS count FROM captures WHERE status = 'complete'`,
+      )
+      .get();
+    expect(captureRows?.count ?? 0).toBe(0);
+  });
+
+  it('cancel mid-flight skips unstarted captures and marks cancelled', async () => {
+    const sessionId = await uploadSession(h.app);
+
+    // Build a controllable capture worker so we can race the cancel against
+    // the limit-loop. Each capture blocks until released; we let one through
+    // before cancelling so the abort path is observed by the loop.
+    const gateA = makeGate();
+    const gateB = makeGate();
+    let counter = 0;
+    const blockingWorker: CaptureWorker = {
+      capture: async (args) => {
+        const idx = counter++;
+        // The two-pair test fixture has 4 captures; we hold all but the first
+        // by gate, so #2-#4 won't run before cancel takes effect.
+        if (idx === 0) await gateA.released;
+        else await gateB.released;
+        const dir = join(tmpdir(), 'vc-eval-cancel-test');
+        await mkdir(dir, { recursive: true });
+        const path = join(dir, `cap-${idx}.png`);
+        await writeFile(path, Buffer.from(`url=${args.url}\n`));
+        return { tempPath: path, durationMs: 1, metadata: { idx } };
+      },
+      shutdown: async () => {},
+    };
+    // Replace the harness's worker. The evaluator captured the original by
+    // closure, so build a new one against the same db/queue/store.
+    const evaluator = new Evaluator({
+      db: h.db,
+      queue: h.queue,
+      artifactStore: h.artifactStore,
+      worker: blockingWorker,
+      imagick: stubImagick(),
+      lm: stubLm(),
+    });
+    const start = evaluator.start(sessionId, {
+      viewports: [desktop],
+      target_level: 'tolerant',
+    });
+
+    // Release one capture so the limit-loop progresses past its first slot.
+    gateA.release();
+    // Wait a tick to let the loop dispatch + observe the released capture.
+    await new Promise((r) => setTimeout(r, 20));
+
+    const disposition = evaluator.cancel(start.evaluation_id);
+    expect(disposition).toBe('cancelled');
+
+    // Release the remaining gates so any in-flight slots can finish; the
+    // limit loop should skip them on signal.aborted.
+    gateB.release();
+    while (evaluator.waitFor(start.evaluation_id)) {
+      await evaluator.drainAll();
+      await h.queue.drain();
+    }
+
+    const row = h.db
+      .prepare<[string], { status: string }>(
+        `SELECT status FROM evaluations WHERE id = ?`,
+      )
+      .get(start.evaluation_id);
+    expect(row?.status).toBe('cancelled');
+  });
+
+  it('POST /cancel returns 404 for an unknown evaluation', async () => {
+    const res = await request(h.app).post(`/api/evaluations/no-such-id/cancel`);
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /cancel returns 409 when evaluation is already complete', async () => {
+    const sessionId = await uploadSession(h.app);
+    const start = await request(h.app)
+      .post(`/api/sessions/${sessionId}/evaluate`)
+      .send({ config: { viewports: [desktop], target_level: 'tolerant' } });
+    expect(start.status).toBe(202);
+    await settle(h);
+
+    const res = await request(h.app).post(`/api/evaluations/${start.body.evaluation_id}/cancel`);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('not_cancellable');
+  });
+});
+
+function makeGate(): { released: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const released = new Promise<void>((r) => {
+    release = r;
+  });
+  return { released, release };
+}
