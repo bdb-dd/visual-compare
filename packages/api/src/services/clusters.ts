@@ -28,6 +28,14 @@ export interface RecomputeResult {
   members_indexed: number;
 }
 
+export interface RecomputeClustersOptions {
+  // Reserved for future flags; recomputeClusters is intentionally a pure
+  // structural operation. Rule application is a separate concern — call
+  // services/acceptance-rules.ts:applySessionRules() after recompute.
+  // eslint-disable-next-line @typescript-eslint/ban-types
+  _reserved?: never;
+}
+
 interface AggregatedCluster {
   signature: string;
   signature_version: string;
@@ -40,7 +48,11 @@ interface AggregatedCluster {
   pair_count: number;
 }
 
-export function recomputeClusters(db: Db, sessionId: string): RecomputeResult {
+export function recomputeClusters(
+  db: Db,
+  sessionId: string,
+  opts: RecomputeClustersOptions = {},
+): RecomputeResult {
   const now = new Date().toISOString();
 
   // Pull every differences row in the session that has a signature, joined

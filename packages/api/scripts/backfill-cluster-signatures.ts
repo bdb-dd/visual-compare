@@ -28,6 +28,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeSignature } from '../src/services/cluster-signature.js';
 import { recomputeClusters } from '../src/services/clusters.js';
+import { applySessionRules } from '../src/services/acceptance-rules.js';
 import { runColumnMigrations } from '../src/db/migrations.js';
 import type { BoundingBoxPercent, DifferenceSource } from '../src/types.js';
 
@@ -174,6 +175,10 @@ async function main() {
 
     const result = recomputeClusters(db, session.id);
     console.log(`  clusters: +${result.clusters_upserted} upserted, -${result.clusters_removed} removed`);
+    const ruleResult = applySessionRules(db, session.id);
+    if (ruleResult.rules_processed > 0) {
+      console.log(`  rules:    ${ruleResult.rules_processed} processed → ${ruleResult.acceptances_created} acceptances created, ${ruleResult.clusters_accepted} clusters newly accepted`);
+    }
   }
 
   db.close();
