@@ -1326,7 +1326,10 @@ ul.diff-list li {
   display: flex;
   gap: 8px;
 }
-.cluster-detail__actions button {
+.cluster-detail__actions .btn {
+  padding: 6px 12px;
+}
+.cluster-detail__actions button[disabled]:not(.btn) {
   background: #2a2e36;
   color: #aab1bd;
   border: 1px solid #353945;
@@ -1334,6 +1337,115 @@ ul.diff-list li {
   padding: 6px 12px;
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+.cluster-detail__banner {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.cluster-detail__banner--accepted {
+  background: #14532d;
+  color: #b3f5c5;
+  border: 1px solid #1a6b3a;
+}
+.cluster-detail__banner--rejected {
+  background: #4c2727;
+  color: #ffd0d0;
+  border: 1px solid #693535;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 9, 12, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.dialog {
+  width: min(560px, 90vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  background: #15171c;
+  border: 1px solid #2a2e36;
+  border-radius: 8px;
+  padding: 20px 22px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+}
+.dialog__title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 700;
+}
+.dialog__intro {
+  margin: 0 0 12px;
+  color: #aab1bd;
+  font-size: 13px;
+}
+.dialog__samples {
+  margin: 12px 0;
+  padding: 8px 10px;
+  background: #0e1014;
+  border: 1px solid #23262d;
+  border-radius: 6px;
+}
+.dialog__samples-label {
+  margin: 0 0 4px;
+  font-size: 11px;
+  color: #aab1bd;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.dialog__samples-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.dialog__samples-list li {
+  font-size: 12px;
+  padding: 2px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dialog__samples-list code {
+  font-size: 11px;
+  color: #d4e1ff;
+}
+.dialog__field {
+  display: block;
+  margin: 12px 0;
+}
+.dialog__field span {
+  display: block;
+  font-size: 12px;
+  color: #aab1bd;
+  margin-bottom: 4px;
+}
+.dialog__field input,
+.dialog__field textarea {
+  width: 100%;
+  background: #0e1014;
+  color: #e5e7eb;
+  border: 1px solid #2a2e36;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+}
+.dialog__field input:focus,
+.dialog__field textarea:focus {
+  outline: 1px solid #1f3a8a;
+}
+.dialog__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
 }
 
 .cluster-detail__sample {

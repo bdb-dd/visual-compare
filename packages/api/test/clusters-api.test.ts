@@ -148,6 +148,131 @@ describe('GET /api/sessions/:id/clusters', () => {
   });
 });
 
+describe('POST /api/sessions/:id/clusters/:cluster_id/accept', () => {
+  let h: Harness;
+  beforeEach(async () => { h = await makeHarness(); });
+  afterEach(async () => { await h.cleanup(); });
+
+  // The Phase D mutation routes require captures to have shas (the
+  // fan-out skips comparisons without them). The shared seed() above
+  // doesn't set screenshot_sha256; patch in dummy shas before running
+  // the accept/reject tests.
+  function patchInShas(): void {
+    h.db.exec(`
+      UPDATE captures SET screenshot_sha256 = REPLACE(printf('%064d', CAST(SUBSTR(id, 4) AS INTEGER)), ' ', '0');
+    `);
+  }
+
+  it('accepts a cluster and fans out into acceptances', async () => {
+    const sessionId = seed(h.db);
+    patchInShas();
+    const list = await request(h.app).get(`/api/sessions/${sessionId}/clusters`);
+    const cluster = list.body.clusters.find(
+      (c: { signature: string }) => c.signature === 'sigA',
+    );
+
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/${cluster.id}/accept`)
+      .send({ label: 'sidebar nav added', notes: 'expected change for sitewide rollout' });
+    expect(res.status).toBe(200);
+    expect(res.body.cluster.review_state).toBe('accepted');
+    expect(res.body.cluster.review_notes).toBe('expected change for sitewide rollout');
+    expect(res.body.rule.signature).toBe('sigA');
+    expect(res.body.rule.label).toBe('sidebar nav added');
+    expect(res.body.acceptances_created).toBe(2);
+    expect(res.body.acceptances_preserved).toBe(0);
+
+    // Acceptances exist with the rule id.
+    const acceptances = h.db.prepare(
+      `SELECT acceptance_rule_id FROM acceptances WHERE session_id = ?`,
+    ).all(sessionId) as Array<{ acceptance_rule_id: string | null }>;
+    expect(acceptances).toHaveLength(2);
+    expect(acceptances.every((a) => a.acceptance_rule_id === res.body.rule.id)).toBe(true);
+  });
+
+  it('returns 409 on double-accept', async () => {
+    const sessionId = seed(h.db);
+    patchInShas();
+    const list = await request(h.app).get(`/api/sessions/${sessionId}/clusters`);
+    const cluster = list.body.clusters.find(
+      (c: { signature: string }) => c.signature === 'sigA',
+    );
+    await request(h.app).post(`/api/sessions/${sessionId}/clusters/${cluster.id}/accept`).send({});
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/${cluster.id}/accept`)
+      .send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('already_accepted');
+  });
+
+  it('returns 404 for an unknown cluster id', async () => {
+    const sessionId = seed(h.db);
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/no-such/accept`)
+      .send({});
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('not_found');
+  });
+
+  it('rejects an invalid body shape', async () => {
+    const sessionId = seed(h.db);
+    const list = await request(h.app).get(`/api/sessions/${sessionId}/clusters`);
+    const clusterId = list.body.clusters[0].id;
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/${clusterId}/accept`)
+      .send({ label: 123 });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /api/sessions/:id/clusters/:cluster_id/reject', () => {
+  let h: Harness;
+  beforeEach(async () => { h = await makeHarness(); });
+  afterEach(async () => { await h.cleanup(); });
+
+  function patchInShas(): void {
+    h.db.exec(`
+      UPDATE captures SET screenshot_sha256 = REPLACE(printf('%064d', CAST(SUBSTR(id, 4) AS INTEGER)), ' ', '0');
+    `);
+  }
+
+  it('revokes a previously-accepted cluster and deletes its rule-owned acceptances', async () => {
+    const sessionId = seed(h.db);
+    patchInShas();
+    const list = await request(h.app).get(`/api/sessions/${sessionId}/clusters`);
+    const cluster = list.body.clusters.find(
+      (c: { signature: string }) => c.signature === 'sigA',
+    );
+    await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/${cluster.id}/accept`)
+      .send({});
+
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/${cluster.id}/reject`)
+      .send({ notes: 'actually this is a regression' });
+    expect(res.status).toBe(200);
+    expect(res.body.cluster.review_state).toBe('rejected');
+    expect(res.body.acceptances_revoked).toBe(2);
+    expect(res.body.rules_deleted).toBe(1);
+
+    const remaining = h.db.prepare(
+      `SELECT COUNT(*) AS c FROM acceptances WHERE session_id = ?`,
+    ).get(sessionId) as { c: number };
+    expect(remaining.c).toBe(0);
+  });
+
+  it('returns 409 when rejecting an open cluster (never accepted)', async () => {
+    const sessionId = seed(h.db);
+    const list = await request(h.app).get(`/api/sessions/${sessionId}/clusters`);
+    const clusterId = list.body.clusters[0].id;
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/${clusterId}/reject`)
+      .send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('not_accepted');
+  });
+});
+
 describe('GET /api/sessions/:id/clusters/:cluster_id', () => {
   let h: Harness;
   beforeEach(async () => { h = await makeHarness(); });

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import type { Db } from '../db/client.js';
 import {
   getCluster,
@@ -6,6 +7,11 @@ import {
   listClusters,
   recomputeClusters,
 } from '../services/clusters.js';
+import {
+  acceptCluster,
+  ClusterRuleError,
+  revokeClusterAcceptance,
+} from '../services/acceptance-rules.js';
 import type {
   ClusterDetailDto,
   ClusterListDto,
@@ -96,6 +102,84 @@ export function clustersRouter(db: Db): Router {
       })),
     };
     res.json(dto);
+  });
+
+  // Phase D — cluster Accept / Reject. Mutation endpoints fan out into
+  // per-row acceptances via services/acceptance-rules.ts. Idempotency is
+  // service-enforced: accepting an already-accepted cluster returns 409,
+  // rejecting an open one likewise. Body validation is permissive — both
+  // label and notes are optional free-text fields.
+  const acceptBodySchema = z.object({
+    label: z.string().max(120).optional(),
+    notes: z.string().max(2000).optional(),
+    created_by: z.string().max(120).optional(),
+  }).strict();
+  router.post('/:cluster_id/accept', (req, res) => {
+    const sessionId = (req.params as { id?: string }).id;
+    const clusterId = (req.params as { cluster_id?: string }).cluster_id;
+    if (!sessionId || !clusterId) {
+      res.status(400).json({ error: 'invalid_request' });
+      return;
+    }
+    const body = acceptBodySchema.safeParse(req.body ?? {});
+    if (!body.success) {
+      res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+      return;
+    }
+    try {
+      const result = acceptCluster(db, sessionId, clusterId, {
+        label: body.data.label,
+        notes: body.data.notes,
+        createdBy: body.data.created_by,
+      });
+      res.status(200).json({
+        cluster: result.cluster,
+        rule: result.rule,
+        acceptances_created: result.acceptances_created,
+        acceptances_preserved: result.acceptances_preserved,
+      });
+    } catch (err) {
+      if (err instanceof ClusterRuleError) {
+        const status = err.code === 'not_found' ? 404 : 409;
+        res.status(status).json({ error: err.code, message: err.message });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  const rejectBodySchema = z.object({
+    notes: z.string().max(2000).optional(),
+  }).strict();
+  router.post('/:cluster_id/reject', (req, res) => {
+    const sessionId = (req.params as { id?: string }).id;
+    const clusterId = (req.params as { cluster_id?: string }).cluster_id;
+    if (!sessionId || !clusterId) {
+      res.status(400).json({ error: 'invalid_request' });
+      return;
+    }
+    const body = rejectBodySchema.safeParse(req.body ?? {});
+    if (!body.success) {
+      res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+      return;
+    }
+    try {
+      const result = revokeClusterAcceptance(db, sessionId, clusterId, {
+        notes: body.data.notes,
+      });
+      res.status(200).json({
+        cluster: result.cluster,
+        acceptances_revoked: result.acceptances_revoked,
+        rules_deleted: result.rules_deleted,
+      });
+    } catch (err) {
+      if (err instanceof ClusterRuleError) {
+        const status = err.code === 'not_found' ? 404 : 409;
+        res.status(status).json({ error: err.code, message: err.message });
+        return;
+      }
+      throw err;
+    }
   });
 
   return router;

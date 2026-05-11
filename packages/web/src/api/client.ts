@@ -283,6 +283,31 @@ export const api = {
       `/api/sessions/${sessionId}/clusters/${clusterId}${qs ? `?${qs}` : ''}`,
     );
   },
+  acceptCluster: (
+    sessionId: string,
+    clusterId: string,
+    body: { label?: string; notes?: string; created_by?: string } = {},
+  ) =>
+    request<{
+      cluster: import('@visual-compare/api/types').DifferenceClusterRow;
+      rule: import('@visual-compare/api/types').AcceptanceRuleRow;
+      acceptances_created: number;
+      acceptances_preserved: number;
+    }>(`/api/sessions/${sessionId}/clusters/${clusterId}/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  rejectCluster: (sessionId: string, clusterId: string, body: { notes?: string } = {}) =>
+    request<{
+      cluster: import('@visual-compare/api/types').DifferenceClusterRow;
+      acceptances_revoked: number;
+      rules_deleted: number;
+    }>(`/api/sessions/${sessionId}/clusters/${clusterId}/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
 };
 
 export interface LmStatusDto {

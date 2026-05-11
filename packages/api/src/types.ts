@@ -255,6 +255,12 @@ export interface AcceptanceRow {
   accept_any: number;
   label: string | null;
   notes: string | null;
+  /**
+   * When this acceptance was created by a cluster-level rule fan-out, the
+   * originating `acceptance_rules.id`. NULL for manually-created
+   * acceptances. Cluster revoke deletes only rows it owns.
+   */
+  acceptance_rule_id: string | null;
   created_at: string;
   updated_at: string;
 }

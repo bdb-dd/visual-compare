@@ -41,6 +41,8 @@ const COLUMN_ADDITIONS: ColumnAddition[] = [
   { table: 'differences', column: 'element_label',     ddl: 'TEXT' },
   { table: 'differences', column: 'signature',         ddl: 'TEXT' },
   { table: 'differences', column: 'signature_version', ddl: 'TEXT' },
+  // Phase D: cluster-rule provenance on per-row acceptances.
+  { table: 'acceptances',  column: 'acceptance_rule_id', ddl: 'TEXT REFERENCES acceptance_rules(id) ON DELETE SET NULL' },
 ];
 
 /**
@@ -112,6 +114,7 @@ const INDEX_CREATIONS: IndexCreation[] = [
   { name: 'idx_clusters_pair_count', ddl: 'CREATE INDEX idx_clusters_pair_count ON difference_clusters(session_id, pair_count DESC)' },
   { name: 'idx_acceptance_rules_session', ddl: 'CREATE INDEX idx_acceptance_rules_session ON acceptance_rules(session_id)' },
   { name: 'idx_acceptance_rules_signature', ddl: 'CREATE INDEX idx_acceptance_rules_signature ON acceptance_rules(signature, signature_version)' },
+  { name: 'idx_acceptances_rule', ddl: 'CREATE INDEX idx_acceptances_rule ON acceptances(acceptance_rule_id)' },
 ];
 
 export interface MigrationResult {
