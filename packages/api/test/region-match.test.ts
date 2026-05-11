@@ -99,4 +99,51 @@ describe('compareRegionSets', () => {
     const result = compareRegionSets(accepted, current, knobs);
     expect(result.status).toBe('covered');
   });
+
+  // Regression test for the "expanded_diff on un-changed comparison" bug:
+  // when two accepted regions are both within tolerance of a current
+  // region's centroid, the matcher must pick the BEST match (closest
+  // centroid, tied by dimension similarity), not the first one in the
+  // array. Otherwise the wrong-size accepted region pairs with current
+  // and triggers a spurious growth verdict.
+  it('picks the best centroid match when multiple accepted candidates are within tolerance', () => {
+    // Two accepted regions whose centroids are close enough to also
+    // pair with the current bbox, but the second one is the EXACT
+    // match. The greedy version of findAcceptedMatch returned the
+    // smaller, earlier one and triggered a false growth verdict.
+    const accepted = [
+      // Smaller, centroid ~0.6 away from current.
+      box(88.264, 10.556, 0.903, 1.222),
+      // Exact same bbox as current — must be the winner.
+      box(89.097, 10.111, 0.417, 2.0),
+    ];
+    const current = [box(89.097, 10.111, 0.417, 2.0)];
+    const result = compareRegionSets(accepted, current, knobs);
+    expect(result.status).toBe('covered');
+    expect(result.expanded_indices).toEqual([]);
+    expect(result.displaced_indices).toEqual([]);
+  });
+
+  it('picks the best centroid match regardless of array order', () => {
+    // Same as above but with the order reversed — the exact match is
+    // first. Should still pick it (and was already picked, but locks the
+    // behavior in either direction).
+    const accepted = [
+      box(89.097, 10.111, 0.417, 2.0),       // exact
+      box(88.264, 10.556, 0.903, 1.222),     // near but wrong
+    ];
+    const current = [box(89.097, 10.111, 0.417, 2.0)];
+    const result = compareRegionSets(accepted, current, knobs);
+    expect(result.status).toBe('covered');
+  });
+
+  it('still flags expanded when no accepted region matches in dimensions', () => {
+    // If the only accepted candidate within tolerance IS smaller, growth
+    // should still fire — the fix shouldn't hide real regressions.
+    const accepted = [box(50, 50, 1, 1)];
+    const current = [box(50, 50, 1, 3)]; // 2pp taller, > 0.5 margin
+    const result = compareRegionSets(accepted, current, knobs);
+    expect(result.status).toBe('expanded');
+    expect(result.expanded_indices).toEqual([0]);
+  });
 });

@@ -58,13 +58,23 @@ export function compareRegionSets(
 }
 
 /**
- * Return the index of the accepted region whose center is within
- * `displacement_tolerance_pct` of the current region's center. -1 if none.
+ * Return the index of the accepted region that best matches `current`. -1
+ * if no accepted region is within `displacement_tolerance_pct` of the
+ * current region's center.
  *
- * "Center distance" is the simplest match metric and works well when
- * accepted regions are roughly disjoint. If accepted regions overlap the
- * caller can still get the wrong match, but for the v1 use case
- * (distinct diff regions) this is a non-issue.
+ * "Best" = nearest centroid (L1 distance), with dimension similarity as a
+ * tiebreaker. The naive first-match version of this function had a real
+ * failure mode: when two accepted regions had centroids within tolerance
+ * of a single current region (e.g. one tiny CC sits next to the exact
+ * region that should have matched), the matcher paired with whichever
+ * came first in the array. That mis-pair then tripped the growth check
+ * in compareRegionSets and produced false-positive expanded_diff
+ * verdicts on un-changed comparisons.
+ *
+ * Best-match doesn't fix every pathological case (true bipartite
+ * matching would, at the cost of complexity), but it eliminates the
+ * common failure where the exact region IS in the accepted set but
+ * just happens to be later in the array than a near-but-wrong one.
  */
 function findAcceptedMatch(
   accepted: BoundingBoxPercent[],
@@ -74,13 +84,31 @@ function findAcceptedMatch(
   const tol = config.displacement_tolerance_pct;
   const cx = current.x + current.width / 2;
   const cy = current.y + current.height / 2;
+  let bestIdx = -1;
+  let bestCentroid = Infinity;
+  let bestDimDelta = Infinity;
   for (let i = 0; i < accepted.length; i += 1) {
     const a = accepted[i]!;
     const ax = a.x + a.width / 2;
     const ay = a.y + a.height / 2;
-    if (Math.abs(cx - ax) <= tol && Math.abs(cy - ay) <= tol) return i;
+    const dx = Math.abs(cx - ax);
+    const dy = Math.abs(cy - ay);
+    if (dx > tol || dy > tol) continue;
+    const centroidDist = dx + dy;
+    const dimDelta =
+      Math.abs(a.width - current.width) + Math.abs(a.height - current.height);
+    // Prefer closer centroid; on ties (sub-1e-6) prefer more similar dimensions
+    // so a same-dimension match beats a same-centroid different-size one.
+    if (
+      centroidDist < bestCentroid - 1e-6 ||
+      (Math.abs(centroidDist - bestCentroid) <= 1e-6 && dimDelta < bestDimDelta)
+    ) {
+      bestIdx = i;
+      bestCentroid = centroidDist;
+      bestDimDelta = dimDelta;
+    }
   }
-  return -1;
+  return bestIdx;
 }
 
 /**

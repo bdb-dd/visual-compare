@@ -585,9 +585,15 @@ function fanOutAcceptances(
 
   const usable = candidates.filter((c) => c.capture_a_sha && c.capture_b_sha);
 
+  // Snapshot regions are the IMAGICK CCs — that's what the read-time
+  // acceptance_status check compares against (evaluator.ts:parseImagickRegions
+  // filters to source='imagick'). Including LM bboxes here would make the
+  // snapshot asymmetric with the read-time check and cause false-positive
+  // expanded_diff verdicts. Clustering still uses LM differences; the
+  // snapshot is about pixel-level regression detection, a separate concern.
   const regionsForComparison = db.prepare<[string], { bounding_box_json: string | null }>(
     `SELECT bounding_box_json FROM differences
-      WHERE comparison_id = ? AND bounding_box_json IS NOT NULL`,
+      WHERE comparison_id = ? AND source = 'imagick' AND bounding_box_json IS NOT NULL`,
   );
 
   const insertAcceptance = db.prepare(
