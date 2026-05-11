@@ -187,6 +187,12 @@ CREATE INDEX idx_comparisons_pair ON comparisons(url_pair_id);
 CREATE INDEX idx_comparisons_status ON comparisons(status);
 CREATE INDEX idx_comparisons_matched_at_level ON comparisons(matched_at_level);
 
+-- Per-difference rows produced by either the imagick (pixel) or the LM
+-- (semantic) pass. Cluster-related columns (signature, signature_version,
+-- change_type, region_role, element_label) populate the v1 cluster review
+-- substrate. NULL on legacy rows; backfilled by scripts/backfill-cluster-
+-- signatures.ts. Imagick rows always get a v0 signature; LM rows under the
+-- v3 prompt get a v1 signature derived from the three tag fields.
 CREATE TABLE differences (
   id TEXT PRIMARY KEY,
   comparison_id TEXT NOT NULL REFERENCES comparisons(id) ON DELETE CASCADE,
@@ -194,10 +200,21 @@ CREATE TABLE differences (
   description TEXT NOT NULL,
   severity TEXT CHECK(severity IN ('low', 'medium', 'high')),
   bounding_box_json TEXT,
+  -- v3-prompt taxonomy fields (LM-sourced rows only).
+  change_type   TEXT,
+  region_role   TEXT,
+  element_label TEXT,
+  -- Cluster-signature index. signature_version is the scheme ('v0' geometric,
+  -- 'v1' structured-LM) under which `signature` was computed. Decoupled from
+  -- the v3 prompt label so the same DB can carry both v0 fallback and v1
+  -- primary signatures during the cutover.
+  signature         TEXT,
+  signature_version TEXT,
   created_at TEXT NOT NULL
 );
 
 CREATE INDEX idx_differences_comparison ON differences(comparison_id);
+CREATE INDEX idx_differences_signature ON differences(signature, signature_version);
 
 -- ---------------------------------------------------------------------------
 -- Cache substrate. Runs tables are the ledger; these are denormalized
@@ -308,6 +325,67 @@ CREATE TABLE acceptances (
 CREATE INDEX idx_acceptances_session ON acceptances(session_id);
 CREATE INDEX idx_acceptances_url_pair ON acceptances(url_pair_id);
 CREATE INDEX idx_acceptances_label ON acceptances(label);
+
+-- ---------------------------------------------------------------------------
+-- Cluster review (Phase A). Materialised aggregates over `differences` rows
+-- that share a signature within a session. Rebuilt from scratch by
+-- recomputeClusters() in services/clusters.ts; the UNIQUE constraint guards
+-- against double-insertion on concurrent rebuilds. Facet columns
+-- (viewport_name, region_role, change_type, element_label) are denormalised
+-- copies of fields on the representative difference for query convenience.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE difference_clusters (
+  id                           TEXT PRIMARY KEY,
+  session_id                   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  signature                    TEXT NOT NULL,
+  signature_version            TEXT NOT NULL,
+  viewport_name                TEXT,
+  region_role                  TEXT,
+  change_type                  TEXT,
+  element_label                TEXT,
+  representative_difference_id TEXT REFERENCES differences(id) ON DELETE SET NULL,
+  member_count                 INTEGER NOT NULL DEFAULT 0,
+  pair_count                   INTEGER NOT NULL DEFAULT 0,
+  review_state                 TEXT NOT NULL DEFAULT 'open'
+                                CHECK(review_state IN ('open', 'accepted', 'rejected', 'split', 'anomaly')),
+  review_notes                 TEXT,
+  reviewed_at                  TEXT,
+  created_at                   TEXT NOT NULL,
+  updated_at                   TEXT NOT NULL,
+  UNIQUE(session_id, signature, signature_version)
+);
+
+CREATE INDEX idx_clusters_session_state ON difference_clusters(session_id, review_state);
+CREATE INDEX idx_clusters_session_region ON difference_clusters(session_id, region_role);
+CREATE INDEX idx_clusters_pair_count ON difference_clusters(session_id, pair_count DESC);
+
+-- ---------------------------------------------------------------------------
+-- Acceptance rules (Phase A: schema only; fan-out wires up in Phase D).
+-- A rule is "everything matching this signature is accepted". When created,
+-- a service worker fans out into per-row `acceptances` so the existing
+-- regression-detection machinery works unchanged. scope='cluster' matches
+-- one signature exactly; scope='category' matches any cluster sharing
+-- (region_role, change_type) at the same signature_version.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE acceptance_rules (
+  id                   TEXT PRIMARY KEY,
+  session_id           TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  signature            TEXT NOT NULL,
+  signature_version    TEXT NOT NULL,
+  scope                TEXT NOT NULL CHECK(scope IN ('cluster', 'category')),
+  category_region_role TEXT,
+  category_change_type TEXT,
+  label                TEXT,
+  notes                TEXT,
+  created_by           TEXT,
+  created_at           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL
+);
+
+CREATE INDEX idx_acceptance_rules_session ON acceptance_rules(session_id);
+CREATE INDEX idx_acceptance_rules_signature ON acceptance_rules(signature, signature_version);
 
 -- ---------------------------------------------------------------------------
 -- LM prompts. The constants file (constants/lm-prompts.ts) is the source of

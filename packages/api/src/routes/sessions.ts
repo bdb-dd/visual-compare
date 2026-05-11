@@ -51,6 +51,7 @@ import {
   listAcceptances,
   upsertAcceptance,
 } from '../services/acceptances.js';
+import { clustersRouter } from './clusters.js';
 import { z } from 'zod';
 import type { PairOutcome } from '../types.js';
 
@@ -590,6 +591,10 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
     }
     res.status(204).end();
   });
+
+  // Cluster review (Phase A): mounted as a sub-router so the parent ':id'
+  // is in req.params. Read-only for now; mutation arrives in Phase D.
+  router.use('/:id/clusters', clustersRouter(db));
 
   return router;
 }

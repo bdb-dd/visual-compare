@@ -32,6 +32,11 @@ function toDifferenceDto(row: DifferenceRow): DifferenceDto {
     source: row.source,
     description: row.description,
     severity: row.severity,
+    change_type: row.change_type,
+    region_role: row.region_role,
+    element_label: row.element_label,
+    signature: row.signature,
+    signature_version: row.signature_version,
     created_at: row.created_at,
     bounding_box: bbox,
   };
