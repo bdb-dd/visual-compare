@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import OpenAI from 'openai';
@@ -115,7 +116,7 @@ interface BuildPromptInput {
 }
 
 export function buildPromptUserInstruction(input: BuildPromptInput): string {
-  const { level, invocationReason } = input;
+  const { invocationReason } = input;
   const ctx: string[] = [];
   if (input.changedPixelPercentage !== null) {
     ctx.push(`changed pixel %: ${input.changedPixelPercentage.toFixed(3)}`);
@@ -125,13 +126,42 @@ export function buildPromptUserInstruction(input: BuildPromptInput): string {
   }
   const ctxLine = ctx.length ? ` Pixel metrics: ${ctx.join(', ')}.` : '';
 
+  // The level name is deliberately omitted: the LM kept latching onto the
+  // word "tolerant" to justify ignoring explicit project rules ("the level
+  // is tolerant, so this difference is acceptable…"). The level governed
+  // whether to invoke the LM at all; once invoked, the LM's job is a pure
+  // content/purpose call.
   if (invocationReason === 'target_level_failure') {
-    return `Target equivalence level: "${level}". Pixel comparison did not pass at this level. Decide whether these pages are nevertheless effectively equivalent in content and purpose.${ctxLine} Reply per the schema.`;
+    return `The pixel comparison did not pass at the configured threshold. Decide whether these pages are nevertheless effectively equivalent in content and purpose. Apply any project rules in the system prompt as absolute, even if a difference might otherwise seem tolerable.${ctxLine} Reply per the schema.`;
   }
   if (invocationReason === 'ambiguous_pixel_result') {
-    return `Equivalence level requested: "${level}". The pixel-level comparison landed inside the ambiguity band, so you are the tiebreaker.${ctxLine} Decide whether these pages are equivalent at this level and reply per the schema.`;
+    return `The pixel comparison was ambiguous, so you are the tiebreaker. Apply any project rules in the system prompt as absolute, even if a difference might otherwise seem tolerable.${ctxLine} Decide whether these pages communicate the same content and purpose, and reply per the schema.`;
   }
-  return `Equivalence level requested: "${level}". Manual retry — reply per the schema.${ctxLine}`;
+  return `Manual retry — reply per the schema.${ctxLine}`;
+}
+
+/**
+ * Stable identifier for the user instruction *template* used at LM
+ * invocation time. Computed by rendering `buildPromptUserInstruction` with
+ * sentinel inputs (no pixel metrics, placeholder level) and hashing the
+ * result. Per-call values like changedPct and SSIM are deliberately
+ * stripped so the id depends only on the template wording, not on the
+ * specific row being judged.
+ *
+ * Included in the LM verdict cache PK so wording changes auto-invalidate
+ * cached verdicts without bumping PIPELINE_VERSION (which would also nuke
+ * the pixel cache).
+ */
+export function userInstructionTemplateId(
+  invocationReason: 'ambiguous_pixel_result' | 'target_level_failure' | 'manual_retry',
+): string {
+  const text = buildPromptUserInstruction({
+    level: 'tolerant' as EquivalenceLevelId,
+    invocationReason,
+    changedPixelPercentage: null,
+    ssim: null,
+  });
+  return createHash('sha256').update(text).digest('hex');
 }
 
 // ---------------------------------------------------------------------------

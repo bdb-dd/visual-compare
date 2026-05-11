@@ -148,10 +148,15 @@ ul.diff-list li {
 }
 .comparison-list-header .filter-bar {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 .comparison-list-header .filter-btn {
-  flex: 1;
+  /* `flex: 1 1 0` lets buttons stretch to fill a row but `min-width` keeps
+     them from squishing illegibly when 6+ chips share a row. The bar wraps
+     to a second line once min-widths can't fit. */
+  flex: 1 1 0;
+  min-width: 92px;
   background: #1b1e24;
   color: #aab1bd;
   border: 1px solid #2a2e36;
@@ -160,6 +165,12 @@ ul.diff-list li {
   font-size: 12px;
   cursor: pointer;
   font-weight: 600;
+}
+/* Visual gap between row-state filters and missing-page filters when the
+   latter are present. The selector keys off the first missing chip so the
+   row-state group keeps its tight spacing. */
+.comparison-list-header .filter-btn.filter-btn-group-start {
+  margin-left: 12px;
 }
 .comparison-list-header .filter-btn .filter-count {
   font-weight: 400;
@@ -188,12 +199,31 @@ ul.diff-list li {
   border: 1px solid #2a2e36;
   border-radius: 4px;
   min-width: 0;
+  /* Buttonish: cells are now clickable filters. Reset the default <button>
+     padding/font/color so they keep the visual density of the previous
+     divs, but read as interactive. */
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  transition: background 80ms ease, border-color 80ms ease;
 }
+.hist-cell:hover { background: #232732; }
 .hist-cell.target {
   border-color: #2a6bff;
   background: #1f2a3f;
 }
+.hist-cell.target:hover { background: #243352; }
+/* Active filter cell: stronger ring + slight lift so the bucket the user
+   is filtering on is unambiguous, regardless of whether it's also the
+   session target. */
+.hist-cell.active {
+  border-color: #6ea8ff;
+  background: #2a3a55;
+  box-shadow: 0 0 0 1px #6ea8ff inset;
+}
+.hist-cell.active .hist-label { color: #d4e1ff; }
 .hist-cell.empty { opacity: 0.5; }
+.hist-cell.empty.active { opacity: 1; } /* if user explicitly filters to an empty bucket, don't dim */
 .hist-count { font-size: 13px; font-weight: 600; color: #d4d8e0; }
 .hist-label {
   font-size: 9px;
@@ -307,6 +337,7 @@ ul.diff-list li {
 .verdict-chip.verdict-expanded { background: #4a3a14; color: #f5d878; }
 .verdict-chip.verdict-pending { background: #2a2e36; color: #aab1bd; }
 .verdict-chip.verdict-error { background: #5c1212; color: #ffd9a8; }
+.verdict-chip.verdict-missing { background: #1a2230; color: #8aaadc; border: 1px dashed #3a567f; }
 .verdict-chip.verdict-unknown { background: #2a2e36; color: #aab1bd; }
 
 .acceptance-bar {
@@ -493,11 +524,11 @@ ul.diff-list li {
 .detail-head .dh-lm-summary {
   color: #d4d8e0;
   font-style: italic;
-  flex: 1;
+  /* Take the full row so the LM text wraps naturally below the chip+model line. */
+  flex-basis: 100%;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  line-height: 1.45;
 }
 
 .detail-tabs {
@@ -629,6 +660,7 @@ ul.diff-list li {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 .evaluate-control .evaluate-status {
   margin: 0;
@@ -641,6 +673,148 @@ ul.diff-list li {
   font-size: 12px;
   cursor: pointer;
   user-select: none;
+}
+
+.prompt-config-panel {
+  margin-top: 12px;
+  padding: 16px;
+  background: #1a1d24;
+  border: 1px solid #2a2e36;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+.prompt-config-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.prompt-config-header h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.prompt-config-intro {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.prompt-config-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #2a2e36;
+}
+.prompt-config-tab {
+  background: transparent;
+  border: none;
+  color: #a0a4ad;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.prompt-config-tab.active {
+  color: #fff;
+  border-bottom-color: #2a6bff;
+}
+.prompt-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.prompt-editor-flow {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.prompt-stage {
+  border: 1px solid #2a2e36;
+  border-radius: 6px;
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.prompt-stage legend {
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e6e8ec;
+}
+.prompt-stage-scope {
+  border-left: 3px solid #d3a544;
+}
+.prompt-stage-trigger {
+  border-left: 3px solid #4a8f4a;
+}
+.prompt-stage-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.prompt-toggle {
+  display: grid;
+  grid-template-columns: 18px auto;
+  grid-template-areas:
+    "checkbox label"
+    ".         helper";
+  gap: 2px 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.prompt-toggle input[type="checkbox"] {
+  grid-area: checkbox;
+  margin-top: 3px;
+}
+.prompt-toggle-label {
+  grid-area: label;
+  font-weight: 500;
+}
+.prompt-toggle-helper {
+  grid-area: helper;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.prompt-house-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.prompt-house-rules textarea,
+.prompt-advanced textarea {
+  width: 100%;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  background: #0f1116;
+  color: #e6e8ec;
+  border: 1px solid #2a2e36;
+  border-radius: 4px;
+  padding: 8px;
+  resize: vertical;
+}
+.prompt-advanced summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #a0a4ad;
+}
+.prompt-advanced[open] summary {
+  margin-bottom: 8px;
+}
+.prompt-editor-error {
+  margin: 0;
+  font-size: 12px;
+  color: #ff6b6b;
+}
+.prompt-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.prompt-editor-meta {
+  font-size: 11px;
+  margin-left: auto;
 }
 
 .btn.primary {
@@ -684,7 +858,22 @@ ul.diff-list li {
   border-radius: 8px;
   padding: 16px;
 }
-.config-panel h3 { font-size: 16px; }
+.config-panel h3 { font-size: 16px; margin: 0; }
+.config-panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.autosave-indicator {
+  font-size: 11px;
+  color: #aab1bd;
+  letter-spacing: 0.02em;
+}
+.autosave-indicator.autosave-saving { color: #aab1bd; }
+.autosave-indicator.autosave-saved { color: #6bcf7a; }
+.autosave-indicator.autosave-error { color: #ff6b6b; }
 .config-panel h4 {
   font-size: 13px;
   text-transform: uppercase;
@@ -765,17 +954,24 @@ ul.diff-list li {
 .comparison-row.verdict-error { border-left-color: #f87171; }
 .comparison-row.verdict-error .verdict-chip { color: #f87171; }
 
-.capture-status-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.capture-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
   margin-top: 12px;
+}
+@media (max-width: 720px) {
+  .capture-status-grid { grid-template-columns: 1fr; }
 }
 .capture-status {
   border: 1px solid #23262d;
   border-radius: 6px;
   padding: 8px 10px;
   background: #0e1014;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
 }
 .capture-status-error { border-color: rgba(248, 113, 113, 0.4); }
 .capture-status-head {
@@ -783,6 +979,37 @@ ul.diff-list li {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+.capture-status-url {
+  color: #93c5fd;
+  font-size: 12px;
+  word-break: break-all;
+  text-decoration: none;
+}
+.capture-status-url:hover { text-decoration: underline; }
+.capture-status-image-link {
+  display: block;
+  border: 1px solid #23262d;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #05070a;
+}
+.capture-status-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 480px;
+  object-fit: contain;
+  background: #05070a;
+}
+.capture-status-placeholder {
+  padding: 24px 12px;
+  border: 1px dashed #2a2e36;
+  border-radius: 4px;
+  color: #94a3b8;
+  font-size: 12px;
+  text-align: center;
+  background: #0a0c10;
 }
 .capture-error {
   margin: 8px 0 0;

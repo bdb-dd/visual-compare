@@ -19,6 +19,7 @@ import {
   hashPrompt,
   seedLmPromptDefaults,
 } from '../src/services/lm-prompts.js';
+import { userInstructionTemplateId } from '../src/services/lm.js';
 import {
   LM_PROMPT_DEFAULTS,
   TARGET_LEVEL_FAILURE_PROMPT,
@@ -328,12 +329,17 @@ describe('editing a session prompt invalidates its LM cache', () => {
     const beforeDetail = await request(h.app).get(`/api/evaluations/${before.evaluation_id}`);
     expect(beforeDetail.body.evaluation.cache_hits.lm).toBe(1);
 
-    // Edit the session's target_level_failure prompt.
+    // Edit the session's target_level_failure prompt (advanced mode).
     const edit = await request(h.app)
       .put(`/api/sessions/${sessionId}/lm-prompts/target_level_failure`)
-      .send({ prompt_text: 'A completely new prompt for second-pass review.' });
+      .send({
+        mode: 'advanced',
+        prompt_text: 'A completely new prompt for second-pass review.',
+      });
     expect(edit.status).toBe(200);
     expect(edit.body.prompt.prompt_id).not.toBe(hashPrompt(TARGET_LEVEL_FAILURE_PROMPT));
+    expect(edit.body.prompt.mode).toBe('advanced');
+    expect(edit.body.prompt.guidance).toBeNull();
 
     // Third evaluation: should re-invoke LM (new prompt_id → cache miss).
     h.evaluator.start(sessionId, {
@@ -385,11 +391,20 @@ describe('routes', () => {
     expect(res.body.error).toBe('invalid_reason');
   });
 
-  it('rejects empty prompt_text', async () => {
+  it('rejects empty advanced prompt_text', async () => {
     const sessionId = await uploadOnePair(h.app);
     const res = await request(h.app)
       .put(`/api/sessions/${sessionId}/lm-prompts/target_level_failure`)
-      .send({ prompt_text: '' });
+      .send({ mode: 'advanced', prompt_text: '' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_body');
+  });
+
+  it('rejects body missing the mode discriminator', async () => {
+    const sessionId = await uploadOnePair(h.app);
+    const res = await request(h.app)
+      .put(`/api/sessions/${sessionId}/lm-prompts/target_level_failure`)
+      .send({ prompt_text: 'x' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_body');
   });
@@ -397,7 +412,244 @@ describe('routes', () => {
   it('PUT session prompt for unknown session returns 404', async () => {
     const res = await request(h.app)
       .put('/api/sessions/missing/lm-prompts/target_level_failure')
-      .send({ prompt_text: 'x' });
+      .send({ mode: 'advanced', prompt_text: 'x' });
     expect(res.status).toBe(404);
+  });
+});
+
+describe('structured guidance mode', () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await makeHarness();
+  });
+  afterEach(async () => {
+    await h.cleanup();
+  });
+
+  it('GET returns structured mode + parsed guidance for freshly seeded prompts', async () => {
+    const sessionId = await uploadOnePair(h.app);
+    const res = await request(h.app).get(
+      `/api/sessions/${sessionId}/lm-prompts/target_level_failure`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.prompt.mode).toBe('structured');
+    expect(res.body.prompt.guidance).toEqual({ toggles: {}, house_rules: { scope: [], trigger: [] } });
+    expect(res.body.prompt.base_prompt_text).toBe(TARGET_LEVEL_FAILURE_PROMPT);
+    expect(res.body.prompt.prompt_text).toBe(TARGET_LEVEL_FAILURE_PROMPT);
+  });
+
+  it('PUT structured assembles toggles into prompt_text and updates prompt_id', async () => {
+    const sessionId = await uploadOnePair(h.app);
+    const put = await request(h.app)
+      .put(`/api/sessions/${sessionId}/lm-prompts/target_level_failure`)
+      .send({
+        mode: 'structured',
+        guidance: {
+          toggles: { language_must_match: true },
+          house_rules: { scope: [], trigger: ['Hero headline must be identical'] },
+        },
+      });
+    expect(put.status).toBe(200);
+    expect(put.body.prompt.mode).toBe('structured');
+    expect(put.body.prompt.guidance.toggles.language_must_match).toBe(true);
+    expect(put.body.prompt.guidance.house_rules).toEqual({
+      scope: [],
+      trigger: ['Hero headline must be identical'],
+    });
+    expect(put.body.prompt.prompt_text).toContain('## Project rules');
+    expect(put.body.prompt.prompt_text).toContain('one human language and B is in another');
+    expect(put.body.prompt.prompt_text).toContain('Hero headline must be identical');
+    expect(put.body.prompt.prompt_id).not.toBe(hashPrompt(TARGET_LEVEL_FAILURE_PROMPT));
+  });
+
+  it('flipping a toggle invalidates the LM verdict cache', async () => {
+    const sessionId = await uploadOnePair(h.app);
+
+    // Baseline run: structured mode with empty guidance → prompt_text == base.
+    h.evaluator.start(sessionId, {
+      viewports: [desktop],
+      target_level: 'strict',
+      invoke_lm: true,
+    });
+    await settle(h);
+    expect(h.analyzeCalls).toHaveLength(1);
+
+    // Enable a toggle — different prompt_text → cache miss on next eval.
+    await request(h.app)
+      .put(`/api/sessions/${sessionId}/lm-prompts/target_level_failure`)
+      .send({
+        mode: 'structured',
+        guidance: { toggles: { language_must_match: true }, house_rules: { scope: [], trigger: [] } },
+      });
+
+    h.evaluator.start(sessionId, {
+      viewports: [desktop],
+      target_level: 'strict',
+      invoke_lm: true,
+    });
+    await settle(h);
+    expect(h.analyzeCalls).toHaveLength(2);
+    expect(h.analyzeCalls[1]!.prompt?.text).toContain('one human language and B is in another');
+  });
+
+  it('reset endpoint restores the default and clears any session edits', async () => {
+    const sessionId = await uploadOnePair(h.app);
+
+    // Apply a structured edit.
+    await request(h.app)
+      .put(`/api/sessions/${sessionId}/lm-prompts/target_level_failure`)
+      .send({
+        mode: 'structured',
+        guidance: {
+          toggles: { ignore_chrome_only_diffs: true },
+          house_rules: [],
+        },
+      });
+
+    // Reset.
+    const reset = await request(h.app).post(
+      `/api/sessions/${sessionId}/lm-prompts/target_level_failure/reset`,
+    );
+    expect(reset.status).toBe(200);
+    expect(reset.body.prompt.prompt_text).toBe(TARGET_LEVEL_FAILURE_PROMPT);
+    expect(reset.body.prompt.guidance).toEqual({ toggles: {}, house_rules: { scope: [], trigger: [] } });
+    expect(reset.body.prompt.mode).toBe('structured');
+  });
+
+  it('rejects unknown toggle keys in structured guidance', async () => {
+    const sessionId = await uploadOnePair(h.app);
+    const res = await request(h.app)
+      .put(`/api/sessions/${sessionId}/lm-prompts/target_level_failure`)
+      .send({
+        mode: 'structured',
+        guidance: { toggles: { not_a_real_toggle: true }, house_rules: { scope: [], trigger: [] } },
+      });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('readSessionResults surfaces persisted LM verdicts regardless of invoke_lm', () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await makeHarness();
+  });
+  afterEach(async () => {
+    await h.cleanup();
+  });
+
+  it('detail and list agree once an LM verdict is cached, even with invoke_lm=false', async () => {
+    const sessionId = await uploadOnePair(h.app);
+
+    // Run with invoke_lm=true at target=strict so the LM is invoked and
+    // a verdict gets cached at invocation_reason='target_level_failure'.
+    h.evaluator.start(sessionId, {
+      viewports: [desktop],
+      target_level: 'strict',
+      invoke_lm: true,
+    });
+    await settle(h);
+    expect(h.analyzeCalls).toHaveLength(1);
+
+    // Now query /results at the same target but with invoke_lm explicitly
+    // off. Without the read-side fix this would return pixel-only because
+    // the gate would refuse to probe the LM cache. With the fix the row
+    // surfaces the cached LM verdict.
+    const cfg = encodeURIComponent(JSON.stringify({ target_level: 'strict' }));
+    const resultsOff = await request(h.app).get(
+      `/api/sessions/${sessionId}/results?config=${cfg}`,
+    );
+    expect(resultsOff.status).toBe(200);
+    const row = resultsOff.body.results[0];
+    expect(row.matched_decided_by).toBe('lm');
+    expect(row.lm).not.toBeNull();
+    expect(row.lm.invocation_reason).toBe('target_level_failure');
+  });
+
+  it('still returns pixel-only when no LM verdict has been cached and invoke_lm=false', async () => {
+    const sessionId = await uploadOnePair(h.app);
+
+    // Run without LM so the cache stays empty for target_level_failure.
+    h.evaluator.start(sessionId, {
+      viewports: [desktop],
+      target_level: 'strict',
+      invoke_lm: false,
+    });
+    await settle(h);
+    expect(h.analyzeCalls).toHaveLength(0);
+
+    const cfg = encodeURIComponent(JSON.stringify({ target_level: 'strict' }));
+    const results = await request(h.app).get(
+      `/api/sessions/${sessionId}/results?config=${cfg}`,
+    );
+    expect(results.status).toBe(200);
+    const row = results.body.results[0];
+    expect(row.matched_decided_by).toBe('pixel');
+    expect(row.lm).toBeNull();
+  });
+});
+
+describe('user_instruction_id participates in the LM cache key', () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await makeHarness();
+  });
+  afterEach(async () => {
+    await h.cleanup();
+  });
+
+  it('a stale user_instruction_id row is ignored; the LM is re-invoked', async () => {
+    const sessionId = await uploadOnePair(h.app);
+
+    // First eval: produces a real cache row at the current user-instruction id.
+    h.evaluator.start(sessionId, {
+      viewports: [desktop],
+      target_level: 'strict',
+      invoke_lm: true,
+    });
+    await settle(h);
+    expect(h.analyzeCalls).toHaveLength(1);
+
+    // Confirm there's exactly one LM cache row at the current id.
+    const realId = userInstructionTemplateId('target_level_failure');
+    const before = h.db
+      .prepare<unknown[], { c: number }>(
+        `SELECT COUNT(*) AS c FROM lm_verdict_cache WHERE user_instruction_id = ?`,
+      )
+      .get(realId);
+    expect(before?.c).toBe(1);
+
+    // Now mutate that row's user_instruction_id to a stale hash, simulating
+    // what happens when the engineer edits buildPromptUserInstruction wording.
+    h.db
+      .prepare(
+        `UPDATE lm_verdict_cache SET user_instruction_id = 'STALE_HASH' WHERE user_instruction_id = ?`,
+      )
+      .run(realId);
+
+    // Re-eval — the planner should treat the stale row as a miss and the LM
+    // is invoked again, producing a fresh row at the current user_instruction_id.
+    h.evaluator.start(sessionId, {
+      viewports: [desktop],
+      target_level: 'strict',
+      invoke_lm: true,
+    });
+    await settle(h);
+    expect(h.analyzeCalls).toHaveLength(2);
+
+    const after = h.db
+      .prepare<unknown[], { c: number }>(
+        `SELECT COUNT(*) AS c FROM lm_verdict_cache WHERE user_instruction_id = ?`,
+      )
+      .get(realId);
+    expect(after?.c).toBe(1);
+  });
+
+  it('userInstructionTemplateId is stable for a given reason and differs across reasons', () => {
+    const tlf1 = userInstructionTemplateId('target_level_failure');
+    const tlf2 = userInstructionTemplateId('target_level_failure');
+    const apr = userInstructionTemplateId('ambiguous_pixel_result');
+    expect(tlf1).toBe(tlf2);
+    expect(tlf1).not.toBe(apr);
+    expect(tlf1).toMatch(/^[0-9a-f]{64}$/);
   });
 });

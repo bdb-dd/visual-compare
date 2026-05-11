@@ -5,6 +5,7 @@ import type {
   CaptureStatusInfo,
   MatchedAtLevel,
   MatchedDecidedBy,
+  PairOutcome,
   SessionResultRow,
 } from '../src/types.js';
 
@@ -15,6 +16,7 @@ function row(opts: {
   matched_decided_by?: MatchedDecidedBy | null;
   acceptance_status?: AcceptanceStatus;
   status?: 'pending' | 'cached';
+  pair_outcome?: PairOutcome;
 }): SessionResultRow {
   return {
     url_pair_id: 'p',
@@ -33,6 +35,7 @@ function row(opts: {
     lm: null,
     acceptance_status: opts.acceptance_status ?? 'unaccepted',
     status: opts.status ?? 'cached',
+    pair_outcome: opts.pair_outcome ?? 'both_present',
   };
 }
 
@@ -47,6 +50,7 @@ describe('summariseResults', () => {
       loose: 0,
       none: 0,
       pending: 0,
+      missing: 0,
     });
     expect(s.by_acceptance_status).toEqual({
       unaccepted: 0,
@@ -60,6 +64,52 @@ describe('summariseResults', () => {
       weaker_than_target: 0,
       pending: 0,
     });
+    expect(s.by_pair_outcome).toEqual({
+      both_present: 0,
+      a_missing: 0,
+      b_missing: 0,
+      both_missing: 0,
+    });
+  });
+
+  it('buckets rows by pair_outcome', () => {
+    const rows = [
+      row({ matched_at_level: 'tolerant', matched_decided_by: 'pixel' }),
+      row({ matched_at_level: 'tolerant', matched_decided_by: 'pixel' }),
+      row({ pair_outcome: 'b_missing' }),
+      row({ pair_outcome: 'b_missing' }),
+      row({ pair_outcome: 'a_missing' }),
+      row({ pair_outcome: 'both_missing' }),
+    ];
+    const s = summariseResults(rows, 'tolerant');
+    expect(s.total).toBe(6);
+    expect(s.by_pair_outcome).toEqual({
+      both_present: 2,
+      a_missing: 1,
+      b_missing: 2,
+      both_missing: 1,
+    });
+  });
+
+  it('counts missing-page rows in by_level.missing, not by_level.pending', () => {
+    // Two rows actually pending a verdict, four rows already classified as
+    // missing-page. The histogram cell for `pending` should reflect just the
+    // first two — otherwise reviewers see "lots of work left" when in fact
+    // those rows are settled (no diff was attempted by design).
+    const rows = [
+      row({ matched_at_level: null, status: 'pending' }),
+      row({ matched_at_level: null, status: 'pending' }),
+      row({ matched_at_level: null, status: 'cached', pair_outcome: 'a_missing' }),
+      row({ matched_at_level: null, status: 'cached', pair_outcome: 'a_missing' }),
+      row({ matched_at_level: null, status: 'cached', pair_outcome: 'b_missing' }),
+      row({ matched_at_level: null, status: 'cached', pair_outcome: 'both_missing' }),
+    ];
+    const s = summariseResults(rows, 'tolerant');
+    expect(s.by_level.pending).toBe(2);
+    expect(s.by_level.missing).toBe(4);
+    // Buckets must still sum to total — adding `missing` shouldn't double-count.
+    const sum = Object.values(s.by_level).reduce((a, b) => a + b, 0);
+    expect(sum).toBe(s.total);
   });
 
   it('buckets pending rows correctly across all breakdowns', () => {

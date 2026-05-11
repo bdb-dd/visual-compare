@@ -1,4 +1,4 @@
-import { useEffect, useState, type JSX } from 'react';
+import { useEffect, useRef, useState, type JSX } from 'react';
 import { api } from '../api/client.js';
 import type {
   EquivalenceLevelId,
@@ -17,10 +17,13 @@ interface Props {
   onSaved: (next: SessionConfig) => void;
 }
 
+const AUTOSAVE_DEBOUNCE_MS = 500;
+
+type SavingState = 'idle' | 'saving' | 'saved' | 'error';
+
 /**
- * The session's persistent project config. Each section saves on the
- * "Save" button — there's intentionally no autosave so users can stage a
- * batch of changes before triggering re-evaluation.
+ * The session's persistent project config. Edits autosave with a short
+ * debounce — there's no Save button.
  */
 export function SessionConfigPanel({
   sessionId,
@@ -30,20 +33,71 @@ export function SessionConfigPanel({
   defaults,
   onSaved,
 }: Props): JSX.Element {
-  // Local edit state, hydrated from the saved config. Empty arrays mean
-  // "no override" — the form pre-fills the visual representation but only
-  // persists what the user touches.
-  const [viewportNames, setViewportNames] = useState<string[]>([]);
-  const [targetLevel, setTargetLevel] = useState<EquivalenceLevelId>(defaults.level);
-  const [language, setLanguage] = useState('');
-  const [category, setCategory] = useState('');
-  const [pathPrefix, setPathPrefix] = useState('');
-  const [hideSelectors, setHideSelectors] = useState('');
-  const [settleDelayMs, setSettleDelayMs] = useState<string>('');
-  const [busy, setBusy] = useState(false);
+  const [viewportNames, setViewportNames] = useState<string[]>(() =>
+    config.default_viewports.length > 0
+      ? config.default_viewports.map((v) => v.name)
+      : [defaults.viewportName],
+  );
+  const [targetLevel, setTargetLevel] = useState<EquivalenceLevelId>(
+    config.default_equivalence_level ?? defaults.level,
+  );
+  const [language, setLanguage] = useState<string>(
+    config.filter_query.language?.join(', ') ?? '',
+  );
+  const [category, setCategory] = useState<string>(
+    config.filter_query.category?.join(', ') ?? '',
+  );
+  const [pathPrefix, setPathPrefix] = useState<string>(config.filter_query.path_prefix ?? '');
+  const [hideSelectors, setHideSelectors] = useState<string>(() => {
+    const opts = config.default_capture_options as { hideSelectors?: string[] };
+    return opts.hideSelectors?.join('\n') ?? '';
+  });
+  const [settleDelayMs, setSettleDelayMs] = useState<string>(() => {
+    const opts = config.default_capture_options as { settleDelayMs?: number };
+    return opts.settleDelayMs !== undefined ? String(opts.settleDelayMs) : '';
+  });
+
+  const [savingState, setSavingState] = useState<SavingState>('idle');
   const [error, setError] = useState<string | null>(null);
 
+  const buildPayload = (): Partial<SessionConfig> => {
+    const chosenViewports = viewports.filter((v) => viewportNames.includes(v.name));
+    const captureOpts: Record<string, unknown> = {};
+    const trimmedHide = hideSelectors
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (trimmedHide.length > 0) captureOpts.hideSelectors = trimmedHide;
+    if (settleDelayMs.trim().length > 0) {
+      const n = Number(settleDelayMs);
+      if (Number.isFinite(n) && n >= 0) captureOpts.settleDelayMs = Math.round(n);
+    }
+    const filterQuery: Record<string, unknown> = {};
+    const langs = parseList(language);
+    if (langs.length > 0) filterQuery.language = langs;
+    const cats = parseList(category);
+    if (cats.length > 0) filterQuery.category = cats;
+    if (pathPrefix.trim().length > 0) filterQuery.path_prefix = pathPrefix.trim();
+
+    return {
+      default_viewports: chosenViewports,
+      default_capture_options: captureOpts,
+      default_equivalence_level: targetLevel,
+      filter_query: filterQuery,
+    };
+  };
+
+  const savedSnapshotRef = useRef<string | null>(null);
+  if (savedSnapshotRef.current === null) {
+    savedSnapshotRef.current = JSON.stringify(buildPayload());
+  }
+  const configRef = useRef<SessionConfig>(config);
+
+  // External config changes (e.g. archive toggle elsewhere): re-hydrate local
+  // state and the saved snapshot so we don't auto-save echoed values.
   useEffect(() => {
+    if (configRef.current === config) return;
+    configRef.current = config;
     setViewportNames(
       config.default_viewports.length > 0
         ? config.default_viewports.map((v) => v.name)
@@ -53,55 +107,51 @@ export function SessionConfigPanel({
     setLanguage(config.filter_query.language?.join(', ') ?? '');
     setCategory(config.filter_query.category?.join(', ') ?? '');
     setPathPrefix(config.filter_query.path_prefix ?? '');
-    const opts = config.default_capture_options as { hideSelectors?: string[]; settleDelayMs?: number };
+    const opts = config.default_capture_options as {
+      hideSelectors?: string[];
+      settleDelayMs?: number;
+    };
     setHideSelectors(opts.hideSelectors?.join('\n') ?? '');
     setSettleDelayMs(opts.settleDelayMs !== undefined ? String(opts.settleDelayMs) : '');
   }, [config, defaults.viewportName, defaults.level]);
 
+  // Autosave: debounce any divergence from the last saved snapshot. The
+  // serialized-payload comparison short-circuits no-ops (e.g. re-hydration
+  // from our own save) without firing a request.
+  useEffect(() => {
+    const payload = buildPayload();
+    const serialized = JSON.stringify(payload);
+    if (serialized === savedSnapshotRef.current) return;
+    setSavingState('saving');
+    const timer = window.setTimeout(async () => {
+      try {
+        const next = await api.putSessionConfig(sessionId, payload);
+        savedSnapshotRef.current = serialized;
+        configRef.current = next.config;
+        onSaved(next.config);
+        setError(null);
+        setSavingState('saved');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setSavingState('error');
+      }
+    }, AUTOSAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+    // buildPayload reads each piece of local state directly; listing them as
+    // deps captures every user edit. onSaved is treated as stable by callers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewportNames, targetLevel, language, category, pathPrefix, hideSelectors, settleDelayMs, sessionId]);
+
   const toggle = <T,>(arr: T[], value: T): T[] =>
     arr.includes(value) ? arr.filter((x) => x !== value) : [...arr, value];
 
-  const save = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const chosenViewports = viewports.filter((v) => viewportNames.includes(v.name));
-      const captureOpts: Record<string, unknown> = {};
-      const trimmedHide = hideSelectors
-        .split('\n')
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      if (trimmedHide.length > 0) captureOpts.hideSelectors = trimmedHide;
-      if (settleDelayMs.trim().length > 0) {
-        const n = Number(settleDelayMs);
-        if (Number.isFinite(n) && n >= 0) captureOpts.settleDelayMs = Math.round(n);
-      }
-      const filterQuery: Record<string, unknown> = {};
-      const langs = parseList(language);
-      if (langs.length > 0) filterQuery.language = langs;
-      const cats = parseList(category);
-      if (cats.length > 0) filterQuery.category = cats;
-      if (pathPrefix.trim().length > 0) filterQuery.path_prefix = pathPrefix.trim();
-
-      const next = await api.putSessionConfig(sessionId, {
-        default_viewports: chosenViewports,
-        default_capture_options: captureOpts,
-        default_equivalence_level: targetLevel,
-        region_match_config: config.region_match_config,
-        filter_query: filterQuery,
-      });
-      onSaved(next.config);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <div className="config-panel">
-      <h3 style={{ marginTop: 0 }}>Configuration</h3>
-      {error && <div className="error">{error}</div>}
+      <div className="config-panel-header">
+        <h3>Configuration</h3>
+        <SaveIndicator state={savingState} />
+      </div>
+      {error && <div className="error">Save failed: {error}</div>}
 
       <section>
         <h4>Viewports</h4>
@@ -192,16 +242,15 @@ export function SessionConfigPanel({
           />
         </label>
       </section>
-
-      {/* Allow-list section removed: subsumed by acceptances (phase 3+). */}
-
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button className="btn" onClick={() => void save()} disabled={busy}>
-          {busy ? 'Saving…' : 'Save config'}
-        </button>
-      </div>
     </div>
   );
+}
+
+function SaveIndicator({ state }: { state: SavingState }): JSX.Element | null {
+  if (state === 'idle') return null;
+  const label =
+    state === 'saving' ? 'Saving…' : state === 'saved' ? 'Saved' : 'Save failed';
+  return <span className={`autosave-indicator autosave-${state}`}>{label}</span>;
 }
 
 function parseList(input: string): string[] {

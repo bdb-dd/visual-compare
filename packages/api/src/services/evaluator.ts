@@ -4,7 +4,7 @@ import type { Db } from '../db/client.js';
 import type { ArtifactStore } from './artifact-store.js';
 import type { CaptureWorker } from './capture.js';
 import type { ComparisonImagick } from './comparison.js';
-import type { LmClient } from './lm.js';
+import { userInstructionTemplateId, type LmClient } from './lm.js';
 import type { JobQueue } from './queue.js';
 import {
   captureRunOptionsSchema,
@@ -12,6 +12,8 @@ import {
   type CaptureRunOptionsParsed,
 } from './capture.js';
 import {
+  IM_AREA_OVERRIDE_THRESHOLD_PCT,
+  comparisonRunOptionsSchema,
   startComparisonRunForPairs,
   type ExplicitComparisonPair,
 } from './comparison.js';
@@ -24,7 +26,7 @@ import { computeMatchedAtLevel } from './equivalence.js';
 import { computeAcceptanceStatus, listAcceptances } from './acceptances.js';
 import { resolvePairConfig } from './config-resolver.js';
 import { captureOptsHashFor } from './capture-opts-hash.js';
-import { PIPELINE_VERSION } from '../constants/pipeline.js';
+import { pipelineVersionFor } from '../constants/pipeline.js';
 import {
   DEFAULT_VIEWPORTS,
   DEFAULT_VIEWPORT_NAME,
@@ -42,6 +44,7 @@ import type {
   FilterQuery,
   LmInvocationReason,
   MatchedAtLevel,
+  PairOutcome,
   RegionMatchConfig,
   SessionConfig,
   SessionResultRow,
@@ -301,13 +304,20 @@ export function planEvaluation(
   const allPairs = listUrlPairs(db, sessionId);
   const enabledPairs = selectEnabledPairs(allPairs, config);
 
+  // Join captures so we surface is_missing alongside the cached sha. The
+  // planner needs it to short-circuit missing-page pairs (no point queueing
+  // a comparison job that's just going to short-circuit and write no cache);
+  // is_missing is null for legacy capture rows that predate the column —
+  // treated as 'not missing' below.
   const captureCacheLookup = db.prepare<
     [string, string, string],
-    CaptureCacheRow
+    CaptureCacheRow & { is_missing: number | null }
   >(
-    `SELECT url, viewport_name, capture_opts_hash, screenshot_sha256, capture_id
-       FROM capture_cache
-      WHERE url = ? AND viewport_name = ? AND capture_opts_hash = ?`,
+    `SELECT cc.url, cc.viewport_name, cc.capture_opts_hash, cc.screenshot_sha256, cc.capture_id,
+            c.is_missing
+       FROM capture_cache cc
+       LEFT JOIN captures c ON c.id = cc.capture_id
+      WHERE cc.url = ? AND cc.viewport_name = ? AND cc.capture_opts_hash = ?`,
   );
 
   const pixelCacheLookup = db.prepare<
@@ -320,17 +330,19 @@ export function planEvaluation(
   );
 
   const lmCacheLookup = db.prepare<
-    [string, string, string, string, string, string],
+    [string, string, string, string, string, string, string],
     { capture_a_sha: string }
   >(
     `SELECT capture_a_sha
        FROM lm_verdict_cache
       WHERE capture_a_sha = ? AND capture_b_sha = ? AND prompt_id = ?
-        AND model_id = ? AND invocation_reason = ? AND pipeline_version = ?`,
+        AND user_instruction_id = ? AND model_id = ? AND invocation_reason = ?
+        AND pipeline_version = ?`,
   );
 
   const capture_misses: PlannedCapture[] = [];
   const captureShaByKey = new Map<string, string>(); // pair_id::vp_name::side → sha
+  const missingByKey = new Set<string>(); // pair_id::vp_name::side for is_missing=1 captures
   let captureHits = 0;
 
   for (const pair of enabledPairs) {
@@ -341,6 +353,9 @@ export function planEvaluation(
         const cached = captureCacheLookup.get(url, vp.name, optsHash);
         if (cached) {
           captureShaByKey.set(`${pair.id}::${vp.name}::${side}`, cached.screenshot_sha256);
+          if (cached.is_missing === 1) {
+            missingByKey.add(`${pair.id}::${vp.name}::${side}`);
+          }
           captureHits += 1;
         } else {
           capture_misses.push({
@@ -376,7 +391,17 @@ export function planEvaluation(
         });
         continue;
       }
-      const pixel = pixelCacheLookup.get(aSha, bSha, PIPELINE_VERSION);
+      // Missing-page short-circuit. runOneComparison treats these as
+      // already-done (status='complete', pair_outcome set) and intentionally
+      // skips the pixel_compare_cache write — the diff is meaningless. The
+      // planner must mirror that decision: don't queue a comparison job
+      // here, otherwise every Evaluate forever re-runs the missing-page
+      // pairs and the cache hit count never catches up to enabled_pair_count.
+      const aMissing = missingByKey.has(`${pair.id}::${vp.name}::a`);
+      const bMissing = missingByKey.has(`${pair.id}::${vp.name}::b`);
+      if (aMissing || bMissing) continue;
+      const pipelineVersion = pipelineVersionFor(config.target_level);
+      const pixel = pixelCacheLookup.get(aSha, bSha, pipelineVersion);
       if (!pixel) {
         comparison_misses.push({
           url_pair_id: pair.id,
@@ -411,9 +436,10 @@ export function planEvaluation(
               aSha,
               bSha,
               promptId,
+              userInstructionTemplateId(reason),
               config.lm_model_id,
               reason,
-              PIPELINE_VERSION,
+              pipelineVersion,
             )
           : null;
         if (!lmHit) {
@@ -618,7 +644,10 @@ export class Evaluator {
         const result = startComparisonRunForPairs(this.#deps, {
           sessionId,
           captureRunId: fallbackCaptureRunId,
-          options: { targetLevel: config.target_level, invokeLm: config.invoke_lm },
+          options: comparisonRunOptionsSchema.parse({
+            targetLevel: config.target_level,
+            invokeLm: config.invoke_lm,
+          }),
           pairs,
         });
         comparisonRunId = result.comparison_run_id;
@@ -711,6 +740,59 @@ export function listEvaluations(db: Db, sessionId: string): EvaluationRow[] {
     .all(sessionId);
 }
 
+/**
+ * Return compound `<url_pair_id>::<viewport_name>` keys for rows whose
+ * verdict could have moved since `since`. Two signal sources:
+ *
+ *   1. Comparisons completed after `since` — i.e. new pixel/LM verdicts.
+ *      Captures going from pending → complete don't count here, since
+ *      readSessionResults reads from pixel_compare_cache, not the captures
+ *      table; only completed comparisons write that cache.
+ *   2. Acceptances created/updated after `since` — accept/clear actions
+ *      change `acceptance_status` on the row even when the verdict didn't
+ *      move. Without this we'd miss UI-driven changes from another tab.
+ *
+ * `since` must be an ISO-8601 timestamp; callers pass it through verbatim
+ * from the previous response's `cursor`. Results are deduped and order is
+ * not guaranteed (the client uses these as a set).
+ */
+export function listChangedPairKeysSince(
+  db: Db,
+  sessionId: string,
+  since: string,
+): string[] {
+  const seen = new Set<string>();
+  const compRows = db
+    .prepare<
+      [string, string],
+      { url_pair_id: string; viewport_name: string }
+    >(
+      `SELECT c.url_pair_id, c.viewport_name
+         FROM comparisons c
+         JOIN comparison_runs cr ON cr.id = c.comparison_run_id
+        WHERE cr.session_id = ?
+          AND c.completed_at IS NOT NULL
+          AND c.completed_at > ?`,
+    )
+    .all(sessionId, since);
+  for (const r of compRows) seen.add(`${r.url_pair_id}::${r.viewport_name}`);
+
+  const acceptanceRows = db
+    .prepare<
+      [string, string],
+      { url_pair_id: string; viewport_name: string }
+    >(
+      `SELECT url_pair_id, viewport_name
+         FROM acceptances
+        WHERE session_id = ?
+          AND updated_at > ?`,
+    )
+    .all(sessionId, since);
+  for (const r of acceptanceRows) seen.add(`${r.url_pair_id}::${r.viewport_name}`);
+
+  return Array.from(seen);
+}
+
 // SessionResultRow has moved to ../types.ts (cross-package). Re-export so
 // existing imports keep working without churn.
 export type { SessionResultRow } from '../types.js';
@@ -728,13 +810,14 @@ export function summariseResults(
   rows: SessionResultRow[],
   targetLevel: EquivalenceLevelId,
 ): import('../types.js').SessionResultsSummary {
-  const by_level: Record<MatchedAtLevel | 'pending', number> = {
+  const by_level: Record<MatchedAtLevel | 'pending' | 'missing', number> = {
     'pixel-perfect': 0,
     strict: 0,
     tolerant: 0,
     loose: 0,
     none: 0,
     pending: 0,
+    missing: 0,
   };
   const by_acceptance_status: Record<
     import('../types.js').AcceptanceStatus,
@@ -758,9 +841,28 @@ export function summariseResults(
     weaker_than_target: 0,
     pending: 0,
   };
+  const by_pair_outcome: Record<PairOutcome, number> = {
+    both_present: 0,
+    a_missing: 0,
+    b_missing: 0,
+    both_missing: 0,
+  };
 
   for (const r of rows) {
-    if (r.matched_at_level === null) {
+    // Missing-page rows have matched_at_level=null because no visual diff
+    // was attempted. They are NOT pending — they're already classified by
+    // pair_outcome. Bucket them separately so the histogram's `pending` cell
+    // accurately reflects "rows still awaiting a verdict" and reviewers
+    // aren't misled into thinking work is outstanding when it isn't.
+    if (r.pair_outcome !== 'both_present') {
+      by_level.missing += 1;
+      // by_target_status: missing rows can never reach the target since no
+      // diff ran. Counting them as 'weaker_than_target' would lump them
+      // with real fails. Treat as 'pending' so the "is this comparison
+      // settled?" lens stays honest about which rows still need attention
+      // — none, in the missing case.
+      by_target_status.pending += 1;
+    } else if (r.matched_at_level === null) {
       by_level.pending += 1;
       by_target_status.pending += 1;
     } else {
@@ -773,6 +875,7 @@ export function summariseResults(
     }
     by_decided_by[r.matched_decided_by ?? 'none'] += 1;
     by_acceptance_status[r.acceptance_status] += 1;
+    by_pair_outcome[r.pair_outcome] += 1;
   }
 
   return {
@@ -781,6 +884,7 @@ export function summariseResults(
     by_acceptance_status,
     by_decided_by,
     by_target_status,
+    by_pair_outcome,
   };
 }
 
@@ -802,10 +906,16 @@ export function readSessionResults(
 
   const captureCacheLookup = db.prepare<
     [string, string, string],
-    { screenshot_sha256: string }
+    { screenshot_sha256: string; is_missing: number | null }
   >(
-    `SELECT screenshot_sha256 FROM capture_cache
-       WHERE url = ? AND viewport_name = ? AND capture_opts_hash = ?`,
+    // Join captures to surface is_missing for the matching capture row. The
+    // missing-page columns live on captures, not capture_cache, so a denormal
+    // lookup is the cheapest path. is_missing is null for legacy rows that
+    // predate the column; the row-builder treats null as 'not missing'.
+    `SELECT cc.screenshot_sha256, c.is_missing
+       FROM capture_cache cc
+       LEFT JOIN captures c ON c.id = cc.capture_id
+      WHERE cc.url = ? AND cc.viewport_name = ? AND cc.capture_opts_hash = ?`,
   );
 
   const pixelCacheLookup = db.prepare<
@@ -825,7 +935,7 @@ export function readSessionResults(
   );
 
   const lmCacheLookup = db.prepare<
-    [string, string, string, string, string, string],
+    [string, string, string, string, string, string, string],
     {
       verdict: number | null;
       summary: string | null;
@@ -836,7 +946,8 @@ export function readSessionResults(
     `SELECT verdict, summary, confidence, comparison_id
        FROM lm_verdict_cache
       WHERE capture_a_sha = ? AND capture_b_sha = ? AND prompt_id = ?
-        AND model_id = ? AND invocation_reason = ? AND pipeline_version = ?`,
+        AND user_instruction_id = ? AND model_id = ? AND invocation_reason = ?
+        AND pipeline_version = ?`,
   );
 
   // Diagnostic: when a side's sha is missing, find the most recent capture
@@ -911,12 +1022,20 @@ export function readSessionResults(
   for (const pair of enabledPairs) {
     for (const vp of config.viewports) {
       const optsHash = captureOptsHashFor(vp, config.capture_options);
-      const aSha =
-        captureCacheLookup.get(pair.url_a, vp.name, optsHash)?.screenshot_sha256 ??
-        null;
-      const bSha =
-        captureCacheLookup.get(pair.url_b, vp.name, optsHash)?.screenshot_sha256 ??
-        null;
+      const aRow = captureCacheLookup.get(pair.url_a, vp.name, optsHash) ?? null;
+      const bRow = captureCacheLookup.get(pair.url_b, vp.name, optsHash) ?? null;
+      const aSha = aRow?.screenshot_sha256 ?? null;
+      const bSha = bRow?.screenshot_sha256 ?? null;
+      const aMissing = aRow?.is_missing === 1;
+      const bMissing = bRow?.is_missing === 1;
+      const pairOutcome: PairOutcome =
+        aMissing && bMissing
+          ? 'both_missing'
+          : aMissing
+            ? 'a_missing'
+            : bMissing
+              ? 'b_missing'
+              : 'both_present';
       const captureAStatus = captureStatusFor(aSha, pair.url_a, vp.name);
       const captureBStatus = captureStatusFor(bSha, pair.url_b, vp.name);
       const acceptance = acceptanceByKey.get(`${pair.id}::${vp.name}`) ?? null;
@@ -939,10 +1058,21 @@ export function readSessionResults(
         lm: null,
         acceptance_status: acceptance ? 'accepted' : 'unaccepted',
         status: 'pending',
+        pair_outcome: pairOutcome,
       };
 
+      // Missing-page rows are terminal: no visual diff was performed, so
+      // there's nothing to look up in the pixel/LM caches. Mark the row
+      // 'cached' (no further work expected) and emit it.
+      if (pairOutcome !== 'both_present') {
+        row.status = 'cached';
+        out.push(row);
+        continue;
+      }
+
       if (aSha && bSha) {
-        const pixel = pixelCacheLookup.get(aSha, bSha, PIPELINE_VERSION);
+        const pipelineVersion = pipelineVersionFor(config.target_level);
+        const pixel = pixelCacheLookup.get(aSha, bSha, pipelineVersion);
         if (pixel) {
           row.pixel = {
             changed_pct: pixel.changed_pct,
@@ -959,43 +1089,72 @@ export function readSessionResults(
             ssim: pixel.ssim,
             targetLevel: config.target_level,
           });
-          // Same gating as the pipeline: LM is invoked at most once.
+          // Read-side gate: probe the LM cache whenever an LM verdict
+          // *could* exist for this row, regardless of `config.invoke_lm`.
+          // The flag governs whether a NEW LM call fires on a cache miss
+          // (planner's job); for display, we always surface a persisted
+          // verdict. Without this, toggling "LM second pass" off would hide
+          // verdicts the user already paid for and confuse the list-vs-detail
+          // sync.
           let lmReason: LmInvocationReason | null = null;
           if (inTargetAmbiguityBand) {
             lmReason = 'ambiguous_pixel_result';
-          } else if (
-            config.invoke_lm &&
-            !isAtLeastAsStrict(pixelMatchedAtLevel, config.target_level)
-          ) {
+          } else if (!isAtLeastAsStrict(pixelMatchedAtLevel, config.target_level)) {
             lmReason = 'target_level_failure';
           }
+          let lm:
+            | { verdict: number | null; summary: string | null; confidence: number | null; comparison_id: string }
+            | null = null;
           if (lmReason) {
             const promptId = lookupPromptId(config, lmReason);
-            const lm = promptId
+            lm = promptId
               ? lmCacheLookup.get(
                   aSha,
                   bSha,
                   promptId,
+                  userInstructionTemplateId(lmReason),
                   config.lm_model_id,
                   lmReason,
-                  PIPELINE_VERSION,
-                )
+                  pipelineVersion,
+                ) ?? null
               : null;
-            if (lm) {
-              row.lm = {
-                invocation_reason: lmReason,
-                verdict: lm.verdict,
-                diff_summary: lm.summary,
-                confidence: lm.confidence,
-              };
-              row.matched_decided_by = 'lm';
-              row.matched_at_level =
-                lm.verdict === 1 ? config.target_level : pixelMatchedAtLevel;
-              row.comparison_id = lm.comparison_id;
-              row.status = 'cached';
-            }
-            // No LM cache hit yet → row stays pending; matched_at_level null.
+          }
+          if (lmReason && lm) {
+            // IM-area guardrail (mirrors the write-side check in
+            // runOneComparison). A vision LM that returned equivalent
+            // while the IM pipeline found more than the override
+            // threshold of changed-pixel area is treated as having not
+            // engaged with the diff; we keep the pixel walk's verdict
+            // and flip matched_decided_by back to 'pixel'. Applying it
+            // here too means the histogram and filter chips reflect the
+            // corrected verdict on every read, even when the
+            // lm_verdict_cache still carries the raw equivalent=1 (e.g.
+            // for rows persisted before this guardrail existed).
+            const bboxAreaPct = pixel.bbox_area_pct ?? 0;
+            const imAreaOverride =
+              lm.verdict === 1 && bboxAreaPct > IM_AREA_OVERRIDE_THRESHOLD_PCT;
+            const effectivelyEquivalent = lm.verdict === 1 && !imAreaOverride;
+            const summaryForRow = imAreaOverride
+              ? `[im_area_override ${bboxAreaPct.toFixed(1)}%>${IM_AREA_OVERRIDE_THRESHOLD_PCT}%] ${lm.summary ?? ''}`
+              : lm.summary;
+            row.lm = {
+              invocation_reason: lmReason,
+              verdict: lm.verdict,
+              diff_summary: summaryForRow,
+              confidence: lm.confidence,
+            };
+            row.matched_decided_by = imAreaOverride ? 'pixel' : 'lm';
+            row.matched_at_level = effectivelyEquivalent
+              ? config.target_level
+              : pixelMatchedAtLevel;
+            row.comparison_id = lm.comparison_id;
+            row.status = 'cached';
+          } else if (lmReason && config.invoke_lm) {
+            // LM call would fire on next eval but no cached verdict yet —
+            // keep the row pending so the UI can show "review pending".
           } else {
+            // Either no LM is needed (pixel reached target) or invoke_lm is
+            // off and there's no cached verdict — surface pixel-only.
             row.matched_at_level = pixelMatchedAtLevel;
             row.matched_decided_by = 'pixel';
             row.status = 'cached';

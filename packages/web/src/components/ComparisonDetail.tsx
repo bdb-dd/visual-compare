@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { api } from '../api/client.js';
 import { ImageWithBoxes } from './ImageWithBoxes.js';
 import { StatusPill } from './StatusPill.js';
+import { isAtLeastAsStrict } from '@visual-compare/api/constants/equivalence';
 import type {
   AcceptanceRow,
   AcceptanceStatus,
   BoundingBoxPercent,
   ComparisonDetailDto,
+  EquivalenceLevelId,
   SessionResultRow,
 } from '@visual-compare/api/types';
 
@@ -16,6 +18,8 @@ interface Props {
   id: string;
   /** When set, the right panel can show acceptance state and Accept controls. */
   row?: SessionResultRow | null;
+  /** Session target level. Used to decide whether a row "passed" (reached target) or "failed". */
+  targetLevel?: EquivalenceLevelId;
   sessionId?: string;
   acceptance?: AcceptanceRow | null;
   /**
@@ -39,6 +43,7 @@ const VIEW_MODES: { id: ViewMode; label: string }[] = [
 export function ComparisonDetail({
   id,
   row,
+  targetLevel,
   sessionId,
   acceptance,
   openAcceptDialogTrigger,
@@ -47,7 +52,7 @@ export function ComparisonDetail({
 }: Props): JSX.Element {
   const [detail, setDetail] = useState<ComparisonDetailDto | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showBoxes, setShowBoxes] = useState(true);
+  const [showBoxes, setShowBoxes] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('diff');
 
   useEffect(() => {
@@ -78,7 +83,12 @@ export function ComparisonDetail({
     : [];
   const pairLabel = url_pair.label?.trim() || `Pair #${url_pair.row_index + 1}`;
 
-  const matchedEquivalent = matchedToBool(c.matched_at_level);
+  // Verdict against the session target: a row only "passes" when its
+  // matched_at_level reaches the target. matching at a weaker level is a
+  // fail from the user's perspective even though pixel rules confirmed
+  // some level. Falls back to the legacy "any-non-none = pass" rule when
+  // the parent didn't supply a targetLevel (e.g., direct deep-link).
+  const matchedEquivalent = matchedAgainstTarget(c.matched_at_level, targetLevel);
   const verdictKind = verdictOf(matchedEquivalent);
   const lmGlyph =
     c.lm_determined_equivalent === null ? '—' : c.lm_determined_equivalent ? '✓' : '✗';
@@ -86,16 +96,39 @@ export function ComparisonDetail({
     ? `${c.lm_invocation_reason} · prompt ${c.lm_prompt_version}`
     : c.lm_invocation_reason ?? '';
 
+  const isMissing = c.pair_outcome !== 'both_present';
+  const missingDetailLabel =
+    c.pair_outcome === 'a_missing'
+      ? 'A is a missing page'
+      : c.pair_outcome === 'b_missing'
+        ? 'B is a missing page'
+        : c.pair_outcome === 'both_missing'
+          ? 'Both A and B are missing pages'
+          : null;
+
   return (
     <>
       <div className="detail-head">
         <div className="dh-title-row">
-          <span className={`verdict-chip verdict-${verdictKind}`}>{verdictGlyph(matchedEquivalent)}</span>
+          {isMissing ? (
+            <span className="verdict-chip verdict-missing">∅</span>
+          ) : (
+            <span className={`verdict-chip verdict-${verdictKind}`}>{verdictGlyph(matchedEquivalent)}</span>
+          )}
           <strong className="dh-title">{pairLabel}</strong>
           <span className="dh-sep">·</span>
           <span className="muted">{c.viewport_name}</span>
           <span className="dh-sep">·</span>
-          <span className="muted">{c.matched_at_level ?? '—'}</span>
+          <span className="muted">
+            {isMissing
+              ? missingDetailLabel
+              : (
+                <>
+                  {c.matched_at_level ?? '—'}
+                  {targetLevel && c.matched_at_level && ` / ${targetLevel} target`}
+                </>
+              )}
+          </span>
           <StatusPill status={c.status} />
           <label className="dh-toggle">
             <input
@@ -116,12 +149,14 @@ export function ComparisonDetail({
             <span>{url_pair.url_b}</span>
           </div>
         </div>
-        <div className="dh-metrics">
-          <span><span className="dh-key">Changed</span> {fmtPct(c.changed_pixel_percentage)}</span>
-          <span><span className="dh-key">SSIM</span> {fmtNum(c.ssim, 4)}</span>
-          <span><span className="dh-key">Box</span> {fmtPct(c.bounding_box_area_percentage)}</span>
-          <span><span className="dh-key">Components</span> {c.connected_component_count ?? '—'}</span>
-        </div>
+        {!isMissing && (
+          <div className="dh-metrics">
+            <span><span className="dh-key">Changed</span> {fmtPct(c.changed_pixel_percentage)}</span>
+            <span><span className="dh-key">SSIM</span> {fmtNum(c.ssim, 4)}</span>
+            <span><span className="dh-key">Box</span> {fmtPct(c.bounding_box_area_percentage)}</span>
+            <span><span className="dh-key">Components</span> {c.connected_component_count ?? '—'}</span>
+          </div>
+        )}
         {c.lm_invocation_reason && (
           <div className="dh-lm" title={lmTitle}>
             <span className="dh-key">LM</span>
@@ -456,6 +491,17 @@ function AcceptanceStatusBadge({ status }: { status: AcceptanceStatus }): JSX.El
 function matchedToBool(level: ComparisonDetailDto['comparison']['matched_at_level']): number | null {
   if (level === null) return null;
   return level === 'none' ? 0 : 1;
+}
+
+function matchedAgainstTarget(
+  level: ComparisonDetailDto['comparison']['matched_at_level'],
+  target: EquivalenceLevelId | undefined,
+): number | null {
+  if (level === null) return null;
+  if (level === 'none') return 0;
+  // No target provided → fall back to the looser "any match counts" rule.
+  if (!target) return 1;
+  return isAtLeastAsStrict(level, target) ? 1 : 0;
 }
 function verdictOf(v: number | null): 'failed' | 'passed' | 'unknown' {
   if (v === 0) return 'failed';

@@ -177,7 +177,17 @@ export interface CaptureRow {
   duration_ms: number | null;
   captured_at: string | null;
   created_at: string;
+  /** HTTP response status from page.goto(); null when unavailable. */
+  http_status: number | null;
+  /** SQLite 0/1: 1 when the rendered page is treated as a "missing page". */
+  is_missing: number;
 }
+
+export type PairOutcome =
+  | 'both_present'
+  | 'a_missing'
+  | 'b_missing'
+  | 'both_missing';
 
 export interface ComparisonRunRow {
   id: string;
@@ -220,6 +230,13 @@ export interface ComparisonRow {
   duration_ms: number | null;
   created_at: string;
   completed_at: string | null;
+  /**
+   * Coarse classification of the pair's availability. `both_present` means
+   * the visual diff fields above are populated normally; the other values
+   * indicate one or both sides rendered as a missing page and the diff was
+   * skipped.
+   */
+  pair_outcome: PairOutcome;
 }
 
 export interface AcceptanceRow {
@@ -356,12 +373,31 @@ export interface SessionResultRow {
   /** Acceptance state relative to the persisted acceptance, if any. */
   acceptance_status: AcceptanceStatus;
   status: 'pending' | 'cached';
+  /**
+   * `both_present` when a real visual diff was performed; the other values
+   * indicate one or both sides rendered as a missing page (HTTP 4xx/5xx or
+   * soft-404 title match) and the diff was skipped. Defaults to
+   * `both_present` for legacy rows captured before this field existed.
+   */
+  pair_outcome: PairOutcome;
 }
 
 export interface EvaluationCacheHits {
   captures: number;
   pixel: number;
   lm: number;
+}
+
+/**
+ * Progress for the in-flight phase of a running evaluation. `phase` reflects
+ * which underlying job is currently running (capture happens before
+ * comparison). Null when the evaluation isn't running, or when neither
+ * underlying job is in flight.
+ */
+export interface EvaluationProgress {
+  phase: 'capture' | 'comparison';
+  current: number;
+  total: number;
 }
 
 export interface EvaluationStatusDto {
@@ -376,6 +412,7 @@ export interface EvaluationStatusDto {
   error_message: string | null;
   started_at: string;
   completed_at: string | null;
+  progress: EvaluationProgress | null;
 }
 
 /**
@@ -405,8 +442,14 @@ export interface ResolvedEvaluationConfig {
  */
 export interface SessionResultsSummary {
   total: number;
-  /** One bucket per matched_at_level, plus `pending` for rows without a verdict. */
-  by_level: Record<MatchedAtLevel | 'pending', number>;
+  /**
+   * One bucket per matched_at_level, plus `pending` for rows still awaiting
+   * a visual-diff verdict, plus `missing` for rows whose pair_outcome
+   * indicates one or both sides rendered as a missing page (no visual diff
+   * was attempted; tracking these as `pending` would falsely imply work
+   * still to do).
+   */
+  by_level: Record<MatchedAtLevel | 'pending' | 'missing', number>;
   by_acceptance_status: Record<AcceptanceStatus, number>;
   /**
    * `pixel` / `lm` / `none` (none = no verdict yet). Useful for the UI to
@@ -418,6 +461,12 @@ export interface SessionResultsSummary {
    * the session target, miss it, or is it still pending?
    */
   by_target_status: Record<'reached_target' | 'weaker_than_target' | 'pending', number>;
+  /**
+   * Counts per pair_outcome bucket. Drives the missing-page filter chips on
+   * the results page; reviewers can sweep "Missing on B" independently of
+   * the visual-diff stream.
+   */
+  by_pair_outcome: Record<PairOutcome, number>;
 }
 
 export interface SessionResultsDto {
@@ -429,8 +478,32 @@ export interface SessionResultsDto {
     comparison_misses: number;
     cache_hits: EvaluationCacheHits;
   };
+  /**
+   * Result rows. Empty array when the request used `?since=...` (delta poll
+   * mode) — callers in that mode read `changed_pair_keys` instead and follow
+   * up with `?keys=...` for the actual row payloads.
+   */
   results: SessionResultRow[];
   summary: SessionResultsSummary;
+  /**
+   * Compound `<url_pair_id>::<viewport_name>` keys for rows whose verdict
+   * changed since the `since` cursor passed in the request. Present iff the
+   * client passed `?since=<iso>`. Empty array when nothing changed.
+   */
+  changed_pair_keys?: string[];
+  /**
+   * Server-computed timestamp marking when this response was assembled. The
+   * client should pass this back as the next `?since=` so subsequent polls
+   * see strictly-newer changes. Present iff the client passed `?since=<iso>`.
+   */
+  cursor?: string;
+  /**
+   * Convenience: the most recent evaluation for this session (running or
+   * complete). Present iff the client passed `?since=<iso>`. Lets the
+   * polling client refresh the running-eval indicator without a second
+   * round-trip to /evaluations.
+   */
+  latest_evaluation?: EvaluationStatusDto | null;
 }
 
 export interface CsvRowError {
@@ -443,3 +516,41 @@ export interface CsvUploadErrorResponse {
   message: string;
   row_errors?: CsvRowError[];
 }
+
+/**
+ * DTOs for the LM prompt editor. The shape mirrors the service-layer
+ * `LmPromptView` so the UI can edit, save, and reset session prompts.
+ * `mode === 'structured'` ⇔ `guidance !== null`; the editor uses one or the
+ * other depending on which affordance the user chose. `base_prompt_text`
+ * is the resolved default text used as the assembly base in structured
+ * mode — included so the UI can show "what the default looks like" without
+ * a second round-trip.
+ */
+export type LmPromptInvocationReasonDto = 'target_level_failure' | 'ambiguous_pixel_result';
+export type LmPromptModeDto = 'structured' | 'advanced';
+
+export interface PromptGuidanceTogglesDto {
+  language_must_match?: boolean;
+  ignore_chrome_only_diffs?: boolean;
+  flag_added_removed_content?: boolean;
+}
+
+export interface PromptGuidanceDto {
+  toggles: PromptGuidanceTogglesDto;
+  /** Two-stage rule layout: scope filters regions, trigger flips equivalence. */
+  house_rules: { scope: string[]; trigger: string[] };
+}
+
+export interface LmPromptDto {
+  invocation_reason: LmPromptInvocationReasonDto;
+  prompt_text: string;
+  prompt_id: string;
+  guidance: PromptGuidanceDto | null;
+  mode: LmPromptModeDto;
+  base_prompt_text: string;
+  updated_at: string;
+}
+
+export type LmPromptUpdateBodyDto =
+  | { mode: 'structured'; guidance: PromptGuidanceDto }
+  | { mode: 'advanced'; prompt_text: string };
