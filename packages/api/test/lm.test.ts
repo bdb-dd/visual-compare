@@ -3,11 +3,12 @@ import {
   buildPromptUserInstruction,
   coerceLmPayload,
   extractFirstJsonObject,
-  jsonSchemaForPromptVersion,
+  jsonSchemaForPrompt,
   lmResponseSchema,
   LM_JSON_SCHEMA,
   LM_JSON_SCHEMA_V3,
   readLmConfigFromEnv,
+  usesV1Taxonomy,
 } from '../src/services/lm.js';
 
 describe('lmResponseSchema', () => {
@@ -145,12 +146,22 @@ describe('v1 cluster-signature taxonomy (v3 prompt)', () => {
     expect(r.success).toBe(false);
   });
 
-  it('jsonSchemaForPromptVersion picks v3 only for v3-prefixed versions', () => {
-    expect(jsonSchemaForPromptVersion('v3')).toBe(LM_JSON_SCHEMA_V3);
-    expect(jsonSchemaForPromptVersion('v3.1')).toBe(LM_JSON_SCHEMA_V3);
-    expect(jsonSchemaForPromptVersion('v2')).toBe(LM_JSON_SCHEMA);
-    expect(jsonSchemaForPromptVersion('v1')).toBe(LM_JSON_SCHEMA);
-    expect(jsonSchemaForPromptVersion('')).toBe(LM_JSON_SCHEMA);
+  it('usesV1Taxonomy detects v3-style prompts by their canonical field names', () => {
+    const v3Like = 'reply with changeType + regionRole + elementLabel per diff';
+    const v2Like = 'reply with severity + boundingBox per diff';
+    expect(usesV1Taxonomy(v3Like)).toBe(true);
+    expect(usesV1Taxonomy(v2Like)).toBe(false);
+    // Requires BOTH markers — a prompt that mentions only one doesn't count.
+    expect(usesV1Taxonomy('changeType only')).toBe(false);
+    expect(usesV1Taxonomy('regionRole only')).toBe(false);
+  });
+
+  it('jsonSchemaForPrompt picks v3 schema for v3-style prompts, v2 otherwise', () => {
+    const v3 = 'fill in changeType and regionRole and elementLabel';
+    const v2 = 'fill in severity and boundingBox';
+    expect(jsonSchemaForPrompt(v3)).toBe(LM_JSON_SCHEMA_V3);
+    expect(jsonSchemaForPrompt(v2)).toBe(LM_JSON_SCHEMA);
+    expect(jsonSchemaForPrompt('')).toBe(LM_JSON_SCHEMA);
   });
 
   it('v3 strict JSON schema requires the three taxonomy fields', () => {
@@ -323,7 +334,8 @@ describe('readLmConfigFromEnv', () => {
     const cfg = readLmConfigFromEnv({});
     expect(cfg.baseURL).toBe('http://localhost:1234/v1');
     expect(cfg.model).toBe('google/gemma-4-e2b');
-    expect(cfg.promptVersion).toBe('v2');
+    // DEFAULT_PROMPT_VERSION bumped to 'v3' with the v1-taxonomy prompt cutover.
+    expect(cfg.promptVersion).toBe('v3');
     expect(cfg.temperature).toBe(0.1);
   });
 

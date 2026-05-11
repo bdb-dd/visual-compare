@@ -215,6 +215,58 @@ describe('seed + backfill', () => {
     db.close();
   });
 
+  it('upgrades seed-sourced defaults when the constants change (simulated)', () => {
+    const db = openDatabase({ path: ':memory:' });
+    applySchema(db);
+    // Plant an old "seed" default with a stale prompt_id, mimicking the
+    // pre-v3 state of an existing dev DB.
+    const stalePromptId = 'a'.repeat(64);
+    db.prepare(
+      `INSERT INTO lm_prompt_defaults
+         (invocation_reason, prompt_text, prompt_id, source, guidance_json, updated_at)
+       VALUES ('target_level_failure', 'OLD V2 PROMPT', ?, 'seed', '{}', ?)`,
+    ).run(stalePromptId, new Date().toISOString());
+
+    // Re-running seed should overwrite the seed-sourced row with the
+    // current constants.
+    const changed = seedLmPromptDefaults(db);
+    expect(changed).toBeGreaterThanOrEqual(1);
+
+    const row = db
+      .prepare<[], { prompt_text: string; prompt_id: string; source: string }>(
+        `SELECT prompt_text, prompt_id, source FROM lm_prompt_defaults
+          WHERE invocation_reason = 'target_level_failure'`,
+      )
+      .get()!;
+    expect(row.prompt_id).toBe(hashPrompt(LM_PROMPT_DEFAULTS.target_level_failure));
+    expect(row.prompt_text).toBe(LM_PROMPT_DEFAULTS.target_level_failure);
+    expect(row.source).toBe('seed');
+    db.close();
+  });
+
+  it('preserves admin-overridden defaults across re-seed', () => {
+    const db = openDatabase({ path: ':memory:' });
+    applySchema(db);
+    const adminPromptText = 'ADMIN-EDITED PROMPT — must survive constants changes';
+    db.prepare(
+      `INSERT INTO lm_prompt_defaults
+         (invocation_reason, prompt_text, prompt_id, source, guidance_json, updated_at)
+       VALUES ('target_level_failure', ?, ?, 'override', '{}', ?)`,
+    ).run(adminPromptText, hashPrompt(adminPromptText), new Date().toISOString());
+
+    seedLmPromptDefaults(db);
+
+    const row = db
+      .prepare<[], { prompt_text: string; source: string }>(
+        `SELECT prompt_text, source FROM lm_prompt_defaults
+          WHERE invocation_reason = 'target_level_failure'`,
+      )
+      .get()!;
+    expect(row.prompt_text).toBe(adminPromptText);
+    expect(row.source).toBe('override');
+    db.close();
+  });
+
   it('backfillSessionPrompts copies defaults into legacy sessions', async () => {
     const h = await makeHarness({ seed: false });
     try {
