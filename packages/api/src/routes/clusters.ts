@@ -7,7 +7,12 @@ import {
   recomputeClusters,
 } from '../services/clusters.js';
 import type {
+  ClusterDetailDto,
+  ClusterListDto,
+  ClusterMemberDto,
+  ClusterRepresentativeDto,
   ClusterReviewState,
+  ClusterSummaryDto,
   DifferenceClusterRow,
 } from '../types.js';
 
@@ -19,41 +24,6 @@ import type {
  * splitting, and bulk-accept land in Phase D once v1 signatures are live and
  * trusted.
  */
-
-export type ClusterSummaryDto = DifferenceClusterRow & {
-  /** Sample diff used to render the cluster card (description + bbox). */
-  sample: {
-    description: string;
-    severity: string | null;
-    bounding_box_json: string | null;
-    url_a: string;
-    url_b: string;
-  } | null;
-};
-
-export interface ClusterListDto {
-  session_id: string;
-  /** Total cluster count for this session (any review state). */
-  total: number;
-  /** Distribution across review states — useful for the UI's tab strip. */
-  by_review_state: Record<ClusterReviewState, number>;
-  clusters: ClusterSummaryDto[];
-}
-
-export interface ClusterDetailDto {
-  cluster: DifferenceClusterRow;
-  members: Array<{
-    difference_id: string;
-    comparison_id: string;
-    url_pair_id: string;
-    viewport_name: string;
-    url_a: string;
-    url_b: string;
-    description: string;
-    severity: string | null;
-    bounding_box: { x: number; y: number; width: number; height: number } | null;
-  }>;
-}
 
 export function clustersRouter(db: Db): Router {
   const router = Router({ mergeParams: true });
@@ -112,7 +82,8 @@ export function clustersRouter(db: Db): Router {
 
     const dto: ClusterDetailDto = {
       cluster,
-      members: members.map((m) => ({
+      representative: representativeFor(db, cluster),
+      members: members.map((m): ClusterMemberDto => ({
         difference_id: m.difference_id,
         comparison_id: m.comparison_id,
         url_pair_id: m.url_pair_id,
@@ -128,6 +99,76 @@ export function clustersRouter(db: Db): Router {
   });
 
   return router;
+}
+
+/**
+ * Resolve the cluster's representative difference into a richer DTO that
+ * includes the comparison's image shas and metrics. The cluster detail UI
+ * uses these to render the sample image triple inline.
+ */
+function representativeFor(db: Db, cluster: DifferenceClusterRow): ClusterRepresentativeDto | null {
+  if (!cluster.representative_difference_id) return null;
+  interface JoinRow {
+    description: string;
+    severity: string | null;
+    bounding_box_json: string | null;
+    comparison_id: string;
+    url_pair_id: string;
+    viewport_name: string;
+    url_a: string;
+    url_b: string;
+    capture_a_sha: string | null;
+    capture_b_sha: string | null;
+    im_diff_sha: string | null;
+    ssim: number | null;
+    changed_pct: number | null;
+    lm_summary: string | null;
+    lm_confidence: number | null;
+  }
+  const row = db
+    .prepare<[string], JoinRow>(
+      `SELECT d.description           AS description,
+              d.severity              AS severity,
+              d.bounding_box_json     AS bounding_box_json,
+              c.id                    AS comparison_id,
+              c.url_pair_id           AS url_pair_id,
+              c.viewport_name         AS viewport_name,
+              p.url_a                 AS url_a,
+              p.url_b                 AS url_b,
+              ca.screenshot_sha256    AS capture_a_sha,
+              cb.screenshot_sha256    AS capture_b_sha,
+              c.im_diff_sha256        AS im_diff_sha,
+              c.ssim                  AS ssim,
+              c.changed_pixel_percentage AS changed_pct,
+              c.lm_diff_summary       AS lm_summary,
+              c.lm_confidence         AS lm_confidence
+         FROM differences d
+         JOIN comparisons c  ON c.id = d.comparison_id
+         JOIN url_pairs   p  ON p.id = c.url_pair_id
+         JOIN captures    ca ON ca.id = c.capture_a_id
+         JOIN captures    cb ON cb.id = c.capture_b_id
+        WHERE d.id = ?`,
+    )
+    .get(cluster.representative_difference_id);
+  if (!row) return null;
+  return {
+    difference_id: cluster.representative_difference_id,
+    comparison_id: row.comparison_id,
+    url_pair_id: row.url_pair_id,
+    viewport_name: row.viewport_name,
+    url_a: row.url_a,
+    url_b: row.url_b,
+    description: row.description,
+    severity: row.severity,
+    bounding_box: parseBbox(row.bounding_box_json),
+    capture_a_sha: row.capture_a_sha,
+    capture_b_sha: row.capture_b_sha,
+    im_diff_sha: row.im_diff_sha,
+    ssim: row.ssim,
+    changed_pct: row.changed_pct,
+    lm_summary: row.lm_summary,
+    lm_confidence: row.lm_confidence,
+  };
 }
 
 function withSample(db: Db, cluster: DifferenceClusterRow): ClusterSummaryDto {

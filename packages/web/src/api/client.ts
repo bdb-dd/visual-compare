@@ -3,6 +3,9 @@ import type {
   BoundingBoxPercent,
   CaptureDto,
   CaptureRunRow,
+  ClusterDetailDto,
+  ClusterListDto,
+  ClusterReviewState,
   ComparisonDetailDto,
   ComparisonDto,
   ComparisonRunRow,
@@ -262,6 +265,24 @@ export const api = {
       `/api/sessions/${sessionId}/lm-prompts/${reason}/reset`,
       { method: 'POST' },
     ),
+
+  listClusters: (sessionId: string, opts: { reviewState?: ClusterReviewState; recompute?: boolean } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.reviewState) params.set('review_state', opts.reviewState);
+    if (opts.recompute) params.set('recompute', '1');
+    const qs = params.toString();
+    return request<ClusterListDto>(
+      `/api/sessions/${sessionId}/clusters${qs ? `?${qs}` : ''}`,
+    );
+  },
+  getCluster: (sessionId: string, clusterId: string, opts: { limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set('limit', String(opts.limit));
+    const qs = params.toString();
+    return request<ClusterDetailDto>(
+      `/api/sessions/${sessionId}/clusters/${clusterId}${qs ? `?${qs}` : ''}`,
+    );
+  },
 };
 
 export interface LmStatusDto {

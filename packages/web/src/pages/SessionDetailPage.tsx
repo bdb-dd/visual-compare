@@ -357,6 +357,9 @@ export function SessionDetailPage(): JSX.Element {
             {session.archived_at && <span className="muted"> (archived)</span>}
           </p>
           <div className="project-header-actions">
+            <Link to={`/sessions/${session.id}/clusters`} className="btn secondary">
+              Cluster review
+            </Link>
             <button className="btn secondary" onClick={() => void handleInvalidateAll()} disabled={busy}>
               Recapture all
             </button>
