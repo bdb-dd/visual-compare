@@ -317,6 +317,12 @@ CREATE TABLE acceptances (
   accept_any                  INTEGER NOT NULL DEFAULT 0,
   label                       TEXT,
   notes                       TEXT,
+  -- Phase D: when this acceptance was created by a cluster-level rule
+  -- fan-out, the originating rule id. NULL for manually-created
+  -- acceptances. Cluster revoke deletes only rows it owns (this column
+  -- matches the revoking rule); per-row acceptances created by the user
+  -- are preserved.
+  acceptance_rule_id          TEXT REFERENCES acceptance_rules(id) ON DELETE SET NULL,
   created_at                  TEXT NOT NULL,
   updated_at                  TEXT NOT NULL,
   UNIQUE(session_id, url_pair_id, viewport_name)
@@ -325,6 +331,7 @@ CREATE TABLE acceptances (
 CREATE INDEX idx_acceptances_session ON acceptances(session_id);
 CREATE INDEX idx_acceptances_url_pair ON acceptances(url_pair_id);
 CREATE INDEX idx_acceptances_label ON acceptances(label);
+CREATE INDEX idx_acceptances_rule ON acceptances(acceptance_rule_id);
 
 -- ---------------------------------------------------------------------------
 -- Cluster review (Phase A). Materialised aggregates over `differences` rows
