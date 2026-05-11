@@ -62,21 +62,38 @@ export function hashPrompt(text: string): string {
  * rows newly inserted (for logging). Seeds with `guidance_json='{}'` so the
  * defaults start in structured mode with no rules applied.
  */
+/**
+ * Insert default prompt rows on a fresh DB. On an existing DB, refresh
+ * any default whose `source = 'seed'` — i.e. that hasn't been edited via
+ * the admin override endpoint — so a constants-file change propagates
+ * automatically. Admin overrides (`source = 'override'`) are preserved.
+ *
+ * Returns the count of rows that actually changed (insert or update). On
+ * an idempotent re-seed where nothing differs from the existing seed,
+ * returns 0 — `prompt_id` equality short-circuits the update.
+ */
 export function seedLmPromptDefaults(db: Db): number {
-  const insert = db.prepare(
-    `INSERT OR IGNORE INTO lm_prompt_defaults
+  const upsert = db.prepare(
+    `INSERT INTO lm_prompt_defaults
        (invocation_reason, prompt_text, prompt_id, source, guidance_json, updated_at)
-       VALUES (?, ?, ?, 'seed', ?, ?)`,
+       VALUES (?, ?, ?, 'seed', ?, ?)
+     ON CONFLICT(invocation_reason) DO UPDATE SET
+       prompt_text   = excluded.prompt_text,
+       prompt_id     = excluded.prompt_id,
+       guidance_json = excluded.guidance_json,
+       updated_at    = excluded.updated_at
+     WHERE lm_prompt_defaults.source = 'seed'
+       AND lm_prompt_defaults.prompt_id IS NOT excluded.prompt_id`,
   );
   const now = new Date().toISOString();
   const initialGuidance = serialiseGuidance(EMPTY_GUIDANCE);
-  let inserted = 0;
+  let changed = 0;
   for (const reason of SEEDABLE_INVOCATION_REASONS) {
     const text = LM_PROMPT_DEFAULTS[reason];
-    const info = insert.run(reason, text, hashPrompt(text), initialGuidance, now);
-    if (info.changes > 0) inserted += 1;
+    const info = upsert.run(reason, text, hashPrompt(text), initialGuidance, now);
+    if (info.changes > 0) changed += 1;
   }
-  return inserted;
+  return changed;
 }
 
 /**

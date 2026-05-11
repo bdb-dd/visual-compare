@@ -28,9 +28,9 @@ import { existsSync } from 'node:fs';
 import {
   createLmClient,
   readLmConfigFromEnv,
-  SYSTEM_PROMPT_V3,
   isAnalyzeError,
 } from '../src/services/lm.js';
+import { TARGET_LEVEL_FAILURE_PROMPT } from '../src/constants/lm-prompts.js';
 import { createArtifactStore } from '../src/services/artifact-store.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -199,7 +199,7 @@ async function main() {
     invocationReason: 'target_level_failure',
     changedPixelPercentage: picked.changedPct,
     ssim: picked.ssim,
-    prompt: { id: 'v3-smoke', text: SYSTEM_PROMPT_V3 },
+    prompt: { id: 'v3-smoke', text: TARGET_LEVEL_FAILURE_PROMPT },
   });
   const elapsedMs = Date.now() - startedAt;
   console.log(`  elapsed: ${elapsedMs}ms`);

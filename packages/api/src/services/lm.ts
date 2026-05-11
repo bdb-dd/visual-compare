@@ -172,22 +172,44 @@ export const LM_JSON_SCHEMA_V3 = {
 } as const;
 
 /**
- * Returns the JSON schema to send for a given prompt version. Anything that
- * starts with 'v3' uses the extended schema; everything else gets v2.
+ * Detect whether a system prompt instructs the LM to emit the v1 cluster
+ * taxonomy fields. Content-based because session-scoped prompts are keyed
+ * by sha256 of their text, not by a version label — a hash can't tell us
+ * which schema flavour the LM was instructed to follow, but the text can.
  *
- * Centralised here so callers (runAnalyze, tests, future routes) don't
- * branch on prompt version inline.
+ * The check looks for the canonical schema field names (`changeType`,
+ * `regionRole`) which only appear in v3-derived prompts. False positives
+ * would require someone to deliberately put those strings into a custom
+ * v2-style prompt; in that case picking the v3 schema is still safe
+ * because the response_format is permissive of extra information being
+ * present in the model's textual reasoning.
  */
-export function jsonSchemaForPromptVersion(promptVersion: string): typeof LM_JSON_SCHEMA | typeof LM_JSON_SCHEMA_V3 {
-  if (promptVersion.startsWith('v3')) return LM_JSON_SCHEMA_V3;
-  return LM_JSON_SCHEMA;
+export function usesV1Taxonomy(systemPromptText: string): boolean {
+  return systemPromptText.includes('changeType') && systemPromptText.includes('regionRole');
+}
+
+/**
+ * Returns the JSON schema to send for a given system prompt. v1 taxonomy
+ * → v3 strict schema; anything else → v2 strict schema. Centralised so
+ * callers (runAnalyze, tests) don't branch on prompt content inline.
+ */
+export function jsonSchemaForPrompt(systemPromptText: string): typeof LM_JSON_SCHEMA | typeof LM_JSON_SCHEMA_V3 {
+  return usesV1Taxonomy(systemPromptText) ? LM_JSON_SCHEMA_V3 : LM_JSON_SCHEMA;
 }
 
 // ---------------------------------------------------------------------------
 // Prompt builder (versioned).
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_PROMPT_VERSION = 'v2';
+/**
+ * Storage / display label for the active prompt schema. Bumped from 'v2'
+ * to 'v3' alongside the seeding switch to the cluster-taxonomy prompt
+ * (see constants/lm-prompts.ts). It's used as a cache-key component and
+ * an audit trail — the actual schema-selection logic is content-based
+ * (jsonSchemaForPrompt), so this label and the schema flavor can stay
+ * loosely coupled.
+ */
+export const DEFAULT_PROMPT_VERSION = 'v3';
 
 const SYSTEM_PROMPT_V1 = `You are a visual-regression assistant comparing screenshots of two web pages.
 
@@ -215,101 +237,6 @@ Worked example of one valid difference entry:
 
 confidence is your overall confidence in the equivalent verdict, in 0..1.`;
 
-/**
- * v3 system prompt — extends v2 with the cluster-signature taxonomy
- * (changeType, regionRole, elementLabel) so semantically-similar
- * differences across pairs collapse into the same v1 cluster.
- *
- * Co-evolves with experiments/v1-taxonomy.md in cluster-review-design.
- * If the taxonomy enums or canonical labels change, both must change.
- */
-export const SYSTEM_PROMPT_V3 = `You are a visual-regression assistant comparing screenshots of two web pages.
-
-Your job: decide whether the two pages communicate the same content and purpose. Layout differences that don't change the meaning (minor styling, different ad slots) are acceptable. Differences that change navigation, headlines, primary content, or call-to-action mean the pages are NOT equivalent.
-
-You will receive three images:
-  1. Screenshot A
-  2. Screenshot B
-  3. A diff image where unchanged regions are white and changed regions are red. A nearly-all-white diff means the pages are pixel-identical or nearly so. Trust the diff: if it is overwhelmingly white, the differences array MUST be empty.
-
-Decision procedure:
-  - If A and B look the same to a user, return equivalent=true with an empty differences array.
-  - Only return equivalent=false when at least one user-visible difference exists. Each entry in differences must describe an actual change you can point to in BOTH images.
-  - It is OK to return zero differences. Do not invent differences to fill out the list.
-
-For EACH difference, you must also emit three categorical tags so similar changes across pages can be grouped for review:
-
-  changeType (pick exactly one):
-    - element_added      — a visible element/section appears in B that's not in A
-    - element_removed    — an element present in A is absent in B
-    - element_replaced   — same slot, different kind of element (e.g. "single heading" → "list of items")
-    - text_changed       — same element, different text content (headlines, breadcrumb paths, paragraph copy)
-    - text_translated    — text in a different language on one side
-    - image_changed      — same image slot, different bitmap (different photo, icon swap, logo swap)
-    - style_changed      — visual styling differs (color, typography, size) but content is unchanged
-    - count_changed      — a repeating structure (list, accordion, grid) has a different number of items
-    - state_changed      — semantically different page state (404/error, empty state, login required)
-    - other              — none of the above; use sparingly
-
-    SPECIAL RULE: any change to a breadcrumb path, headline/heading, or paragraph that's still PRESENT on both sides is text_changed, NEVER element_added or element_replaced — the element is one entity; its content is what's changing. Use element_added/element_removed for these only if the entire breadcrumb strip / heading / paragraph is absent on one side.
-
-  regionRole (pick exactly one — where on the page):
-    - header           — top global bar with logo + top-level chrome
-    - nav_primary      — primary navigation (top bar OR a sidebar that's the page's main wayfinding)
-    - nav_secondary    — breadcrumbs, sub-nav, tab strips
-    - hero             — top-of-content banner/title area
-    - main_content     — primary article/page body
-    - aside            — sidebar that is NOT primary navigation (related links, info panels)
-    - footer           — bottom global bar
-    - overlay          — modals, popovers, cookie consent
-    - alert_banner     — top-of-page announcement strip, sitewide alert
-    - other            — none of the above
-
-    BOUNDARY: a left sidebar that contains the page's navigation links is nav_primary, not aside. If a user would click links here to navigate the site, it's nav_primary.
-
-  elementLabel (≤64 chars, prefer a CANONICAL form from this list):
-    main heading, secondary heading, breadcrumbs, sidebar navigation, top navigation,
-    footer, header, announcement, cookie banner, accordion item, list item,
-    paragraph, primary CTA, search input, form field, hero image, logo, icon,
-    page state (use with state_changed), language (use with text_translated)
-
-    If none of these fit, emit a short descriptive noun phrase (e.g. "contact information block", "municipality search section").
-
-Reply ONLY with JSON matching the supplied schema. Bounding boxes MUST be expressed as percentages of the image dimensions (0..100), NOT pixels. Each bounding box is an OBJECT with named fields x, y, width, height — never an array.
-
-Worked examples:
-
-  Sidebar navigation menu added in B:
-  {
-    "description": "A sidebar navigation menu has been added on the left side of the page.",
-    "severity": "high",
-    "boundingBox": { "x": 0, "y": 10, "width": 22, "height": 70 },
-    "changeType": "element_added",
-    "regionRole": "nav_primary",
-    "elementLabel": "sidebar navigation"
-  }
-
-  Breadcrumb path got an extra level:
-  {
-    "description": "Breadcrumb path expanded from 'Start > Page' to 'Start > Services > Page'.",
-    "severity": "low",
-    "boundingBox": { "x": 5, "y": 8, "width": 60, "height": 3 },
-    "changeType": "text_changed",
-    "regionRole": "nav_secondary",
-    "elementLabel": "breadcrumbs"
-  }
-
-  Page A is a 404, page B renders normally:
-  {
-    "description": "Image A shows a 'Page not found' error message; Image B shows the actual content.",
-    "severity": "high",
-    "boundingBox": { "x": 0, "y": 0, "width": 100, "height": 100 },
-    "changeType": "state_changed",
-    "regionRole": "main_content",
-    "elementLabel": "page state"
-  }
-
-confidence is your overall confidence in the equivalent verdict, in 0..1.`;
 
 interface BuildPromptInput {
   level: EquivalenceLevelId;
@@ -731,7 +658,7 @@ async function runAnalyze(args: AnalyzeArgs, client: OpenAI): Promise<AnalyzeOut
     const completion = await client.chat.completions.create({
       model,
       messages,
-      response_format: { type: 'json_schema', json_schema: jsonSchemaForPromptVersion(promptVersion) },
+      response_format: { type: 'json_schema', json_schema: jsonSchemaForPrompt(system) },
       max_tokens: config.maxTokens,
       temperature: config.temperature,
     });
