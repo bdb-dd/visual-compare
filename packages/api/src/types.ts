@@ -275,7 +275,57 @@ export interface DifferenceRow {
   description: string;
   severity: DifferenceSeverity | null;
   bounding_box_json: string | null; // JSON-encoded BoundingBoxPercent
+  // Cluster review (Phase A): v1 taxonomy fields populate on LM-sourced rows
+  // under the v3 prompt; signature/signature_version are populated by the
+  // signature service. All NULL on legacy rows.
+  change_type: string | null;
+  region_role: string | null;
+  element_label: string | null;
+  signature: string | null;
+  signature_version: string | null;
   created_at: string;
+}
+
+/**
+ * Materialised aggregate over `differences` rows sharing a signature within a
+ * session. Built by services/clusters.ts:recomputeClusters.
+ */
+export type ClusterReviewState = 'open' | 'accepted' | 'rejected' | 'split' | 'anomaly';
+
+export interface DifferenceClusterRow {
+  id: string;
+  session_id: string;
+  signature: string;
+  signature_version: string;
+  viewport_name: string | null;
+  region_role: string | null;
+  change_type: string | null;
+  element_label: string | null;
+  representative_difference_id: string | null;
+  member_count: number;
+  pair_count: number;
+  review_state: ClusterReviewState;
+  review_notes: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type AcceptanceRuleScope = 'cluster' | 'category';
+
+export interface AcceptanceRuleRow {
+  id: string;
+  session_id: string;
+  signature: string;
+  signature_version: string;
+  scope: AcceptanceRuleScope;
+  category_region_role: string | null;
+  category_change_type: string | null;
+  label: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 // API response shapes (what web sees)

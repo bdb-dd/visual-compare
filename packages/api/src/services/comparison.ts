@@ -12,6 +12,7 @@ import {
 } from './imagick.js';
 import { parseConnectedComponents } from './connected-components.js';
 import { computeMatchedAtLevel } from './equivalence.js';
+import { computeSignature } from './cluster-signature.js';
 import { createLimit } from './concurrency.js';
 import { getEquivalenceLevel, isAtLeastAsStrict } from '../constants/equivalence.js';
 import {
@@ -294,6 +295,20 @@ export function startComparisonRunForPairs(
   };
 }
 
+function safeParseBbox(json: string | null): import('../types.js').BoundingBoxPercent | null {
+  if (!json) return null;
+  try {
+    const obj = JSON.parse(json) as Partial<import('../types.js').BoundingBoxPercent>;
+    if (
+      typeof obj.x === 'number' && typeof obj.y === 'number' &&
+      typeof obj.width === 'number' && typeof obj.height === 'number'
+    ) {
+      return { x: obj.x, y: obj.y, width: obj.width, height: obj.height };
+    }
+  } catch { /* fall through */ }
+  return null;
+}
+
 function derivePairOutcome(a: CaptureRow, b: CaptureRow): PairOutcome {
   const aMissing = a.is_missing === 1;
   const bMissing = b.is_missing === 1;
@@ -568,10 +583,22 @@ async function runOneComparison(
 
       const insertDiff = db.prepare(
         `INSERT INTO differences
-           (id, comparison_id, source, description, severity, bounding_box_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           (id, comparison_id, source, description, severity, bounding_box_json,
+            change_type, region_role, element_label, signature, signature_version,
+            created_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`,
       );
       for (const r of im.regionsToInsert) {
+        // Imagick rows have no LM taxonomy tags — always v0 fallback signature.
+        const bbox = safeParseBbox(r.bounding_box_json);
+        const sig = computeSignature({
+          source: 'imagick',
+          viewport_name: comparison.viewport_name,
+          bbox,
+          change_type: null,
+          region_role: null,
+          element_label: null,
+        });
         insertDiff.run(
           randomUUID(),
           comparison.id,
@@ -579,6 +606,8 @@ async function runOneComparison(
           r.description,
           null,
           r.bounding_box_json,
+          sig?.signature ?? null,
+          sig?.signature_version ?? null,
           completedAt,
         );
       }
@@ -711,10 +740,22 @@ async function runOneComparison(
             );
             const insertDiff = db.prepare(
               `INSERT INTO differences
-                 (id, comparison_id, source, description, severity, bounding_box_json, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                 (id, comparison_id, source, description, severity, bounding_box_json,
+                  change_type, region_role, element_label,
+                  signature, signature_version, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             );
             for (const d of lmOutcome.parsed.differences) {
+              // LM rows get v1 signature when the v3 prompt populated the
+              // taxonomy fields; falls back to v0 otherwise (v2 prompt path).
+              const sig = computeSignature({
+                source: 'lm',
+                viewport_name: comparison.viewport_name,
+                bbox: d.boundingBox,
+                change_type: d.changeType ?? null,
+                region_role: d.regionRole ?? null,
+                element_label: d.elementLabel ?? null,
+              });
               insertDiff.run(
                 randomUUID(),
                 comparison.id,
@@ -722,6 +763,11 @@ async function runOneComparison(
                 d.description,
                 d.severity,
                 JSON.stringify(d.boundingBox),
+                d.changeType ?? null,
+                d.regionRole ?? null,
+                d.elementLabel ?? null,
+                sig?.signature ?? null,
+                sig?.signature_version ?? null,
                 completedAt,
               );
             }
