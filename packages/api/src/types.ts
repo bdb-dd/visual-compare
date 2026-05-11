@@ -328,6 +328,67 @@ export interface AcceptanceRuleRow {
   updated_at: string;
 }
 
+// ---------------------------------------------------------------------------
+// Cluster review DTOs (consumed by both API routes and the web client).
+// ---------------------------------------------------------------------------
+
+export interface ClusterSummaryDto extends DifferenceClusterRow {
+  /** Sample diff for rendering the cluster card. */
+  sample: {
+    description: string;
+    severity: string | null;
+    bounding_box_json: string | null;
+    url_a: string;
+    url_b: string;
+  } | null;
+}
+
+export interface ClusterListDto {
+  session_id: string;
+  /** Total cluster count for this session (any review state). */
+  total: number;
+  /** Distribution across review states — used for the UI's tab strip. */
+  by_review_state: Record<ClusterReviewState, number>;
+  clusters: ClusterSummaryDto[];
+}
+
+/**
+ * Member of a cluster — one differences row. Lightweight: enough to render
+ * the member list and link to /comparisons/:id for full detail.
+ */
+export interface ClusterMemberDto {
+  difference_id: string;
+  comparison_id: string;
+  url_pair_id: string;
+  viewport_name: string;
+  url_a: string;
+  url_b: string;
+  description: string;
+  severity: string | null;
+  bounding_box: BoundingBoxPercent | null;
+}
+
+/**
+ * The cluster's representative — enriched with the comparison's image shas
+ * and pixel/LM metrics so the cluster detail page can render the sample
+ * A/B/diff triple without a separate fetch.
+ */
+export interface ClusterRepresentativeDto extends ClusterMemberDto {
+  capture_a_sha: string | null;
+  capture_b_sha: string | null;
+  im_diff_sha: string | null;
+  ssim: number | null;
+  changed_pct: number | null;
+  lm_summary: string | null;
+  lm_confidence: number | null;
+}
+
+export interface ClusterDetailDto {
+  cluster: DifferenceClusterRow;
+  representative: ClusterRepresentativeDto | null;
+  members: ClusterMemberDto[];
+}
+
 // API response shapes (what web sees)
 
 export interface SessionDto extends SessionRow {

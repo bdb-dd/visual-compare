@@ -166,6 +166,11 @@ describe('GET /api/sessions/:id/clusters/:cluster_id', () => {
       expect(m.viewport_name).toBe('desktop');
       expect(m.bounding_box).toEqual({ x: 0, y: 10, width: 25, height: 80 });
     }
+    // Representative enriched with comparison data for inline rendering.
+    expect(res.body.representative).not.toBeNull();
+    expect(res.body.representative.comparison_id).toMatch(/^cmp/);
+    expect(res.body.representative.url_a).toMatch(/^https:\/\/a/);
+    expect(res.body.representative.bounding_box).toEqual({ x: 0, y: 10, width: 25, height: 80 });
   });
 
   it('returns 404 for an unknown cluster id', async () => {

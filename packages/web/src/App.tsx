@@ -3,6 +3,8 @@ import { NavLink, Route, Routes, useLocation } from 'react-router-dom';
 import { SessionsPage } from './pages/SessionsPage.js';
 import { SessionDetailPage } from './pages/SessionDetailPage.js';
 import { ComparisonDetailPage } from './pages/ComparisonDetailPage.js';
+import { ClustersPage } from './pages/ClustersPage.js';
+import { ClusterDetailPage } from './pages/ClusterDetailPage.js';
 import { LmStatusPill } from './components/LmStatusPill.js';
 
 export function App(): JSX.Element {
@@ -12,6 +14,8 @@ export function App(): JSX.Element {
       <Routes>
         <Route path="/" element={<SessionsPage />} />
         <Route path="/sessions/:id" element={<SessionDetailPage />} />
+        <Route path="/sessions/:id/clusters" element={<ClustersPage />} />
+        <Route path="/sessions/:id/clusters/:cluster_id" element={<ClusterDetailPage />} />
         <Route path="/comparisons/:id" element={<ComparisonDetailPage />} />
       </Routes>
     </>
