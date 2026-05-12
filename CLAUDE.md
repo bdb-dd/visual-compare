@@ -45,15 +45,24 @@ The default `DB_PATH` in `packages/api/src/index.ts` resolves to
   app. `mise exec -- pnpm typecheck` and `mise exec -- pnpm vitest run`
   work from any package dir.
 
-## Known test flakes
+## Test suites
 
-Two test files flake intermittently under vitest's default parallel mode:
+API tests run in two phases (see `packages/api/package.json` scripts):
 
-- `packages/api/test/comparison-concurrency.test.ts`
-- `packages/api/test/imagick-runtime.test.ts`
+- `test:parallel` — the default suite under vitest's normal file-parallel
+  mode. Fast.
+- `test:serial` — a small set of timing-sensitive tests that need
+  `fileParallelism: false` because event-loop starvation between parallel
+  worker files makes them flake. Currently:
+  - `test/comparison-concurrency.test.ts`
+  - `test/imagick-runtime.test.ts`
 
-Pass `--no-file-parallelism` to vitest if you need a clean green run.
-Failures in those two files only — anywhere else is a real regression.
+  Listed once in `vitest.serial-tests.ts`; the default config excludes
+  them and `vitest.config.serial.ts` includes them.
+
+`pnpm test` runs both phases. Failures in either phase are real
+regressions — the flake workaround is the serial config itself, not a
+license to ignore them.
 
 ## Cluster review feature
 
