@@ -614,6 +614,40 @@ ul.diff-list li {
   flex-direction: column;
   gap: 8px;
 }
+
+/* Phase β: mode tabs (Clusters / Rows / Anomalies) sit between the
+   project header and the per-mode body. Pill-style, big enough to be
+   the primary navigation gesture on the page. */
+.mode-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 4px;
+  background: #0e1014;
+  border: 1px solid #23262d;
+  border-radius: 8px;
+  width: fit-content;
+}
+.mode-tab {
+  background: transparent;
+  color: #aab1bd;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 6px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mode-tab:hover { color: #e5e7eb; }
+.mode-tab--active {
+  color: #d4e1ff;
+  background: #1f3a8a;
+  border-color: #1f3a8a;
+}
+
+.mode-body--full {
+  max-width: 1280px;
+}
 .project-header-top {
   display: flex;
   align-items: center;

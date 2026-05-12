@@ -1,6 +1,8 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
+import { AnomaliesTab } from '../components/AnomaliesTab.js';
+import { ClustersTab } from '../components/ClustersTab.js';
 import { ComparisonDetail } from '../components/ComparisonDetail.js';
 import { LmStatusPill } from '../components/LmStatusPill.js';
 import { PlanAndEvaluate } from '../components/PlanAndEvaluate.js';
@@ -24,9 +26,29 @@ import type { EquivalenceLevelDef } from '@visual-compare/api/constants/equivale
 
 type SidebarTab = 'review' | 'config';
 type DetailTab = 'comparison' | 'history' | 'pairs';
+type Mode = 'clusters' | 'rows' | 'anomalies';
+
+const MODE_VALUES: readonly Mode[] = ['clusters', 'rows', 'anomalies'];
+
+function parseMode(raw: string | null): Mode {
+  return (MODE_VALUES as readonly string[]).includes(raw ?? '')
+    ? (raw as Mode)
+    : 'clusters'; // funnel default per implementation plan §β
+}
 
 export function SessionDetailPage(): JSX.Element {
   const { id = '' } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const mode = parseMode(searchParams.get('mode'));
+  const setMode = useCallback(
+    (next: Mode) => {
+      const sp = new URLSearchParams(searchParams);
+      if (next === 'clusters') sp.delete('mode'); // canonical default → clean URL
+      else sp.set('mode', next);
+      setSearchParams(sp, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
   const [session, setSession] = useState<SessionRow | null>(null);
   const [config, setConfig] = useState<SessionConfig | null>(null);
   const [pairs, setPairs] = useState<UrlPairRow[]>([]);
@@ -357,9 +379,6 @@ export function SessionDetailPage(): JSX.Element {
             {session.archived_at && <span className="muted"> (archived)</span>}
           </p>
           <div className="project-header-actions">
-            <Link to={`/sessions/${session.id}/clusters`} className="btn secondary">
-              Cluster review
-            </Link>
             <button className="btn secondary" onClick={() => void handleInvalidateAll()} disabled={busy}>
               Recapture all
             </button>
@@ -390,6 +409,34 @@ export function SessionDetailPage(): JSX.Element {
 
       {error && <div className="error">{error}</div>}
 
+      <div className="mode-tabs" role="tablist" aria-label="Review mode">
+        {MODE_VALUES.map((m) => (
+          <button
+            key={m}
+            type="button"
+            role="tab"
+            aria-selected={mode === m}
+            className={`mode-tab${mode === m ? ' mode-tab--active' : ''}`}
+            onClick={() => setMode(m)}
+          >
+            {m === 'clusters' ? 'Clusters' : m === 'rows' ? 'Rows' : 'Anomalies'}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'clusters' && (
+        <div className="mode-body mode-body--full">
+          <ClustersTab sessionId={session.id} />
+        </div>
+      )}
+
+      {mode === 'anomalies' && (
+        <div className="mode-body mode-body--full">
+          <AnomaliesTab sessionId={session.id} />
+        </div>
+      )}
+
+      {mode === 'rows' && (
       <div className="project-body">
         <aside className="project-sidebar">
           <div className="tab-bar" role="tablist" aria-label="Sidebar view">
@@ -527,6 +574,7 @@ export function SessionDetailPage(): JSX.Element {
           )}
         </section>
       </div>
+      )}
 
     </main>
   );
