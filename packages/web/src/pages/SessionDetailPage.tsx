@@ -543,6 +543,7 @@ export function SessionDetailPage(): JSX.Element {
           <div className="mode-body__list">
             <ClustersTab
               sessionId={session.id}
+              filter={filterState}
               onClusterFocus={setFocusedClusterId}
               focusedClusterId={focusedClusterId}
             />
@@ -575,6 +576,7 @@ export function SessionDetailPage(): JSX.Element {
           <div className="mode-body__list">
             <AnomaliesTab
               sessionId={session.id}
+              filter={filterState}
               onClusterFocus={setFocusedClusterId}
               focusedClusterId={focusedClusterId}
             />

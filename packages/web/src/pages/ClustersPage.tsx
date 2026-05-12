@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ClustersTab } from '../components/ClustersTab.js';
+import { DEFAULT_FILTER_STATE } from '../api/filterState.js';
 
 /**
  * Cluster review category index — outer shell. The body content lives in
@@ -25,7 +26,7 @@ export function ClustersPage(): JSX.Element {
           </Link>
         </div>
       </header>
-      <ClustersTab sessionId={id} />
+      <ClustersTab sessionId={id} filter={DEFAULT_FILTER_STATE} />
     </main>
   );
 }
