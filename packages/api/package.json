@@ -10,7 +10,9 @@
     "build": "tsc -p tsconfig.json && pnpm run build:copy-schema",
     "build:copy-schema": "node -e \"import('node:fs').then(fs => fs.cpSync('src/db/schema.sql', 'dist/db/schema.sql'))\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "pnpm test:parallel && pnpm test:serial",
+    "test:parallel": "vitest run",
+    "test:serial": "vitest run --config vitest.config.serial.ts",
     "test:watch": "vitest",
     "corpus": "tsx scripts/run-test-corpus.ts --allow-mismatch tp-section-removed:semantic"
   },
