@@ -21,6 +21,19 @@ export type MatchedDecidedBy = 'pixel' | 'lm';
 
 export type CaptureSide = 'a' | 'b';
 
+/**
+ * A single capture the planner has decided is missing from `capture_cache`.
+ * Lives here (not in evaluator.ts) so `capture.ts` can accept a list of these
+ * via `StartCaptureRunInput.explicitCaptures` without importing back from
+ * evaluator.ts (which already imports from capture.ts).
+ */
+export interface PlannedCapture {
+  url_pair_id: string;
+  viewport_name: string;
+  side: CaptureSide;
+  url: string;
+}
+
 export type JobType = 'capture' | 'comparison';
 
 export type JobStatus = 'pending' | 'running' | 'complete' | 'error';

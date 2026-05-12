@@ -226,6 +226,10 @@ export const api = {
     request<{ levels: EquivalenceLevelDef[]; default: EquivalenceLevelId }>(
       '/api/meta/equivalence-levels',
     ),
+  getSystemInfo: () =>
+    request<{ max_capture_concurrency: number; cpu_count: number }>(
+      '/api/meta/system-info',
+    ),
 
   getLmStatus: (force = false) =>
     request<LmStatusDto>(`/api/meta/lm-status${force ? '?force=1' : ''}`),
