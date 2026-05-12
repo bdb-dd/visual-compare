@@ -101,7 +101,7 @@ export const api = {
 
   evaluate: (
     id: string,
-    configInput?: Partial<SessionConfig> & { invoke_lm?: boolean },
+    configInput?: Partial<SessionConfig> & { invoke_lm?: boolean; url_pair_ids?: string[] },
   ) =>
     request<{ evaluation_id: string; coalesced: boolean }>(
       `/api/sessions/${id}/evaluate`,
@@ -111,6 +111,16 @@ export const api = {
         body: JSON.stringify({ config: configInput ?? {} }),
       },
     ),
+
+  /**
+   * Drop the cached captures for this pair (both A and B), then trigger an
+   * evaluation scoped to it. The new captures get fresh shas so the pixel
+   * and LM caches miss naturally and the full pipeline re-runs end-to-end.
+   */
+  recapturePair: async (sessionId: string, pairId: string) => {
+    await api.invalidateCaptures(sessionId, { pair_ids: [pairId] });
+    return api.evaluate(sessionId, { url_pair_ids: [pairId] });
+  },
 
   listEvaluations: (id: string) =>
     request<{ evaluations: EvaluationStatusDto[] }>(`/api/sessions/${id}/evaluations`),

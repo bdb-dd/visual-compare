@@ -5,6 +5,7 @@ import type {
   SessionResultRow,
   SessionResultsSummary,
 } from '@visual-compare/api/types';
+import { RecapturePairButton } from './RecapturePairButton.js';
 
 export type ResultsFilter =
   | 'all'
@@ -72,6 +73,10 @@ interface Props {
   onQuickAcceptShortcut?: (row: SessionResultRow | null) => void;
   /** "r" — clear the selected row's acceptance. */
   onClearShortcut?: (row: SessionResultRow | null) => void;
+  /** Enables the per-row Recapture button. When unset, rows render unchanged. */
+  sessionId?: string;
+  /** Fires after a successful recapture trigger so the caller can refresh. */
+  onRecaptured?: () => void;
 }
 
 type Verdict =
@@ -312,6 +317,8 @@ export function SessionResultsList({
   onAcceptShortcut,
   onQuickAcceptShortcut,
   onClearShortcut,
+  sessionId,
+  onRecaptured,
 }: Props): JSX.Element {
   const visible = useMemo(
     () => sortAndFilter(results, filter, targetLevel),
@@ -442,38 +449,52 @@ export function SessionResultsList({
             const thumb = thumbUrl(r.pixel?.im_diff_sha256);
             const missing = missingLabel(r.pair_outcome);
             return (
-              <button
+              <div
                 key={key}
-                type="button"
-                data-row-key={key}
-                className={`comparison-row ${isSelected ? 'selected' : ''} verdict-${verdict}`}
-                onClick={() => onSelect(key, r)}
+                className={`comparison-row-wrap ${isSelected ? 'selected' : ''} verdict-${verdict}`}
               >
-                <div className="thumb">
-                  {thumb ? (
-                    <img src={thumb} alt="" loading="lazy" />
-                  ) : (
-                    <div className="thumb-empty">—</div>
-                  )}
-                </div>
-                <div className="meta">
-                  <div className="row-line">
-                    <span className="label" title={label}>{label}</span>
-                    <span className={`verdict-chip verdict-${verdict}`}>{verdictGlyph(verdict)}</span>
-                  </div>
-                  <div className="row-line muted">
-                    <span className="viewport-badge">{r.viewport_name}</span>
-                    {missing ? (
-                      <span className="viewport-badge">{missing}</span>
+                <button
+                  type="button"
+                  data-row-key={key}
+                  className={`comparison-row ${isSelected ? 'selected' : ''} verdict-${verdict}`}
+                  onClick={() => onSelect(key, r)}
+                >
+                  <div className="thumb">
+                    {thumb ? (
+                      <img src={thumb} alt="" loading="lazy" />
                     ) : (
-                      <>
-                        <span className="viewport-badge">{r.matched_at_level ?? '—'}</span>
-                        <span className="changed-pct">{fmtPct(r.pixel?.changed_pct)}</span>
-                      </>
+                      <div className="thumb-empty">—</div>
                     )}
                   </div>
-                </div>
-              </button>
+                  <div className="meta">
+                    <div className="row-line">
+                      <span className="label" title={label}>{label}</span>
+                      <span className={`verdict-chip verdict-${verdict}`}>{verdictGlyph(verdict)}</span>
+                    </div>
+                    <div className="row-line muted">
+                      <span className="viewport-badge">{r.viewport_name}</span>
+                      {missing ? (
+                        <span className="viewport-badge">{missing}</span>
+                      ) : (
+                        <>
+                          <span className="viewport-badge">{r.matched_at_level ?? '—'}</span>
+                          <span className="changed-pct">{fmtPct(r.pixel?.changed_pct)}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </button>
+                {sessionId && (
+                  <div className="comparison-row-actions">
+                    <RecapturePairButton
+                      sessionId={sessionId}
+                      pairId={r.url_pair_id}
+                      compact
+                      onTriggered={onRecaptured}
+                    />
+                  </div>
+                )}
+              </div>
             );
           })
         )}

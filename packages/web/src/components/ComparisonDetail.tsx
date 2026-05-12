@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { api } from '../api/client.js';
 import { ImageWithBoxes } from './ImageWithBoxes.js';
+import { RecapturePairButton } from './RecapturePairButton.js';
 import { StatusPill } from './StatusPill.js';
 import { isAtLeastAsStrict } from '@visual-compare/api/constants/equivalence';
 import type {
@@ -54,6 +55,7 @@ export function ComparisonDetail({
   const [error, setError] = useState<string | null>(null);
   const [showBoxes, setShowBoxes] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('diff');
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     setDetail(null);
@@ -72,7 +74,7 @@ export function ComparisonDetail({
     return () => {
       cancelled = true;
     };
-  }, [id, onLoaded]);
+  }, [id, refreshTick, onLoaded]);
 
   if (error) return <div className="error">{error}</div>;
   if (!detail) return <p className="muted">Loading…</p>;
@@ -138,6 +140,12 @@ export function ComparisonDetail({
             />{' '}
             Boxes
           </label>
+          <RecapturePairButton
+            sessionId={url_pair.session_id}
+            pairId={url_pair.id}
+            compact
+            onTriggered={() => setRefreshTick((t) => t + 1)}
+          />
         </div>
         <div className="dh-urls">
           <div className="dh-url" title={url_pair.url_a}>

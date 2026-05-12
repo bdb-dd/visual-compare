@@ -50,6 +50,7 @@ header.app-header nav a.active { color: #e6e8eb; font-weight: 600; }
 .btn:hover { filter: brightness(1.1); }
 .btn[disabled] { opacity: 0.6; cursor: not-allowed; }
 .btn.secondary { background: #2a2e36; }
+.btn.btn-compact { padding: 4px 8px; font-size: 12px; border-radius: 4px; }
 
 input[type='text'], input[type='file'], select {
   background: #1b1e24;
@@ -242,11 +243,29 @@ ul.diff-list li {
   flex: 1;
 }
 
+.comparison-row-wrap {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid #23262d;
+}
+.comparison-row-wrap .comparison-row { border-bottom: 0; }
+.comparison-row-actions {
+  display: flex;
+  align-items: center;
+  padding-right: 12px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.comparison-row-wrap:hover .comparison-row-actions,
+.comparison-row-wrap:focus-within .comparison-row-actions,
+.comparison-row-wrap.selected .comparison-row-actions {
+  opacity: 1;
+}
 .comparison-row {
   display: flex;
   gap: 10px;
   align-items: center;
-  width: 100%;
+  flex: 1;
   background: transparent;
   border: 0;
   border-bottom: 1px solid #23262d;
@@ -256,6 +275,7 @@ ul.diff-list li {
   text-align: left;
   color: inherit;
   font: inherit;
+  min-width: 0;
 }
 .comparison-row:hover { background: #1b1e24; }
 .comparison-row.selected {
