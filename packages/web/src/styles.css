@@ -1152,6 +1152,17 @@ ul.diff-list li {
 }
 .clusters-page__refresh:disabled { opacity: 0.6; cursor: progress; }
 
+/* Phase α: totals + refresh moved out of the page header and into a
+   sub-bar inside ClustersTab so the page header can become a shell. */
+.clusters-tab__summary-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin: 0 0 4px;
+}
+.clusters-tab__summary-bar .clusters-page__summary { margin: 0; }
+
 .clusters-page__filters {
   display: flex;
   flex-wrap: wrap;
