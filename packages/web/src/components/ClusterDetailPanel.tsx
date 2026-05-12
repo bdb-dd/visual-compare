@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type JSX } from 'react';
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ImageWithBoxes } from './ImageWithBoxes.js';
@@ -38,12 +38,23 @@ export interface ClusterDetailPanelProps {
   clusterId: string;
   /** Called when accept/reject mutates state. Parent can refresh upstream lists. */
   onChanged?: () => void;
+  /**
+   * Counter the parent bumps to ask the panel to open its accept dialog.
+   * Same pattern ComparisonDetail uses for the "a" keyboard shortcut —
+   * lets the ActionsMenu in Phase γ trigger the dialog without lifting
+   * the dialog state out of the panel.
+   */
+  openAcceptDialogTrigger?: number;
+  /** Counterpart for the reject dialog. */
+  openRejectDialogTrigger?: number;
 }
 
 export function ClusterDetailPanel({
   sessionId,
   clusterId,
   onChanged,
+  openAcceptDialogTrigger,
+  openRejectDialogTrigger,
 }: ClusterDetailPanelProps): JSX.Element {
   const [data, setData] = useState<ClusterDetailDto | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +73,25 @@ export function ClusterDetailPanel({
       .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : String(err)); });
     return () => { cancelled = true; };
   }, [sessionId, clusterId]);
+
+  // Phase γ: parent (typically ActionsMenu) can ask the panel to open
+  // its accept/reject dialogs by incrementing a trigger counter. Each
+  // counter change opens the dialog once. Same pattern ComparisonDetail
+  // uses for its `a` keyboard shortcut.
+  const lastAcceptTriggerRef = useRef(openAcceptDialogTrigger);
+  useEffect(() => {
+    if (openAcceptDialogTrigger === undefined) return;
+    if (lastAcceptTriggerRef.current === openAcceptDialogTrigger) return;
+    lastAcceptTriggerRef.current = openAcceptDialogTrigger;
+    if (data && data.cluster.review_state !== 'accepted') setDialog('accept');
+  }, [openAcceptDialogTrigger, data]);
+  const lastRejectTriggerRef = useRef(openRejectDialogTrigger);
+  useEffect(() => {
+    if (openRejectDialogTrigger === undefined) return;
+    if (lastRejectTriggerRef.current === openRejectDialogTrigger) return;
+    lastRejectTriggerRef.current = openRejectDialogTrigger;
+    if (data && data.cluster.review_state === 'accepted') setDialog('reject');
+  }, [openRejectDialogTrigger, data]);
 
   const handleAccept = async (input: { label: string; notes: string }): Promise<void> => {
     if (!data) return;

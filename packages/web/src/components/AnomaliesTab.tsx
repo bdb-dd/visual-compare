@@ -28,9 +28,13 @@ function severityRank(s: string | null | undefined): number {
 
 export interface AnomaliesTabProps {
   sessionId: string;
+  /** Phase γ+ focus callback — opens the anomaly in the detail pane. */
+  onClusterFocus?: (clusterId: string) => void;
+  /** Cluster id currently highlighted by the parent. */
+  focusedClusterId?: string | null;
 }
 
-export function AnomaliesTab({ sessionId }: AnomaliesTabProps): JSX.Element {
+export function AnomaliesTab({ sessionId, onClusterFocus, focusedClusterId }: AnomaliesTabProps): JSX.Element {
   const [data, setData] = useState<ClusterListDto | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -92,9 +96,10 @@ export function AnomaliesTab({ sessionId }: AnomaliesTabProps): JSX.Element {
 
       {anomalies.length > 0 && (
         <ul className="anomaly-list">
-          {anomalies.map((a) => (
-            <li key={a.id} className={`anomaly-row anomaly-row--${a.review_state}`}>
-              <Link to={`/sessions/${sessionId}/clusters/${a.id}`} className="anomaly-row__link">
+          {anomalies.map((a) => {
+            const isFocused = focusedClusterId === a.id;
+            const body = (
+              <>
                 <span className={`anomaly-row__sev anomaly-row__sev--${a.sample?.severity ?? 'unknown'}`}>
                   {a.sample?.severity ?? '—'}
                 </span>
@@ -112,9 +117,22 @@ export function AnomaliesTab({ sessionId }: AnomaliesTabProps): JSX.Element {
                 <span className={`anomaly-row__state cluster-row__state cluster-row__state--${a.review_state}`}>
                   {a.review_state}
                 </span>
-              </Link>
-            </li>
-          ))}
+              </>
+            );
+            return (
+              <li key={a.id} className={`anomaly-row anomaly-row--${a.review_state}${isFocused ? ' anomaly-row--focused' : ''}`}>
+                {onClusterFocus ? (
+                  <button type="button" className="anomaly-row__link" onClick={() => onClusterFocus(a.id)}>
+                    {body}
+                  </button>
+                ) : (
+                  <Link to={`/sessions/${sessionId}/clusters/${a.id}`} className="anomaly-row__link">
+                    {body}
+                  </Link>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </>

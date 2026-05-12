@@ -3,7 +3,6 @@ import { Navigate, NavLink, Route, Routes, useLocation, useParams } from 'react-
 import { SessionsPage } from './pages/SessionsPage.js';
 import { SessionDetailPage } from './pages/SessionDetailPage.js';
 import { ComparisonDetailPage } from './pages/ComparisonDetailPage.js';
-import { ClusterDetailPage } from './pages/ClusterDetailPage.js';
 import { LmStatusPill } from './components/LmStatusPill.js';
 
 export function App(): JSX.Element {
@@ -21,10 +20,11 @@ export function App(): JSX.Element {
         <Route path="/sessions/:id/clusters" element={<RedirectToMode mode="clusters" />} />
         <Route path="/sessions/:id/anomalies" element={<RedirectToMode mode="anomalies" />} />
         {/*
-          Cluster detail stays as its own route in β — γ folds it into the
-          unified surface's detail pane. Until then, it's a permalink target.
+          Phase γ: cluster detail folds into the unified surface's detail
+          pane. The legacy permalink redirects with mode + focus set so
+          the pane opens directly on the named cluster.
         */}
-        <Route path="/sessions/:id/clusters/:cluster_id" element={<ClusterDetailPage />} />
+        <Route path="/sessions/:id/clusters/:cluster_id" element={<RedirectToClusterFocus />} />
         <Route path="/comparisons/:id" element={<ComparisonDetailPage />} />
       </Routes>
     </>
@@ -40,6 +40,20 @@ function RedirectToMode({ mode }: { mode: 'clusters' | 'anomalies' }): JSX.Eleme
   const { search } = useLocation();
   const sp = new URLSearchParams(search);
   sp.set('mode', mode);
+  return <Navigate to={`/sessions/${id}?${sp.toString()}`} replace />;
+}
+
+/**
+ * Phase γ: cluster detail permalinks redirect into the unified surface
+ * with the focus query param set so the pane opens directly on the
+ * named cluster. Preserves any other params (e.g. ?status=accepted).
+ */
+function RedirectToClusterFocus(): JSX.Element {
+  const { id = '', cluster_id = '' } = useParams();
+  const { search } = useLocation();
+  const sp = new URLSearchParams(search);
+  sp.set('mode', 'clusters');
+  sp.set('focus', cluster_id);
   return <Navigate to={`/sessions/${id}?${sp.toString()}`} replace />;
 }
 
