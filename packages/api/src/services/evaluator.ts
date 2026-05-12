@@ -38,8 +38,10 @@ import {
 } from '../constants/equivalence.js';
 import type {
   AcceptanceRow,
+  AcceptanceRuleScope,
   BoundingBoxPercent,
   CaptureSide,
+  ClusterReviewState,
   EquivalenceLevelId,
   FilterQuery,
   LmInvocationReason,
@@ -1092,6 +1094,55 @@ export function readSessionResults(
       WHERE comparison_id = ? AND source = 'imagick' AND bounding_box_json IS NOT NULL`,
   );
 
+  // Phase ε: rule-provenance + cluster lookups so SessionResultRow can
+  // surface the cluster a row belongs to + whether its acceptance came
+  // from a cluster/category rule fan-out.
+  const ruleScopeByRuleId = new Map<string, AcceptanceRuleScope>();
+  for (const r of db
+    .prepare<[string], { id: string; scope: AcceptanceRuleScope }>(
+      `SELECT id, scope FROM acceptance_rules WHERE session_id = ?`,
+    )
+    .all(sessionId)) {
+    ruleScopeByRuleId.set(r.id, r.scope);
+  }
+
+  // Primary cluster per comparison: the v1-signature cluster with the
+  // highest pair_count this comparison participates in. Surfaces in
+  // SessionResultRow.cluster_id so Rows-mode actions can target the
+  // most-leverage cluster. Rows whose comparisons have only v0
+  // (geometric) clusters get cluster_id = null — v0 clusters aren't
+  // useful as "the row's cluster" since they don't carry the taxonomy.
+  const primaryClusterByComparisonId = new Map<
+    string,
+    { cluster_id: string; review_state: ClusterReviewState }
+  >();
+  for (const row of db
+    .prepare<[string], { comparison_id: string; cluster_id: string; review_state: ClusterReviewState }>(
+      `SELECT DISTINCT
+              c.id           AS comparison_id,
+              dc.id          AS cluster_id,
+              dc.review_state AS review_state,
+              dc.pair_count  AS pair_count
+         FROM comparisons c
+         JOIN url_pairs   p  ON p.id = c.url_pair_id
+         JOIN differences d  ON d.comparison_id = c.id AND d.signature_version = 'v1'
+         JOIN difference_clusters dc
+              ON dc.session_id        = p.session_id
+             AND dc.signature         = d.signature
+             AND dc.signature_version = 'v1'
+        WHERE p.session_id = ?
+        ORDER BY c.id, dc.pair_count DESC, dc.id`,
+    )
+    .all(sessionId)) {
+    // First row per comparison_id (ORDER BY pair_count DESC) wins.
+    if (!primaryClusterByComparisonId.has(row.comparison_id)) {
+      primaryClusterByComparisonId.set(row.comparison_id, {
+        cluster_id: row.cluster_id,
+        review_state: row.review_state,
+      });
+    }
+  }
+
   // Build a SessionConfig-shaped object for the resolver. The evaluator's
   // EvaluationConfig already carries target_level + region_match_config but
   // not in the SessionConfig shape; we synthesize one for resolvePairConfig.
@@ -1144,6 +1195,16 @@ export function readSessionResults(
         acceptance_status: acceptance ? 'accepted' : 'unaccepted',
         status: 'pending',
         pair_outcome: pairOutcome,
+        // Phase ε: rule-provenance from the acceptance row, scope from
+        // the rule-scope lookup. cluster_id + cluster_review_state are
+        // filled in the post-loop pass once comparison_id is known.
+        acceptance_rule_id: acceptance?.acceptance_rule_id ?? null,
+        acceptance_rule_scope:
+          acceptance?.acceptance_rule_id
+            ? (ruleScopeByRuleId.get(acceptance.acceptance_rule_id) ?? null)
+            : null,
+        cluster_id: null,
+        cluster_review_state: null,
       };
 
       // Missing-page rows are terminal: no visual diff was performed, so
@@ -1270,6 +1331,18 @@ export function readSessionResults(
       }
       out.push(row);
     }
+  }
+  // Phase ε post-pass: attach the row's primary cluster (highest-leverage
+  // v1 cluster the comparison participates in). Done after the build loop
+  // because comparison_id can be set in either the pixel-cache or LM-cache
+  // branch above; one final walk avoids threading the assignment through
+  // every push site.
+  for (const row of out) {
+    if (!row.comparison_id) continue;
+    const primary = primaryClusterByComparisonId.get(row.comparison_id);
+    if (!primary) continue;
+    row.cluster_id = primary.cluster_id;
+    row.cluster_review_state = primary.review_state;
   }
   return out;
 }

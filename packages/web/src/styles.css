@@ -706,6 +706,19 @@ ul.diff-list li {
 }
 .filter-chip--active .filter-chip__count { color: #b9d0ff; }
 
+/* Phase ε: small badge on rows/comparisons whose acceptance came from a
+   cluster or category rule fan-out (acceptance.acceptance_rule_id !== null). */
+.provenance-badge {
+  display: inline-block;
+  background: #14532d;
+  color: #b3f5c5;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
 /* Phase γ: split layout — list (left) + detail pane (right) when
    something is focused in Clusters or Anomalies mode. */
 .mode-body--split {

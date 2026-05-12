@@ -23,6 +23,12 @@ export interface ActionsMenuProps {
   onRowQuickAccept?: (row: SessionResultRow) => void;
   onRowClear?: (row: SessionResultRow) => void;
 
+  // Phase ε row → cluster cross-mode gestures.
+  /** Open the cluster accept dialog for the row's primary cluster. */
+  onRowAcceptCluster?: (clusterId: string) => void;
+  /** Switch to Clusters mode and focus the row's primary cluster. */
+  onRowShowCluster?: (clusterId: string) => void;
+
   // Cluster-focus handlers.
   onClusterAccept?: () => void;
   onClusterReject?: () => void;
@@ -167,6 +173,11 @@ function computeItems(props: ActionsMenuProps): MenuItem[] {
     const noAcceptReason = row
       ? canAccept ? undefined : 'Row hasn\'t reached a final verdict yet'
       : 'No row data';
+    const clusterId = row?.cluster_id ?? null;
+    const clusterAlreadyAccepted = row?.cluster_review_state === 'accepted';
+    const noClusterReason = clusterId
+      ? undefined
+      : 'This row doesn\'t belong to a v1 cluster (imagick-only or v2-era diffs)';
     return [
       {
         key: 'accept',
@@ -189,13 +200,25 @@ function computeItems(props: ActionsMenuProps): MenuItem[] {
       {
         key: 'accept-cluster',
         label: 'Accept this row\'s cluster',
-        disabledReason: 'Needs row.cluster_id in DTO — Phase ε',
+        onClick:
+          clusterId && !clusterAlreadyAccepted && props.onRowAcceptCluster
+            ? () => props.onRowAcceptCluster!(clusterId)
+            : undefined,
+        disabledReason:
+          noClusterReason
+          ?? (clusterAlreadyAccepted
+              ? 'Cluster is already accepted'
+              : (props.onRowAcceptCluster ? undefined : 'No handler')),
         separator: true,
       },
       {
         key: 'show-cluster',
         label: 'Show this row\'s cluster',
-        disabledReason: 'Needs row.cluster_id in DTO — Phase ε',
+        onClick:
+          clusterId && props.onRowShowCluster
+            ? () => props.onRowShowCluster!(clusterId)
+            : undefined,
+        disabledReason: noClusterReason ?? (props.onRowShowCluster ? undefined : 'No handler'),
       },
       {
         key: 'open',

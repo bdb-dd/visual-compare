@@ -657,6 +657,21 @@ export function SessionDetailPage(): JSX.Element {
                       onRowAccept={handleAcceptShortcut}
                       onRowQuickAccept={(r) => void handleQuickAcceptShortcut(r)}
                       onRowClear={(r) => void handleClearShortcut(r)}
+                      onRowAcceptCluster={(clusterId) => {
+                        // Jump to Clusters mode with the cluster focused
+                        // and immediately tick the accept-dialog trigger.
+                        const sp = new URLSearchParams(searchParams);
+                        sp.delete('mode'); // clusters is canonical default
+                        sp.set('focus', clusterId);
+                        setSearchParams(sp, { replace: true });
+                        setClusterAcceptTrigger((v) => v + 1);
+                      }}
+                      onRowShowCluster={(clusterId) => {
+                        const sp = new URLSearchParams(searchParams);
+                        sp.delete('mode');
+                        sp.set('focus', clusterId);
+                        setSearchParams(sp, { replace: true });
+                      }}
                     />
                   ) : null
                 }

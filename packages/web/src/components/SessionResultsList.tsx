@@ -335,6 +335,14 @@ export function SessionResultsList({
                         <span className="changed-pct">{fmtPct(r.pixel?.changed_pct)}</span>
                       </>
                     )}
+                    {r.acceptance_rule_id && (
+                      <span
+                        className="provenance-badge"
+                        title={`Accepted via ${r.acceptance_rule_scope ?? 'rule'} fan-out (rule id ${r.acceptance_rule_id.slice(0, 8)}…)`}
+                      >
+                        via {r.acceptance_rule_scope ?? 'rule'}
+                      </span>
+                    )}
                   </div>
                 </div>
               </button>
