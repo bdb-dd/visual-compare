@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type JSX } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ImageWithBoxes } from '../components/ImageWithBoxes.js';
+import { RecapturePairButton } from '../components/RecapturePairButton.js';
 import type {
   ClusterDetailDto,
   ClusterMemberDto,
@@ -248,6 +249,12 @@ export function ClusterDetailPage(): JSX.Element {
               </button>
               <span className="member-row__url">{m.url_a}</span>
               <span className="member-row__vp">{m.viewport_name}</span>
+              <RecapturePairButton
+                sessionId={id}
+                pairId={m.url_pair_id}
+                compact
+                className="member-row__recapture"
+              />
               <Link
                 to={`/comparisons/${m.comparison_id}`}
                 className="member-row__detail"

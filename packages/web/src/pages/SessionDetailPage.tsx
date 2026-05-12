@@ -415,6 +415,8 @@ export function SessionDetailPage(): JSX.Element {
 
           {sidebarTab === 'review' ? (
             <ReviewSidebar
+              sessionId={session.id}
+              onRecaptured={() => void refreshResults()}
               results={results}
               targetLevel={config.default_equivalence_level}
               filter={resultsFilter}
@@ -696,6 +698,8 @@ interface ReviewSidebarProps {
   onAcceptShortcut?: (row: SessionResultRow | null) => void;
   onQuickAcceptShortcut?: (row: SessionResultRow | null) => void;
   onClearShortcut?: (row: SessionResultRow | null) => void;
+  sessionId: string;
+  onRecaptured: () => void;
 }
 
 function ReviewSidebar({
@@ -708,6 +712,8 @@ function ReviewSidebar({
   onAcceptShortcut,
   onQuickAcceptShortcut,
   onClearShortcut,
+  sessionId,
+  onRecaptured,
 }: ReviewSidebarProps): JSX.Element {
   if (!results) {
     return <p className="muted" style={{ padding: 12 }}>Loading results…</p>;
@@ -732,6 +738,8 @@ function ReviewSidebar({
       onAcceptShortcut={onAcceptShortcut}
       onQuickAcceptShortcut={onQuickAcceptShortcut}
       onClearShortcut={onClearShortcut}
+      sessionId={sessionId}
+      onRecaptured={onRecaptured}
     />
   );
 }
