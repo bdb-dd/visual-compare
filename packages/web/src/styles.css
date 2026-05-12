@@ -634,6 +634,341 @@ ul.diff-list li {
   flex-direction: column;
   gap: 8px;
 }
+
+/* Phase β: mode tabs (Clusters / Rows / Anomalies) sit between the
+   project header and the per-mode body. Pill-style, big enough to be
+   the primary navigation gesture on the page. */
+.mode-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 4px;
+  background: #0e1014;
+  border: 1px solid #23262d;
+  border-radius: 8px;
+  width: fit-content;
+}
+.mode-tab {
+  background: transparent;
+  color: #aab1bd;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 6px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mode-tab:hover { color: #e5e7eb; }
+.mode-tab--active {
+  color: #d4e1ff;
+  background: #1f3a8a;
+  border-color: #1f3a8a;
+}
+
+.mode-body--full {
+  max-width: 1280px;
+}
+
+/* Phase δ: shared filter strip below the mode tabs. Four zones —
+   shared Status, mode-specific extras (Level, Region+Change, Outcome).
+   Each zone has its own label and chip row. */
+.filter-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  background: #0e1014;
+  border: 1px solid #23262d;
+  border-radius: 8px;
+}
+.filter-strip__zone {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.filter-strip__zone-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6c7280;
+}
+.filter-strip__zone-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.filter-chip {
+  background: #15171c;
+  color: #aab1bd;
+  border: 1px solid #23262d;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.filter-chip:hover:not([disabled]) { color: #e5e7eb; }
+.filter-chip[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.filter-chip--active {
+  background: #1f3a8a;
+  color: #d4e1ff;
+  border-color: #1f3a8a;
+}
+.filter-chip__count {
+  margin-left: 4px;
+  color: #6c7280;
+  font-variant-numeric: tabular-nums;
+}
+.filter-chip--active .filter-chip__count { color: #b9d0ff; }
+
+/* Phase ζ: cheat-sheet overlay (toggled by ?). */
+.shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 9, 12, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.shortcuts-overlay__panel {
+  width: min(680px, 90vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  background: #15171c;
+  border: 1px solid #2a2e36;
+  border-radius: 8px;
+  padding: 20px 24px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
+}
+.shortcuts-overlay__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.shortcuts-overlay__header h3 { margin: 0; font-size: 16px; }
+.shortcuts-overlay__close {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #aab1bd;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.shortcuts-overlay__close:hover { color: #e5e7eb; border-color: #353945; }
+.shortcuts-overlay__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.shortcuts-overlay__group h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #aab1bd;
+}
+.shortcuts-overlay__group dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 6px 16px;
+}
+.shortcuts-overlay__row {
+  display: contents;
+}
+.shortcuts-overlay__row dt {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.shortcuts-overlay__row dd {
+  margin: 0;
+  font-size: 13px;
+}
+.shortcuts-overlay__sep {
+  font-size: 11px;
+  color: #6c7280;
+  margin: 0 2px;
+}
+.shortcuts-overlay__footer {
+  margin-top: 16px;
+  font-size: 12px;
+  color: #aab1bd;
+  text-align: right;
+}
+kbd {
+  background: #2a2e36;
+  border: 1px solid #353945;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  color: #e5e7eb;
+  min-width: 16px;
+  display: inline-block;
+  text-align: center;
+}
+
+/* Phase ε: small badge on rows/comparisons whose acceptance came from a
+   cluster or category rule fan-out (acceptance.acceptance_rule_id !== null). */
+.provenance-badge {
+  display: inline-block;
+  background: #14532d;
+  color: #b3f5c5;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+/* Phase γ: split layout — list (left) + detail pane (right) when
+   something is focused in Clusters or Anomalies mode. */
+.mode-body--split {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(480px, 1.5fr);
+  gap: 12px;
+  align-items: start;
+}
+.mode-body__list { min-width: 0; }
+.mode-body__pane { min-width: 0; position: sticky; top: 12px; }
+
+/* Detail pane chrome — shared across cluster + comparison detail renders. */
+.detail-pane {
+  background: #15171c;
+  border: 1px solid #23262d;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 200px);
+  overflow: hidden;
+}
+.detail-pane__chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid #23262d;
+}
+.detail-pane__kind {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #aab1bd;
+}
+.detail-pane__chrome-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.detail-pane__close {
+  background: transparent;
+  color: #aab1bd;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+.detail-pane__close:hover { color: #e5e7eb; border-color: #353945; }
+.detail-pane__body {
+  padding: 12px;
+  overflow-y: auto;
+}
+.detail-pane__empty {
+  padding: 32px 12px;
+  text-align: center;
+}
+.detail-pane__empty p {
+  margin: 6px 0;
+  font-size: 13px;
+}
+
+/* Phase γ: Actions ▾ dropdown in the detail pane chrome. */
+.actions-menu {
+  position: relative;
+  display: inline-block;
+}
+.actions-menu__toggle {
+  background: #2a2e36;
+  color: #e5e7eb;
+  border: 1px solid #353945;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.actions-menu__toggle:hover:not([disabled]) {
+  background: #353945;
+  border-color: #404552;
+}
+.actions-menu__toggle[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.actions-menu__list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 260px;
+  background: #15171c;
+  border: 1px solid #2a2e36;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  list-style: none;
+  margin: 0;
+  z-index: 30;
+}
+.actions-menu__item {
+  display: block;
+  width: 100%;
+  background: transparent;
+  color: #e5e7eb;
+  border: none;
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  border-radius: 4px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.actions-menu__item:hover:not([disabled]) { background: #1f3a8a; color: #d4e1ff; }
+.actions-menu__item[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  color: #aab1bd;
+}
+.actions-menu__separator {
+  height: 1px;
+  background: #23262d;
+  margin: 4px 0;
+  list-style: none;
+}
+
+/* Focus highlight on the list-side card so it's clear which row's
+   detail is in the pane. */
+.cluster-row--focused {
+  outline: 1px solid #1f3a8a;
+  background: #1a1d23;
+}
+.anomaly-row--focused {
+  outline: 1px solid #1f3a8a;
+}
 .project-header-top {
   display: flex;
   align-items: center;
@@ -1171,6 +1506,17 @@ ul.diff-list li {
   cursor: pointer;
 }
 .clusters-page__refresh:disabled { opacity: 0.6; cursor: progress; }
+
+/* Phase α: totals + refresh moved out of the page header and into a
+   sub-bar inside ClustersTab so the page header can become a shell. */
+.clusters-tab__summary-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin: 0 0 4px;
+}
+.clusters-tab__summary-bar .clusters-page__summary { margin: 0; }
 
 .clusters-page__filters {
   display: flex;

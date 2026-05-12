@@ -510,6 +510,24 @@ export interface SessionResultRow {
    * `both_present` for legacy rows captured before this field existed.
    */
   pair_outcome: PairOutcome;
+  /**
+   * Cluster-rule provenance (Phase ε). Set when the row's acceptance was
+   * created by a cluster or category rule fan-out; NULL for manually-
+   * created or no acceptances. Read directly from `acceptances.acceptance_rule_id`.
+   */
+  acceptance_rule_id: string | null;
+  /** Convenience: scope of the rule above. NULL when acceptance_rule_id is NULL. */
+  acceptance_rule_scope: AcceptanceRuleScope | null;
+  /**
+   * Primary cluster this row participates in (Phase ε). When the row's
+   * comparison has at least one v1-signature difference, we surface the
+   * cluster with the highest pair_count (most reviewer leverage). NULL
+   * when the row has no v1 clusters — typical for imagick-only diffs
+   * or v2-era LM responses that pre-date the v3 prompt.
+   */
+  cluster_id: string | null;
+  /** Review state of the cluster above. NULL when cluster_id is NULL. */
+  cluster_review_state: ClusterReviewState | null;
 }
 
 export interface EvaluationCacheHits {

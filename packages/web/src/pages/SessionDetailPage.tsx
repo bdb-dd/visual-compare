@@ -1,11 +1,21 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
-import { ComparisonDetail } from '../components/ComparisonDetail.js';
+import { ActionsMenu } from '../components/ActionsMenu.js';
+import { AnomaliesTab } from '../components/AnomaliesTab.js';
+import { ClustersTab } from '../components/ClustersTab.js';
+import { DetailPane } from '../components/DetailPane.js';
+import { FilterStrip } from '../components/FilterStrip.js';
+import { ShortcutsOverlay } from '../components/ShortcutsOverlay.js';
+import {
+  applyFilterStateToParams,
+  parseFilterState,
+  type FilterState,
+} from '../api/filterState.js';
 import { LmStatusPill } from '../components/LmStatusPill.js';
 import { PlanAndEvaluate } from '../components/PlanAndEvaluate.js';
 import { SessionConfigPanel } from '../components/SessionConfigPanel.js';
-import { SessionResultsList, type ResultsFilter } from '../components/SessionResultsList.js';
+import { SessionResultsList } from '../components/SessionResultsList.js';
 import { UrlPairsEditor } from '../components/UrlPairsEditor.js';
 import type {
   AcceptanceRow,
@@ -24,9 +34,59 @@ import type { EquivalenceLevelDef } from '@visual-compare/api/constants/equivale
 
 type SidebarTab = 'review' | 'config';
 type DetailTab = 'comparison' | 'history' | 'pairs';
+type Mode = 'clusters' | 'rows' | 'anomalies';
+
+const MODE_VALUES: readonly Mode[] = ['clusters', 'rows', 'anomalies'];
+
+function parseMode(raw: string | null): Mode {
+  return (MODE_VALUES as readonly string[]).includes(raw ?? '')
+    ? (raw as Mode)
+    : 'clusters'; // funnel default per implementation plan §β
+}
 
 export function SessionDetailPage(): JSX.Element {
   const { id = '' } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const mode = parseMode(searchParams.get('mode'));
+  const setMode = useCallback(
+    (next: Mode) => {
+      const sp = new URLSearchParams(searchParams);
+      if (next === 'clusters') sp.delete('mode'); // canonical default → clean URL
+      else sp.set('mode', next);
+      // Drop focus when switching modes — focus identifiers are mode-specific.
+      sp.delete('focus');
+      setSearchParams(sp, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  // Cluster focus is URL-driven so deep links + back/forward work. Only
+  // meaningful in clusters/anomalies modes; in rows mode the existing
+  // selectedRowKey state drives the comparison selection (and ignores
+  // ?focus= for now — δ may harmonise).
+  const focusParam = searchParams.get('focus');
+  const focusedClusterId =
+    (mode === 'clusters' || mode === 'anomalies') && focusParam ? focusParam : null;
+  const setFocusedClusterId = useCallback(
+    (id: string | null) => {
+      const sp = new URLSearchParams(searchParams);
+      if (id === null) sp.delete('focus');
+      else sp.set('focus', id);
+      setSearchParams(sp, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  // Phase δ: filter state is URL-driven, shared across the three modes.
+  const filterState = parseFilterState(searchParams);
+  const setFilterState = useCallback(
+    (next: FilterState) => {
+      const sp = new URLSearchParams(searchParams);
+      applyFilterStateToParams(next, sp);
+      setSearchParams(sp, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
   const [session, setSession] = useState<SessionRow | null>(null);
   const [config, setConfig] = useState<SessionConfig | null>(null);
   const [pairs, setPairs] = useState<UrlPairRow[]>([]);
@@ -44,8 +104,11 @@ export function SessionDetailPage(): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('review');
   const [detailTab, setDetailTab] = useState<DetailTab>('comparison');
+  /** Phase ζ: cheat-sheet overlay toggle, opened via `?` key. */
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
-  const [resultsFilter, setResultsFilter] = useState<ResultsFilter>('needs_review');
+  // Phase δ: resultsFilter is no longer local — the shared filterState
+  // above drives row filtering too.
   const [selectedRow, setSelectedRow] = useState<SessionResultRow | null>(null);
   /**
    * Whether the next evaluation (and the current /results plan) should
@@ -61,6 +124,8 @@ export function SessionDetailPage(): JSX.Element {
    * remember to reset.
    */
   const [acceptDialogTrigger, setAcceptDialogTrigger] = useState(0);
+  const [clusterAcceptTrigger, setClusterAcceptTrigger] = useState(0);
+  const [clusterRejectTrigger, setClusterRejectTrigger] = useState(0);
   const [lastUsedLabel, setLastUsedLabel] = useState<string | null>(null);
 
   const refreshResults = useCallback(async () => {
@@ -261,6 +326,57 @@ export function SessionDetailPage(): JSX.Element {
     if (results) cursorRef.current = new Date().toISOString();
   }, [results?.session_id]);
 
+  // Phase ζ: page-level keyboard shortcuts.
+  // - 1/2/3 switch mode (works regardless of focus).
+  // - c in Rows mode jumps to the selected row's primary cluster.
+  // - ? toggles the shortcuts cheat-sheet overlay.
+  // - Escape closes the overlay when open.
+  // SessionResultsList still owns j/k/a/A/r/Escape inside Rows mode;
+  // those don't overlap with the global keys handled here.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Ignore typing into form controls / contenteditable.
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (target.isContentEditable) return;
+      }
+      // Always handle Escape closing the overlay so it works even with
+      // a modifier (rare but harmless).
+      if (e.key === 'Escape' && showShortcuts) {
+        e.preventDefault();
+        setShowShortcuts(false);
+        return;
+      }
+      // Don't compete with browser/system modifier shortcuts.
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === '?') {
+        e.preventDefault();
+        setShowShortcuts((v) => !v);
+        return;
+      }
+      if (e.key === '1') { e.preventDefault(); setMode('clusters'); return; }
+      if (e.key === '2') { e.preventDefault(); setMode('rows'); return; }
+      if (e.key === '3') { e.preventDefault(); setMode('anomalies'); return; }
+      if (e.key === 'c' && !e.shiftKey) {
+        // Row → cluster jump. Only meaningful in Rows mode with a
+        // selected row that has a cluster.
+        if (mode !== 'rows') return;
+        const clusterId = selectedRow?.cluster_id ?? null;
+        if (!clusterId) return;
+        e.preventDefault();
+        const sp = new URLSearchParams(searchParams);
+        sp.delete('mode');
+        sp.set('focus', clusterId);
+        setSearchParams(sp, { replace: true });
+        return;
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [showShortcuts, mode, selectedRow, setMode, searchParams, setSearchParams]);
+
   const handleEvaluationComplete = () => {
     void refreshResults();
     void refreshEvaluations();
@@ -370,9 +486,6 @@ export function SessionDetailPage(): JSX.Element {
             {session.archived_at && <span className="muted"> (archived)</span>}
           </p>
           <div className="project-header-actions">
-            <Link to={`/sessions/${session.id}/clusters`} className="btn secondary">
-              Cluster review
-            </Link>
             <button className="btn secondary" onClick={() => void handleInvalidateAll()} disabled={busy}>
               Recapture all
             </button>
@@ -403,6 +516,93 @@ export function SessionDetailPage(): JSX.Element {
 
       {error && <div className="error">{error}</div>}
 
+      <div className="mode-tabs" role="tablist" aria-label="Review mode">
+        {MODE_VALUES.map((m) => (
+          <button
+            key={m}
+            type="button"
+            role="tab"
+            aria-selected={mode === m}
+            className={`mode-tab${mode === m ? ' mode-tab--active' : ''}`}
+            onClick={() => setMode(m)}
+          >
+            {m === 'clusters' ? 'Clusters' : m === 'rows' ? 'Rows' : 'Anomalies'}
+          </button>
+        ))}
+      </div>
+
+      <FilterStrip
+        mode={mode}
+        state={filterState}
+        onChange={setFilterState}
+      />
+
+
+      {mode === 'clusters' && (
+        <div className={`mode-body ${focusedClusterId ? 'mode-body--split' : 'mode-body--full'}`}>
+          <div className="mode-body__list">
+            <ClustersTab
+              sessionId={session.id}
+              onClusterFocus={setFocusedClusterId}
+              focusedClusterId={focusedClusterId}
+            />
+          </div>
+          {focusedClusterId && (
+            <div className="mode-body__pane">
+              <DetailPane
+                sessionId={session.id}
+                focused={{ kind: 'cluster', clusterId: focusedClusterId }}
+                onClose={() => setFocusedClusterId(null)}
+                onClusterChanged={() => void refreshResults()}
+                clusterAcceptDialogTrigger={clusterAcceptTrigger}
+                clusterRejectDialogTrigger={clusterRejectTrigger}
+                actionsSlot={
+                  <ActionsMenu
+                    sessionId={session.id}
+                    focused={{ kind: 'cluster', clusterId: focusedClusterId }}
+                    onClusterAccept={() => setClusterAcceptTrigger((v) => v + 1)}
+                    onClusterReject={() => setClusterRejectTrigger((v) => v + 1)}
+                  />
+                }
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {mode === 'anomalies' && (
+        <div className={`mode-body ${focusedClusterId ? 'mode-body--split' : 'mode-body--full'}`}>
+          <div className="mode-body__list">
+            <AnomaliesTab
+              sessionId={session.id}
+              onClusterFocus={setFocusedClusterId}
+              focusedClusterId={focusedClusterId}
+            />
+          </div>
+          {focusedClusterId && (
+            <div className="mode-body__pane">
+              <DetailPane
+                sessionId={session.id}
+                focused={{ kind: 'cluster', clusterId: focusedClusterId }}
+                onClose={() => setFocusedClusterId(null)}
+                onClusterChanged={() => void refreshResults()}
+                clusterAcceptDialogTrigger={clusterAcceptTrigger}
+                clusterRejectDialogTrigger={clusterRejectTrigger}
+                actionsSlot={
+                  <ActionsMenu
+                    sessionId={session.id}
+                    focused={{ kind: 'cluster', clusterId: focusedClusterId }}
+                    onClusterAccept={() => setClusterAcceptTrigger((v) => v + 1)}
+                    onClusterReject={() => setClusterRejectTrigger((v) => v + 1)}
+                  />
+                }
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {mode === 'rows' && (
       <div className="project-body">
         <aside className="project-sidebar">
           <div className="tab-bar" role="tablist" aria-label="Sidebar view">
@@ -432,8 +632,8 @@ export function SessionDetailPage(): JSX.Element {
               onRecaptured={() => void refreshResults()}
               results={results}
               targetLevel={config.default_equivalence_level}
-              filter={resultsFilter}
-              onFilterChange={setResultsFilter}
+              filter={filterState}
+              onFilterChange={setFilterState}
               selectedKey={selectedRowKey}
               onSelect={(key, row) => {
                 setSelectedRowKey(key);
@@ -487,19 +687,26 @@ export function SessionDetailPage(): JSX.Element {
             </button>
           </div>
 
-          {detailTab === 'comparison' &&
-            (selectedRow?.comparison_id ? (
-              <ComparisonDetail
-                id={selectedRow.comparison_id}
-                row={selectedRow}
-                targetLevel={config.default_equivalence_level}
+          {detailTab === 'comparison' && (
+            selectedRow && !selectedRow.comparison_id ? (
+              <PendingRowDetail row={selectedRow} />
+            ) : (
+              <DetailPane
                 sessionId={session.id}
+                focused={
+                  selectedRow?.comparison_id
+                    ? { kind: 'row', comparisonId: selectedRow.comparison_id, row: selectedRow }
+                    : null
+                }
+                targetLevel={config.default_equivalence_level}
                 acceptance={
-                  acceptances.find(
-                    (a) =>
-                      a.url_pair_id === selectedRow.url_pair_id &&
-                      a.viewport_name === selectedRow.viewport_name,
-                  ) ?? null
+                  selectedRow
+                    ? acceptances.find(
+                        (a) =>
+                          a.url_pair_id === selectedRow.url_pair_id &&
+                          a.viewport_name === selectedRow.viewport_name,
+                      ) ?? null
+                    : null
                 }
                 openAcceptDialogTrigger={acceptDialogTrigger}
                 onAcceptanceChanged={(label) => {
@@ -507,16 +714,39 @@ export function SessionDetailPage(): JSX.Element {
                   void refreshAcceptances();
                   void refreshResults();
                 }}
+                actionsSlot={
+                  selectedRow?.comparison_id ? (
+                    <ActionsMenu
+                      sessionId={session.id}
+                      focused={{
+                        kind: 'row',
+                        comparisonId: selectedRow.comparison_id,
+                        row: selectedRow,
+                      }}
+                      onRowAccept={handleAcceptShortcut}
+                      onRowQuickAccept={(r) => void handleQuickAcceptShortcut(r)}
+                      onRowClear={(r) => void handleClearShortcut(r)}
+                      onRowAcceptCluster={(clusterId) => {
+                        // Jump to Clusters mode with the cluster focused
+                        // and immediately tick the accept-dialog trigger.
+                        const sp = new URLSearchParams(searchParams);
+                        sp.delete('mode'); // clusters is canonical default
+                        sp.set('focus', clusterId);
+                        setSearchParams(sp, { replace: true });
+                        setClusterAcceptTrigger((v) => v + 1);
+                      }}
+                      onRowShowCluster={(clusterId) => {
+                        const sp = new URLSearchParams(searchParams);
+                        sp.delete('mode');
+                        sp.set('focus', clusterId);
+                        setSearchParams(sp, { replace: true });
+                      }}
+                    />
+                  ) : null
+                }
               />
-            ) : selectedRow ? (
-              <PendingRowDetail row={selectedRow} />
-            ) : (
-              <div className="card">
-                <p className="muted" style={{ margin: 0 }}>
-                  Select a result on the left.
-                </p>
-              </div>
-            ))}
+            )
+          )}
 
           {detailTab === 'history' && (
             <HistoryTab
@@ -542,7 +772,9 @@ export function SessionDetailPage(): JSX.Element {
           )}
         </section>
       </div>
+      )}
 
+      {showShortcuts && <ShortcutsOverlay onClose={() => setShowShortcuts(false)} />}
     </main>
   );
 }
@@ -704,8 +936,8 @@ function parseViewports(optionsJson: string): string {
 interface ReviewSidebarProps {
   results: SessionResultsDto | null;
   targetLevel: EquivalenceLevelId;
-  filter: ResultsFilter;
-  onFilterChange: (next: ResultsFilter) => void;
+  filter: FilterState;
+  onFilterChange: (next: FilterState) => void;
   selectedKey: string | null;
   onSelect: (key: string | null, row: SessionResultRow | null) => void;
   onAcceptShortcut?: (row: SessionResultRow | null) => void;
