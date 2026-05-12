@@ -392,6 +392,14 @@ function AcceptanceBar({
             {acceptance.accept_any === 1 && (
               <span className="muted">· any future diff</span>
             )}
+            {acceptance.acceptance_rule_id && (
+              <span
+                className="provenance-badge"
+                title={`This acceptance was created by a ${row?.acceptance_rule_scope ?? 'cluster'} rule fan-out. Clearing it locally won't revoke the rule — use the cluster's Reject in Clusters mode.`}
+              >
+                via {row?.acceptance_rule_scope ?? 'rule'}
+              </span>
+            )}
           </>
         )}
         <div className="acceptance-actions">
