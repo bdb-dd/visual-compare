@@ -155,6 +155,12 @@ export interface StartComparisonRunForPairsInput {
   captureRunId: string;
   options: ComparisonRunOptionsParsed;
   pairs: ExplicitComparisonPair[];
+  /**
+   * Optional signal for cooperative cancellation. The limit-loop checks
+   * `aborted` before each new comparison; in-flight ImageMagick / LM work
+   * runs to completion.
+   */
+  signal?: AbortSignal;
 }
 
 export function startComparisonRun(
@@ -204,7 +210,7 @@ export function startComparisonRunForPairs(
   input: StartComparisonRunForPairsInput,
 ): StartComparisonRunResult {
   const { db, queue } = deps;
-  const { sessionId, captureRunId, options, pairs } = input;
+  const { sessionId, captureRunId, options, pairs, signal } = input;
   const imagick = deps.imagick ?? realImagick;
 
   if (pairs.length === 0) {
@@ -273,6 +279,17 @@ export function startComparisonRunForPairs(
     await Promise.all(
       comparisons.map((c) =>
         limit(async () => {
+          // Cooperative cancel: skip pending comparisons once the evaluation
+          // is aborted. The currently-running ones finish — ImageMagick
+          // subprocesses don't take an AbortSignal in this codepath.
+          if (signal?.aborted) {
+            db.prepare(
+              `UPDATE comparisons SET status = 'error', completed_at = ?
+                 WHERE id = ? AND status = 'pending'`,
+            ).run(new Date().toISOString(), c.id);
+            ctx.incrementProgress();
+            return;
+          }
           await runOneComparison(
             deps,
             imagick,
@@ -771,7 +788,16 @@ async function runOneComparison(
                 completedAt,
               );
             }
-            const userInstructionId = userInstructionTemplateId(lmInvocationReason);
+            const userInstructionId = userInstructionTemplateId(lmInvocationReason, {
+              // The cache key must reflect the exact payload shape the LM
+              // saw, so a toggle of LM_STUDIO_INCLUDE_DIFF_IMAGE forces a
+              // re-run rather than reusing a verdict the model formed
+              // against a different image set. Defaulting to `true` here
+              // matches `userInstructionTemplateId`'s own default and
+              // preserves backward compatibility with cached rows + test
+              // stubs that don't set `includeDiffImage`.
+              includeDiffImage: deps.lm?.config.includeDiffImage ?? true,
+            });
             db.prepare(
               `INSERT INTO lm_verdict_cache
                  (capture_a_sha, capture_b_sha, prompt_id, user_instruction_id, model_id,

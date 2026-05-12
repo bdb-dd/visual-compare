@@ -271,19 +271,21 @@ export function buildPromptUserInstruction(input: BuildPromptInput): string {
 }
 
 /**
- * Stable identifier for the user instruction *template* used at LM
- * invocation time. Computed by rendering `buildPromptUserInstruction` with
- * sentinel inputs (no pixel metrics, placeholder level) and hashing the
- * result. Per-call values like changedPct and SSIM are deliberately
- * stripped so the id depends only on the template wording, not on the
- * specific row being judged.
+ * Stable identifier for the user instruction *template* + image payload
+ * shape used at LM invocation time. Computed by rendering
+ * `buildPromptUserInstruction` with sentinel inputs (no pixel metrics,
+ * placeholder level), appending a payload-shape marker, and hashing.
+ * Per-call values like changedPct and SSIM are deliberately stripped so
+ * the id depends only on what's stable across runs.
  *
- * Included in the LM verdict cache PK so wording changes auto-invalidate
- * cached verdicts without bumping PIPELINE_VERSION (which would also nuke
- * the pixel cache).
+ * Included in the LM verdict cache PK so wording changes — or a flip
+ * between "A+B+diff" and "A+B only" payload shapes — auto-invalidate
+ * cached verdicts without bumping PIPELINE_VERSION (which would also
+ * nuke the pixel cache).
  */
 export function userInstructionTemplateId(
   invocationReason: 'ambiguous_pixel_result' | 'target_level_failure' | 'manual_retry',
+  payloadShape: { includeDiffImage: boolean } = { includeDiffImage: true },
 ): string {
   const text = buildPromptUserInstruction({
     level: 'tolerant' as EquivalenceLevelId,
@@ -291,7 +293,8 @@ export function userInstructionTemplateId(
     changedPixelPercentage: null,
     ssim: null,
   });
-  return createHash('sha256').update(text).digest('hex');
+  const shapeTag = payloadShape.includeDiffImage ? 'AB+diff' : 'AB-only';
+  return createHash('sha256').update(`${text}\n[payload:${shapeTag}]`).digest('hex');
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +320,15 @@ export interface LmConfig {
   autoLoad: boolean;
   /** Seconds the cached preflight result remains valid. */
   preflightCacheSeconds: number;
+  /**
+   * When true, include the red-highlight diff PNG in the chat messages
+   * alongside A and B. When false, send only A and B. Default false based
+   * on observed failure mode: vision LMs anchor on the diff visualisation
+   * ("the differences are red, timestamps + breadcrumbs") instead of
+   * reasoning over A↔B content. Toggle for A/B testing via
+   * LM_STUDIO_INCLUDE_DIFF_IMAGE.
+   */
+  includeDiffImage: boolean;
 }
 
 export function readLmConfigFromEnv(env: NodeJS.ProcessEnv = process.env): LmConfig {
@@ -338,6 +350,7 @@ export function readLmConfigFromEnv(env: NodeJS.ProcessEnv = process.env): LmCon
     preflightCacheSeconds: env.LM_STUDIO_PREFLIGHT_CACHE_SECONDS
       ? Number(env.LM_STUDIO_PREFLIGHT_CACHE_SECONDS)
       : 30,
+    includeDiffImage: flag('LM_STUDIO_INCLUDE_DIFF_IMAGE', false),
   };
 }
 
@@ -610,15 +623,26 @@ async function runAnalyze(args: AnalyzeArgs, client: OpenAI): Promise<AnalyzeOut
   const promptVersion = args.prompt?.id ?? config.promptVersion;
   const model = config.model;
 
+  // Conditionally load the diff PNG so we can A/B-test whether including
+  // it improves or degrades VLM reasoning. When excluded, the model gets
+  // A + B only and must reason about content differences directly,
+  // rather than describing "what's red" in the highlight image.
   let aDataUrl: string;
   let bDataUrl: string;
-  let diffDataUrl: string;
+  let diffDataUrl: string | null = null;
   try {
-    [aDataUrl, bDataUrl, diffDataUrl] = await Promise.all([
-      pngDataUrl(args.aPath),
-      pngDataUrl(args.bPath),
-      pngDataUrl(args.diffPath),
-    ]);
+    if (config.includeDiffImage) {
+      [aDataUrl, bDataUrl, diffDataUrl] = await Promise.all([
+        pngDataUrl(args.aPath),
+        pngDataUrl(args.bPath),
+        pngDataUrl(args.diffPath),
+      ]);
+    } else {
+      [aDataUrl, bDataUrl] = await Promise.all([
+        pngDataUrl(args.aPath),
+        pngDataUrl(args.bPath),
+      ]);
+    }
   } catch (err) {
     return {
       parsed: null,
@@ -637,20 +661,29 @@ async function runAnalyze(args: AnalyzeArgs, client: OpenAI): Promise<AnalyzeOut
     ssim: args.ssim,
   });
 
+  // Build the user content array conditionally. The diff image and its
+  // label are appended only when includeDiffImage is on. Keeping the
+  // text-then-image pairing makes the structure stable for cache keying
+  // (userInstructionTemplateId is independent of the image array).
+  type UserContent =
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } };
+  const userContent: UserContent[] = [
+    { type: 'text', text: user },
+    { type: 'text', text: 'Image A (first page):' },
+    { type: 'image_url', image_url: { url: aDataUrl } },
+    { type: 'text', text: 'Image B (second page):' },
+    { type: 'image_url', image_url: { url: bDataUrl } },
+  ];
+  if (diffDataUrl) {
+    userContent.push(
+      { type: 'text', text: 'Pixel diff (changed pixels are red):' },
+      { type: 'image_url', image_url: { url: diffDataUrl } },
+    );
+  }
   const messages = [
     { role: 'system' as const, content: system },
-    {
-      role: 'user' as const,
-      content: [
-        { type: 'text' as const, text: user },
-        { type: 'text' as const, text: 'Image A (first page):' },
-        { type: 'image_url' as const, image_url: { url: aDataUrl } },
-        { type: 'text' as const, text: 'Image B (second page):' },
-        { type: 'image_url' as const, image_url: { url: bDataUrl } },
-        { type: 'text' as const, text: 'Pixel diff (changed pixels are red):' },
-        { type: 'image_url' as const, image_url: { url: diffDataUrl } },
-      ],
-    },
+    { role: 'user' as const, content: userContent },
   ];
 
   // Path 1: strict JSON schema via response_format.

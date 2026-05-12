@@ -1,13 +1,13 @@
 import { Router } from 'express';
 import type { Db } from '../db/client.js';
-import { getEvaluation } from '../services/evaluator.js';
+import { getEvaluation, type Evaluator } from '../services/evaluator.js';
 import type { EvaluationProgress } from '../types.js';
 
 /**
  * Single-evaluation detail endpoint. Per-session listing and creation
  * endpoints live on the sessions router so they can share the path prefix.
  */
-export function evaluationsRouter(db: Db): Router {
+export function evaluationsRouter(db: Db, evaluator: Evaluator): Router {
   const router = Router();
 
   router.get('/:id', (req, res) => {
@@ -22,6 +22,38 @@ export function evaluationsRouter(db: Db): Router {
       return;
     }
     res.json({ evaluation: parseEvaluationRow(db, row) });
+  });
+
+  /**
+   * Cooperative cancel. Aborts the in-flight orchestrator so the capture /
+   * comparison loops stop dispatching new work; already-running tasks finish
+   * naturally. Returns the updated evaluation row.
+   *
+   * - 404 if the evaluation is unknown.
+   * - 409 if the evaluation is already terminal (complete, error, cancelled).
+   */
+  router.post('/:id/cancel', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    const row = getEvaluation(db, id);
+    if (!row) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    if (row.status !== 'pending' && row.status !== 'running') {
+      res.status(409).json({
+        error: 'not_cancellable',
+        message: `evaluation is ${row.status}`,
+        evaluation: parseEvaluationRow(db, row),
+      });
+      return;
+    }
+    evaluator.cancel(id);
+    const refreshed = getEvaluation(db, id) ?? row;
+    res.json({ evaluation: parseEvaluationRow(db, refreshed) });
   });
 
   return router;

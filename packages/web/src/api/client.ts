@@ -116,6 +116,10 @@ export const api = {
     request<{ evaluations: EvaluationStatusDto[] }>(`/api/sessions/${id}/evaluations`),
   getEvaluation: (id: string) =>
     request<{ evaluation: EvaluationStatusDto }>(`/api/evaluations/${id}`),
+  cancelEvaluation: (id: string) =>
+    request<{ evaluation: EvaluationStatusDto }>(`/api/evaluations/${id}/cancel`, {
+      method: 'POST',
+    }),
 
   invalidateCaptures: (id: string, body: { pair_ids?: string[]; side?: 'a' | 'b' }) =>
     request<{ deleted_count: number; invalidated_urls: string[]; unknown_pair_ids: string[] }>(
