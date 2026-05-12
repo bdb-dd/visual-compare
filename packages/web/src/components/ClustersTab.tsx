@@ -52,9 +52,19 @@ function categoryFor(cluster: ClusterSummaryDto): CategoryKey {
 
 export interface ClustersTabProps {
   sessionId: string;
+  /**
+   * Called when the reviewer clicks a cluster card. When omitted, the
+   * card renders as a `<Link>` to the legacy standalone cluster page —
+   * preserves behaviour for any caller still using the thin-shell
+   * `ClustersPage`. The unified surface (Phase γ+) passes this callback
+   * to open the cluster in the detail pane instead of navigating away.
+   */
+  onClusterFocus?: (clusterId: string) => void;
+  /** Cluster id currently highlighted by the parent (Phase γ+ focus state). */
+  focusedClusterId?: string | null;
 }
 
-export function ClustersTab({ sessionId }: ClustersTabProps): JSX.Element {
+export function ClustersTab({ sessionId, onClusterFocus, focusedClusterId }: ClustersTabProps): JSX.Element {
   const [data, setData] = useState<ClusterListDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stateFilter, setStateFilter] = useState<ClusterReviewState | 'all'>('open');
@@ -151,6 +161,8 @@ export function ClustersTab({ sessionId }: ClustersTabProps): JSX.Element {
                 clusters={grouped[c.key]}
                 sessionId={sessionId}
                 onBulkAccepted={() => void load()}
+                onClusterFocus={onClusterFocus}
+                focusedClusterId={focusedClusterId ?? null}
               />
             )
           ))}
@@ -160,6 +172,8 @@ export function ClustersTab({ sessionId }: ClustersTabProps): JSX.Element {
               clusters={grouped.anomalies}
               sessionId={sessionId}
               onBulkAccepted={() => void load()}
+              onClusterFocus={onClusterFocus}
+              focusedClusterId={focusedClusterId ?? null}
             />
           )}
           {grouped.untagged.length > 0 && (
@@ -168,6 +182,8 @@ export function ClustersTab({ sessionId }: ClustersTabProps): JSX.Element {
               clusters={grouped.untagged}
               sessionId={sessionId}
               note="These come from the v0 geometric signature — imagick rows and v2-era LM responses that pre-date the v3 prompt. Will reduce after re-evaluation under v3."
+              onClusterFocus={onClusterFocus}
+              focusedClusterId={focusedClusterId ?? null}
             />
           )}
         </div>
@@ -189,12 +205,16 @@ function CategoryGroup({
   sessionId,
   note,
   onBulkAccepted,
+  onClusterFocus,
+  focusedClusterId,
 }: {
   title: string;
   clusters: ClusterSummaryDto[];
   sessionId: string;
   note?: string;
   onBulkAccepted?: () => void;
+  onClusterFocus?: (clusterId: string) => void;
+  focusedClusterId?: string | null;
 }): JSX.Element {
   const totalPairs = clusters.reduce((acc, c) => acc + c.pair_count, 0);
   const maxPairs = clusters.reduce((acc, c) => Math.max(acc, c.pair_count), 1);
@@ -278,9 +298,11 @@ function CategoryGroup({
         </div>
       )}
       <ul className="cluster-list">
-        {clusters.map((c) => (
-          <li key={c.id}>
-            <Link to={`/sessions/${sessionId}/clusters/${c.id}`} className="cluster-row">
+        {clusters.map((c) => {
+          const isFocused = focusedClusterId === c.id;
+          const rowClass = `cluster-row${isFocused ? ' cluster-row--focused' : ''}`;
+          const body = (
+            <>
               <div className="cluster-row__primary">
                 <span className="cluster-row__label">{c.element_label ?? '(unlabelled)'}</span>
                 <span className="cluster-row__change-type">{c.change_type ?? '—'}</span>
@@ -298,9 +320,26 @@ function CategoryGroup({
               {c.sample?.description && (
                 <p className="cluster-row__sample">{c.sample.description}</p>
               )}
-            </Link>
-          </li>
-        ))}
+            </>
+          );
+          return (
+            <li key={c.id}>
+              {onClusterFocus ? (
+                <button
+                  type="button"
+                  className={rowClass}
+                  onClick={() => onClusterFocus(c.id)}
+                >
+                  {body}
+                </button>
+              ) : (
+                <Link to={`/sessions/${sessionId}/clusters/${c.id}`} className={rowClass}>
+                  {body}
+                </Link>
+              )}
+            </li>
+          );
+        })}
       </ul>
       {confirming && (
         <CategoryAcceptDialog

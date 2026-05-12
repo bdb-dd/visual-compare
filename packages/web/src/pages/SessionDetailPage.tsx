@@ -1,9 +1,10 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
+import { ActionsMenu } from '../components/ActionsMenu.js';
 import { AnomaliesTab } from '../components/AnomaliesTab.js';
 import { ClustersTab } from '../components/ClustersTab.js';
-import { ComparisonDetail } from '../components/ComparisonDetail.js';
+import { DetailPane } from '../components/DetailPane.js';
 import { LmStatusPill } from '../components/LmStatusPill.js';
 import { PlanAndEvaluate } from '../components/PlanAndEvaluate.js';
 import { SessionConfigPanel } from '../components/SessionConfigPanel.js';
@@ -45,6 +46,25 @@ export function SessionDetailPage(): JSX.Element {
       const sp = new URLSearchParams(searchParams);
       if (next === 'clusters') sp.delete('mode'); // canonical default → clean URL
       else sp.set('mode', next);
+      // Drop focus when switching modes — focus identifiers are mode-specific.
+      sp.delete('focus');
+      setSearchParams(sp, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  // Cluster focus is URL-driven so deep links + back/forward work. Only
+  // meaningful in clusters/anomalies modes; in rows mode the existing
+  // selectedRowKey state drives the comparison selection (and ignores
+  // ?focus= for now — δ may harmonise).
+  const focusParam = searchParams.get('focus');
+  const focusedClusterId =
+    (mode === 'clusters' || mode === 'anomalies') && focusParam ? focusParam : null;
+  const setFocusedClusterId = useCallback(
+    (id: string | null) => {
+      const sp = new URLSearchParams(searchParams);
+      if (id === null) sp.delete('focus');
+      else sp.set('focus', id);
       setSearchParams(sp, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -83,6 +103,8 @@ export function SessionDetailPage(): JSX.Element {
    * remember to reset.
    */
   const [acceptDialogTrigger, setAcceptDialogTrigger] = useState(0);
+  const [clusterAcceptTrigger, setClusterAcceptTrigger] = useState(0);
+  const [clusterRejectTrigger, setClusterRejectTrigger] = useState(0);
   const [lastUsedLabel, setLastUsedLabel] = useState<string | null>(null);
 
   const refreshResults = useCallback(async () => {
@@ -425,14 +447,66 @@ export function SessionDetailPage(): JSX.Element {
       </div>
 
       {mode === 'clusters' && (
-        <div className="mode-body mode-body--full">
-          <ClustersTab sessionId={session.id} />
+        <div className={`mode-body ${focusedClusterId ? 'mode-body--split' : 'mode-body--full'}`}>
+          <div className="mode-body__list">
+            <ClustersTab
+              sessionId={session.id}
+              onClusterFocus={setFocusedClusterId}
+              focusedClusterId={focusedClusterId}
+            />
+          </div>
+          {focusedClusterId && (
+            <div className="mode-body__pane">
+              <DetailPane
+                sessionId={session.id}
+                focused={{ kind: 'cluster', clusterId: focusedClusterId }}
+                onClose={() => setFocusedClusterId(null)}
+                onClusterChanged={() => void refreshResults()}
+                clusterAcceptDialogTrigger={clusterAcceptTrigger}
+                clusterRejectDialogTrigger={clusterRejectTrigger}
+                actionsSlot={
+                  <ActionsMenu
+                    sessionId={session.id}
+                    focused={{ kind: 'cluster', clusterId: focusedClusterId }}
+                    onClusterAccept={() => setClusterAcceptTrigger((v) => v + 1)}
+                    onClusterReject={() => setClusterRejectTrigger((v) => v + 1)}
+                  />
+                }
+              />
+            </div>
+          )}
         </div>
       )}
 
       {mode === 'anomalies' && (
-        <div className="mode-body mode-body--full">
-          <AnomaliesTab sessionId={session.id} />
+        <div className={`mode-body ${focusedClusterId ? 'mode-body--split' : 'mode-body--full'}`}>
+          <div className="mode-body__list">
+            <AnomaliesTab
+              sessionId={session.id}
+              onClusterFocus={setFocusedClusterId}
+              focusedClusterId={focusedClusterId}
+            />
+          </div>
+          {focusedClusterId && (
+            <div className="mode-body__pane">
+              <DetailPane
+                sessionId={session.id}
+                focused={{ kind: 'cluster', clusterId: focusedClusterId }}
+                onClose={() => setFocusedClusterId(null)}
+                onClusterChanged={() => void refreshResults()}
+                clusterAcceptDialogTrigger={clusterAcceptTrigger}
+                clusterRejectDialogTrigger={clusterRejectTrigger}
+                actionsSlot={
+                  <ActionsMenu
+                    sessionId={session.id}
+                    focused={{ kind: 'cluster', clusterId: focusedClusterId }}
+                    onClusterAccept={() => setClusterAcceptTrigger((v) => v + 1)}
+                    onClusterReject={() => setClusterRejectTrigger((v) => v + 1)}
+                  />
+                }
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -519,19 +593,26 @@ export function SessionDetailPage(): JSX.Element {
             </button>
           </div>
 
-          {detailTab === 'comparison' &&
-            (selectedRow?.comparison_id ? (
-              <ComparisonDetail
-                id={selectedRow.comparison_id}
-                row={selectedRow}
-                targetLevel={config.default_equivalence_level}
+          {detailTab === 'comparison' && (
+            selectedRow && !selectedRow.comparison_id ? (
+              <PendingRowDetail row={selectedRow} />
+            ) : (
+              <DetailPane
                 sessionId={session.id}
+                focused={
+                  selectedRow?.comparison_id
+                    ? { kind: 'row', comparisonId: selectedRow.comparison_id, row: selectedRow }
+                    : null
+                }
+                targetLevel={config.default_equivalence_level}
                 acceptance={
-                  acceptances.find(
-                    (a) =>
-                      a.url_pair_id === selectedRow.url_pair_id &&
-                      a.viewport_name === selectedRow.viewport_name,
-                  ) ?? null
+                  selectedRow
+                    ? acceptances.find(
+                        (a) =>
+                          a.url_pair_id === selectedRow.url_pair_id &&
+                          a.viewport_name === selectedRow.viewport_name,
+                      ) ?? null
+                    : null
                 }
                 openAcceptDialogTrigger={acceptDialogTrigger}
                 onAcceptanceChanged={(label) => {
@@ -539,16 +620,24 @@ export function SessionDetailPage(): JSX.Element {
                   void refreshAcceptances();
                   void refreshResults();
                 }}
+                actionsSlot={
+                  selectedRow?.comparison_id ? (
+                    <ActionsMenu
+                      sessionId={session.id}
+                      focused={{
+                        kind: 'row',
+                        comparisonId: selectedRow.comparison_id,
+                        row: selectedRow,
+                      }}
+                      onRowAccept={handleAcceptShortcut}
+                      onRowQuickAccept={(r) => void handleQuickAcceptShortcut(r)}
+                      onRowClear={(r) => void handleClearShortcut(r)}
+                    />
+                  ) : null
+                }
               />
-            ) : selectedRow ? (
-              <PendingRowDetail row={selectedRow} />
-            ) : (
-              <div className="card">
-                <p className="muted" style={{ margin: 0 }}>
-                  Select a result on the left.
-                </p>
-              </div>
-            ))}
+            )
+          )}
 
           {detailTab === 'history' && (
             <HistoryTab
