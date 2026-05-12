@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { AnomaliesTab } from '../components/AnomaliesTab.js';
+import { DEFAULT_FILTER_STATE } from '../api/filterState.js';
 
 /**
  * Anomaly queue — outer shell. Body in `components/AnomaliesTab.tsx`
@@ -17,7 +18,7 @@ export function AnomaliesPage(): JSX.Element {
           <h2>Anomaly queue</h2>
         </div>
       </header>
-      <AnomaliesTab sessionId={id} />
+      <AnomaliesTab sessionId={id} filter={DEFAULT_FILTER_STATE} />
     </main>
   );
 }

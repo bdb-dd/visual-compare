@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, type JSX } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
 import {
-  DEFAULT_FILTER_STATE,
   statusToClusterReviewState,
   type FilterState,
 } from '../api/filterState.js';
@@ -40,8 +39,12 @@ export interface AnomaliesTabProps {
    * pair_outcome / matched_at_level. TODO: enrich the cluster
    * summary DTO with these fields (server-side) so Anomalies mode
    * can honour the full filter taxonomy.
+   *
+   * Required: callers that want defaults pass `DEFAULT_FILTER_STATE`
+   * explicitly so a forgotten wire-up surfaces as a type error instead
+   * of a silent fallback that ignores user input.
    */
-  filter?: FilterState;
+  filter: FilterState;
   /** Phase γ+ focus callback — opens the anomaly in the detail pane. */
   onClusterFocus?: (clusterId: string) => void;
   /** Cluster id currently highlighted by the parent. */
@@ -50,7 +53,7 @@ export interface AnomaliesTabProps {
 
 export function AnomaliesTab({
   sessionId,
-  filter = DEFAULT_FILTER_STATE,
+  filter,
   onClusterFocus,
   focusedClusterId,
 }: AnomaliesTabProps): JSX.Element {

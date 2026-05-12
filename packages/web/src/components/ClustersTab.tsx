@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, type JSX } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
 import {
-  DEFAULT_FILTER_STATE,
   statusToClusterReviewState,
   type FilterState,
 } from '../api/filterState.js';
@@ -57,9 +56,11 @@ export interface ClustersTabProps {
   /**
    * Phase δ: shared filter state. Status maps to the cluster review_state
    * the API understands; region + change-type apply in-memory to the
-   * fetched cluster list. Default if omitted = DEFAULT_FILTER_STATE.
+   * fetched cluster list. Required: callers that want defaults pass
+   * `DEFAULT_FILTER_STATE` explicitly so a forgotten wire-up surfaces as a
+   * type error instead of a silent fallback that ignores user input.
    */
-  filter?: FilterState;
+  filter: FilterState;
   /**
    * Called when the reviewer clicks a cluster card. When omitted, the
    * card renders as a `<Link>` to the legacy standalone cluster page —
@@ -74,7 +75,7 @@ export interface ClustersTabProps {
 
 export function ClustersTab({
   sessionId,
-  filter = DEFAULT_FILTER_STATE,
+  filter,
   onClusterFocus,
   focusedClusterId,
 }: ClustersTabProps): JSX.Element {
