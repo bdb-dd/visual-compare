@@ -14,6 +14,7 @@ import type {
   CaptureRunOptions,
   CaptureRunRow,
   CaptureSide,
+  PlannedCapture,
   ViewportDef,
 } from '../types.js';
 import { DEFAULT_VIEWPORTS } from '../constants/viewports.js';
@@ -37,7 +38,11 @@ export const captureRunOptionsSchema = z.object({
   hideSelectors: z.array(z.string()).optional(),
   settleDelayMs: z.number().int().nonnegative().default(250),
   useNetworkIdle: z.boolean().default(false),
-  concurrency: z.number().int().min(1).max(10).default(8),
+  // Upper bound is a guard rail, not the per-host cap. The UI further
+  // narrows this to `availableParallelism()` via /api/meta/system-info so
+  // users on smaller machines don't oversubscribe. 32 is comfortably above
+  // any laptop core count we run on and well under any chromium-pool ceiling.
+  concurrency: z.number().int().min(1).max(32).default(8),
   urlPairIds: z.array(z.string()).optional(),
   /**
    * Restrict the run to specific sides. Used by the evaluator after a
@@ -244,6 +249,22 @@ export interface StartCaptureRunInput {
    * captures finish naturally — Playwright `page.goto` is not interrupted.
    */
   signal?: AbortSignal;
+  /**
+   * When provided, inserts exactly one `captures` row per entry instead of
+   * the (selected_pairs × viewports × sides) cartesian product. The
+   * orchestrator uses this to skip already-cached (pair, viewport, side)
+   * tuples — otherwise a single missing capture in a pair forces re-capture
+   * of every side+viewport for that pair, and a Recapture-all-then-restart
+   * cycle leaves the rest as orphan `pending` rows.
+   *
+   * Tuples are de-duped on `(url_pair_id, viewport_name, side)` to satisfy
+   * the captures UNIQUE constraint. `options.urlPairIds` and `options.sides`
+   * are ignored when this is set; `options.viewports` is still consulted at
+   * the worker level (each entry's `viewport_name` must resolve there).
+   *
+   * An empty array is treated as "no work" and throws.
+   */
+  explicitCaptures?: PlannedCapture[];
 }
 
 export interface StartCaptureRunResult {
@@ -266,21 +287,67 @@ export function startCaptureRun(
   input: StartCaptureRunInput,
 ): StartCaptureRunResult {
   const { db, queue, artifactStore, worker } = deps;
-  const { sessionId, options, signal } = input;
+  const { sessionId, options, signal, explicitCaptures } = input;
 
   const allPairs = listUrlPairs(db, sessionId);
   if (allPairs.length === 0) {
     throw new Error(`Session ${sessionId} has no url_pairs`);
   }
-  const selected = options.urlPairIds && options.urlPairIds.length > 0
-    ? allPairs.filter((p) => options.urlPairIds!.includes(p.id))
-    : allPairs;
-  if (selected.length === 0) {
-    throw new Error('No url_pairs match the supplied urlPairIds');
+
+  // Two shapes:
+  //   1. explicitCaptures provided  → one captures row per entry (the
+  //      orchestrator's narrow path; skips already-cached tuples).
+  //   2. fallback (HTTP /capture-runs, tests)  → selected_pairs × viewports
+  //      × sides cartesian product.
+  let plannedRows: { pair_id: string; viewport_name: string; side: CaptureSide; url: string }[];
+
+  if (explicitCaptures !== undefined) {
+    if (explicitCaptures.length === 0) {
+      throw new Error('explicitCaptures is empty — nothing to capture');
+    }
+    const knownPairIds = new Set(allPairs.map((p) => p.id));
+    const seen = new Set<string>();
+    plannedRows = [];
+    for (const c of explicitCaptures) {
+      if (!knownPairIds.has(c.url_pair_id)) {
+        throw new Error(
+          `explicitCaptures entry references url_pair_id ${c.url_pair_id} not in session ${sessionId}`,
+        );
+      }
+      const key = `${c.url_pair_id}::${c.viewport_name}::${c.side}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      plannedRows.push({
+        pair_id: c.url_pair_id,
+        viewport_name: c.viewport_name,
+        side: c.side,
+        url: c.url,
+      });
+    }
+  } else {
+    const selected = options.urlPairIds && options.urlPairIds.length > 0
+      ? allPairs.filter((p) => options.urlPairIds!.includes(p.id))
+      : allPairs;
+    if (selected.length === 0) {
+      throw new Error('No url_pairs match the supplied urlPairIds');
+    }
+    const sides = options.sides ?? SIDES;
+    plannedRows = [];
+    for (const pair of selected) {
+      for (const viewport of options.viewports) {
+        for (const side of sides) {
+          plannedRows.push({
+            pair_id: pair.id,
+            viewport_name: viewport.name,
+            side,
+            url: side === 'a' ? pair.url_a : pair.url_b,
+          });
+        }
+      }
+    }
   }
 
-  const sides = options.sides ?? SIDES;
-  const captureCount = selected.length * sides.length * options.viewports.length;
+  const captureCount = plannedRows.length;
   const jobId = queue.createJob({ type: 'capture', progress_total: captureCount });
   const captureRunId = randomUUID();
   const now = new Date().toISOString();
@@ -297,21 +364,16 @@ export function startCaptureRun(
          VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
     );
 
-    for (const pair of selected) {
-      for (const viewport of options.viewports) {
-        for (const side of sides) {
-          const url = side === 'a' ? pair.url_a : pair.url_b;
-          insertCapture.run(
-            randomUUID(),
-            captureRunId,
-            pair.id,
-            side,
-            url,
-            viewport.name,
-            now,
-          );
-        }
-      }
+    for (const row of plannedRows) {
+      insertCapture.run(
+        randomUUID(),
+        captureRunId,
+        row.pair_id,
+        row.side,
+        row.url,
+        row.viewport_name,
+        now,
+      );
     }
   });
   tx();

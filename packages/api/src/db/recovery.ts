@@ -12,13 +12,16 @@ export interface RecoveryResult {
 /**
  * Server restart recovery. Run before the queue accepts new work.
  *
- * - jobs.running       → error  (with error_message='interrupted_by_restart', completed_at=now)
- * - captures.processing  → error
- * - comparisons.processing → error
- * - evaluations.running → error  (otherwise the UI's Evaluate button coalesces
- *   onto a corpse and polls forever)
+ * Both `running`/`processing` (mid-flight when the process died) AND `pending`
+ * (queued but never picked up — the queue is in-memory only) rows are
+ * orphaned by a restart: the in-memory JobQueue is fresh, no handler will
+ * pick them up, and the planner drives off `capture_cache` rather than the
+ * `captures` table, so leaving them pending accomplishes nothing but lets the
+ * table grow by ~10K rows per interrupted Recapture-all + Evaluate.
  *
- * `pending` rows are left alone and require explicit retry.
+ * Both are flipped to `error` with `error_message='interrupted_by_restart'`.
+ * Re-driving the work is the planner's job: any not-yet-cached URL will be
+ * picked up by the next Evaluate, which creates a fresh capture_run.
  */
 export function recoverInterruptedRuns(db: Db, now: string = new Date().toISOString()): RecoveryResult {
   const result: RecoveryResult = { jobs: 0, captures: 0, comparisons: 0, evaluations: 0 };
@@ -30,7 +33,7 @@ export function recoverInterruptedRuns(db: Db, now: string = new Date().toISOStr
          SET status = 'error',
              error_message = ?,
              completed_at = ?
-         WHERE status = 'running'`,
+         WHERE status IN ('running', 'pending')`,
       )
       .run(INTERRUPTED_BY_RESTART, now);
     result.jobs = jobs.changes;
@@ -40,7 +43,7 @@ export function recoverInterruptedRuns(db: Db, now: string = new Date().toISOStr
         `UPDATE captures
          SET status = 'error',
              error_message = ?
-         WHERE status = 'processing'`,
+         WHERE status IN ('processing', 'pending')`,
       )
       .run(INTERRUPTED_BY_RESTART);
     result.captures = captures.changes;
@@ -51,7 +54,7 @@ export function recoverInterruptedRuns(db: Db, now: string = new Date().toISOStr
          SET status = 'error',
              error_message = ?,
              completed_at = ?
-         WHERE status = 'processing'`,
+         WHERE status IN ('processing', 'pending')`,
       )
       .run(INTERRUPTED_BY_RESTART, now);
     result.comparisons = comparisons.changes;
@@ -62,7 +65,7 @@ export function recoverInterruptedRuns(db: Db, now: string = new Date().toISOStr
          SET status = 'error',
              error_message = ?,
              completed_at = ?
-         WHERE status = 'running'`,
+         WHERE status IN ('running', 'pending')`,
       )
       .run(INTERRUPTED_BY_RESTART, now);
     result.evaluations = evaluations.changes;

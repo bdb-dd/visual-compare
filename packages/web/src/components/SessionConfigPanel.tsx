@@ -56,6 +56,29 @@ export function SessionConfigPanel({
     const opts = config.default_capture_options as { settleDelayMs?: number };
     return opts.settleDelayMs !== undefined ? String(opts.settleDelayMs) : '';
   });
+  const [concurrency, setConcurrency] = useState<string>(() => {
+    const opts = config.default_capture_options as { concurrency?: number };
+    return opts.concurrency !== undefined ? String(opts.concurrency) : '';
+  });
+
+  // Host-dependent ceiling on the concurrency input. Fetched once via
+  // /api/meta/system-info, which mirrors `os.availableParallelism()` so the
+  // suggested max tracks the host's actual core budget instead of a static
+  // schema cap.
+  const [hostMaxConcurrency, setHostMaxConcurrency] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api.getSystemInfo()
+      .then((info) => {
+        if (!cancelled) setHostMaxConcurrency(info.max_capture_concurrency);
+      })
+      .catch(() => {
+        // Non-fatal: input still works, just without a per-host ceiling.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [savingState, setSavingState] = useState<SavingState>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +94,13 @@ export function SessionConfigPanel({
     if (settleDelayMs.trim().length > 0) {
       const n = Number(settleDelayMs);
       if (Number.isFinite(n) && n >= 0) captureOpts.settleDelayMs = Math.round(n);
+    }
+    if (concurrency.trim().length > 0) {
+      const n = Number(concurrency);
+      // Persist only when the user has typed a non-default integer ≥ 1.
+      // The server clamps to the schema cap; the UI clamps to host max in
+      // the input element below.
+      if (Number.isFinite(n) && n >= 1) captureOpts.concurrency = Math.round(n);
     }
     const filterQuery: Record<string, unknown> = {};
     const langs = parseList(language);
@@ -110,9 +140,11 @@ export function SessionConfigPanel({
     const opts = config.default_capture_options as {
       hideSelectors?: string[];
       settleDelayMs?: number;
+      concurrency?: number;
     };
     setHideSelectors(opts.hideSelectors?.join('\n') ?? '');
     setSettleDelayMs(opts.settleDelayMs !== undefined ? String(opts.settleDelayMs) : '');
+    setConcurrency(opts.concurrency !== undefined ? String(opts.concurrency) : '');
   }, [config, defaults.viewportName, defaults.level]);
 
   // Autosave: debounce any divergence from the last saved snapshot. The
@@ -140,7 +172,7 @@ export function SessionConfigPanel({
     // buildPayload reads each piece of local state directly; listing them as
     // deps captures every user edit. onSaved is treated as stable by callers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewportNames, targetLevel, language, category, pathPrefix, hideSelectors, settleDelayMs, sessionId]);
+  }, [viewportNames, targetLevel, language, category, pathPrefix, hideSelectors, settleDelayMs, concurrency, sessionId]);
 
   const toggle = <T,>(arr: T[], value: T): T[] =>
     arr.includes(value) ? arr.filter((x) => x !== value) : [...arr, value];
@@ -239,6 +271,22 @@ export function SessionConfigPanel({
             value={settleDelayMs}
             onChange={(e) => setSettleDelayMs(e.target.value)}
             placeholder="250"
+          />
+        </label>
+        <label className="field">
+          <span>
+            Capture concurrency
+            {hostMaxConcurrency !== null && (
+              <span className="muted"> (1–{hostMaxConcurrency} on this host)</span>
+            )}
+          </span>
+          <input
+            type="number"
+            min={1}
+            max={hostMaxConcurrency ?? undefined}
+            value={concurrency}
+            onChange={(e) => setConcurrency(e.target.value)}
+            placeholder="8"
           />
         </label>
       </section>

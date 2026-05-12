@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { availableParallelism, cpus } from 'node:os';
 import { DEFAULT_VIEWPORTS, DEFAULT_VIEWPORT_NAME } from '../constants/viewports.js';
 import { EQUIVALENCE_LEVELS, DEFAULT_EQUIVALENCE_LEVEL } from '../constants/equivalence.js';
 import type { LmClient } from '../services/lm.js';
@@ -16,6 +17,17 @@ export function metaRouter(deps: MetaRouterDeps = {}): Router {
 
   router.get('/equivalence-levels', (_req, res) => {
     res.json({ levels: EQUIVALENCE_LEVELS, default: DEFAULT_EQUIVALENCE_LEVEL });
+  });
+
+  router.get('/system-info', (_req, res) => {
+    // availableParallelism is the right knob for "how many parallel workers
+    // should this app use." It accounts for CPU affinity/cgroup quotas where
+    // present and falls back to logical core count otherwise. cpus().length
+    // is reported alongside for diagnostic display.
+    res.json({
+      max_capture_concurrency: availableParallelism(),
+      cpu_count: cpus().length,
+    });
   });
 
   router.get('/lm-status', async (req, res) => {

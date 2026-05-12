@@ -253,5 +253,11 @@ describe('API integration', () => {
     expect(vp.body.viewports.length).toBeGreaterThan(0);
     const lv = await request(h.app).get('/api/meta/equivalence-levels');
     expect(lv.body.levels.find((l: { id: string }) => l.id === 'tolerant')).toBeTruthy();
+
+    const si = await request(h.app).get('/api/meta/system-info');
+    expect(si.status).toBe(200);
+    expect(si.body.max_capture_concurrency).toBeGreaterThanOrEqual(1);
+    expect(Number.isInteger(si.body.max_capture_concurrency)).toBe(true);
+    expect(si.body.cpu_count).toBeGreaterThanOrEqual(1);
   });
 });

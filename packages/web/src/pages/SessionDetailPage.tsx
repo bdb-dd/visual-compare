@@ -203,6 +203,19 @@ export function SessionDetailPage(): JSX.Element {
         const changed = delta.changed_pair_keys ?? [];
         if (changed.length === 0) return;
 
+        // The `?keys=` followup encodes the changed keys in the URL. Each
+        // key is ~45 chars, and Node's default --max-http-header-size is
+        // 8 KB; somewhere around 100 keys we'd risk a 431 from the dev
+        // server proxy. When the delta is that large (e.g. a server restart
+        // bulk-flips thousands of pending rows in one go), just do a full
+        // refresh — the row set is small enough that one big payload beats
+        // chunking the URL into many requests.
+        const MAX_DELTA_KEYS = 100;
+        if (changed.length > MAX_DELTA_KEYS) {
+          await refreshResults();
+          return;
+        }
+
         const rowsResponse = await api.getResults(
           id,
           invokeLm ? { invoke_lm: true } : undefined,

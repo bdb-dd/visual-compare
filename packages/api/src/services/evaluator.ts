@@ -45,6 +45,7 @@ import type {
   LmInvocationReason,
   MatchedAtLevel,
   PairOutcome,
+  PlannedCapture,
   RegionMatchConfig,
   SessionConfig,
   SessionResultRow,
@@ -52,6 +53,7 @@ import type {
   UrlPairRow,
   ViewportDef,
 } from '../types.js';
+export type { PlannedCapture };
 
 const SIDES: CaptureSide[] = ['a', 'b'];
 
@@ -113,13 +115,6 @@ export interface EvaluationConfig {
    * incorporates this so toggling it forces a re-run of LM.
    */
   lm_include_diff_image: boolean;
-}
-
-export interface PlannedCapture {
-  url_pair_id: string;
-  viewport_name: string;
-  side: CaptureSide;
-  url: string;
 }
 
 export interface PlannedComparison {
@@ -625,34 +620,30 @@ export class Evaluator {
         return;
       }
 
-      // 1) Capture run for missing captures.
+      // 1) Capture run for missing captures. Pass the planner's per-tuple
+      //    misses through `explicitCaptures` so we insert exactly one
+      //    captures row per actually-missing (pair, viewport, side) — the
+      //    legacy cartesian-product path would re-capture both sides of any
+      //    pair where either side was missing, and any rows left `pending`
+      //    after an interruption become permanent zombies (the in-memory
+      //    queue can't re-pick them up).
       let captureRunId: string | null = null;
       if (initialPlan.capture_misses.length > 0) {
-        const missingPairIds = Array.from(
-          new Set(initialPlan.capture_misses.map((c) => c.url_pair_id)),
-        );
         const missingViewportNames = new Set(
           initialPlan.capture_misses.map((c) => c.viewport_name),
         );
         const captureViewports = config.viewports.filter((v) =>
           missingViewportNames.has(v.name),
         );
-        // If every miss is on the same side, restrict the run to that
-        // side. Mixed misses fall back to both sides — over-capturing is
-        // wasteful but correct, and the doc's invalidation flows ("all
-        // B-side captures") all share a single side.
-        const missingSides = new Set(initialPlan.capture_misses.map((c) => c.side));
-        const sides = missingSides.size === 1 ? Array.from(missingSides) : undefined;
         const captureOpts = captureRunOptionsSchema.parse({
           ...config.capture_options,
           viewports: captureViewports,
-          urlPairIds: missingPairIds,
-          ...(sides ? { sides } : {}),
         });
         const captureResult = startCaptureRun(this.#deps, {
           sessionId,
           options: captureOpts,
           signal,
+          explicitCaptures: initialPlan.capture_misses,
         });
         captureRunId = captureResult.capture_run_id;
         db.prepare(`UPDATE evaluations SET capture_run_id = ? WHERE id = ?`).run(
