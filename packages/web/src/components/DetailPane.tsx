@@ -132,6 +132,9 @@ function EmptyState(): JSX.Element {
         it here. Bulk-accept the broad patterns from Clusters mode, then
         sweep the residual one-offs in Anomalies.
       </p>
+      <p className="muted">
+        Press <kbd>?</kbd> for keyboard shortcuts.
+      </p>
     </div>
   );
 }

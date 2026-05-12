@@ -706,6 +706,97 @@ ul.diff-list li {
 }
 .filter-chip--active .filter-chip__count { color: #b9d0ff; }
 
+/* Phase ζ: cheat-sheet overlay (toggled by ?). */
+.shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 9, 12, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.shortcuts-overlay__panel {
+  width: min(680px, 90vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  background: #15171c;
+  border: 1px solid #2a2e36;
+  border-radius: 8px;
+  padding: 20px 24px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
+}
+.shortcuts-overlay__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.shortcuts-overlay__header h3 { margin: 0; font-size: 16px; }
+.shortcuts-overlay__close {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #aab1bd;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.shortcuts-overlay__close:hover { color: #e5e7eb; border-color: #353945; }
+.shortcuts-overlay__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.shortcuts-overlay__group h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #aab1bd;
+}
+.shortcuts-overlay__group dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 6px 16px;
+}
+.shortcuts-overlay__row {
+  display: contents;
+}
+.shortcuts-overlay__row dt {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.shortcuts-overlay__row dd {
+  margin: 0;
+  font-size: 13px;
+}
+.shortcuts-overlay__sep {
+  font-size: 11px;
+  color: #6c7280;
+  margin: 0 2px;
+}
+.shortcuts-overlay__footer {
+  margin-top: 16px;
+  font-size: 12px;
+  color: #aab1bd;
+  text-align: right;
+}
+kbd {
+  background: #2a2e36;
+  border: 1px solid #353945;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  color: #e5e7eb;
+  min-width: 16px;
+  display: inline-block;
+  text-align: center;
+}
+
 /* Phase ε: small badge on rows/comparisons whose acceptance came from a
    cluster or category rule fan-out (acceptance.acceptance_rule_id !== null). */
 .provenance-badge {
