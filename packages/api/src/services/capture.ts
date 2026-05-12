@@ -37,7 +37,7 @@ export const captureRunOptionsSchema = z.object({
   hideSelectors: z.array(z.string()).optional(),
   settleDelayMs: z.number().int().nonnegative().default(250),
   useNetworkIdle: z.boolean().default(false),
-  concurrency: z.number().int().min(1).max(10).default(3),
+  concurrency: z.number().int().min(1).max(10).default(8),
   urlPairIds: z.array(z.string()).optional(),
   /**
    * Restrict the run to specific sides. Used by the evaluator after a
@@ -85,6 +85,14 @@ export interface CaptureWorkerResult {
  */
 const MISSING_PAGE_TITLE_RE = /(page not found|not found|404|finner ikke)/i;
 
+/**
+ * Wallclock cap for a single capture. Bounds the long tail: page.goto has a
+ * 30s timeout but later stages (fonts.ready, title, screenshot) had none, so
+ * a stuck page could park a concurrency slot for minutes. On timeout we
+ * close the context, which forcibly aborts any in-flight nav/screenshot.
+ */
+const CAPTURE_WALLCLOCK_MS = 30_000;
+
 /** A real Playwright-backed capture worker. One persistent browser, many contexts. */
 export function createPlaywrightCaptureWorker(): CaptureWorker {
   let browserPromise: Promise<Browser> | null = null;
@@ -110,7 +118,16 @@ export function createPlaywrightCaptureWorker(): CaptureWorker {
       reducedMotion: options.reducedMotion,
     });
     const page = await context.newPage();
-    try {
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new Error(`capture exceeded ${CAPTURE_WALLCLOCK_MS}ms wallclock`)),
+        CAPTURE_WALLCLOCK_MS,
+      );
+    });
+
+    const body = async (): Promise<CaptureWorkerResult> => {
       const navResponse = await applyReadinessSequence(page, url, options);
       const tempDir = join(tmpdir(), 'visual-compare-captures');
       await mkdir(tempDir, { recursive: true });
@@ -136,7 +153,12 @@ export function createPlaywrightCaptureWorker(): CaptureWorker {
           httpStatus,
         },
       };
+    };
+
+    try {
+      return await Promise.race([body(), timeout]);
     } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
       await page.close().catch(() => {});
       await context.close().catch(() => {});
     }

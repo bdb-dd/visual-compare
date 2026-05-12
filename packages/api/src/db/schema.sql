@@ -126,6 +126,12 @@ CREATE TABLE captures (
 CREATE INDEX idx_captures_run ON captures(capture_run_id);
 CREATE INDEX idx_captures_pair ON captures(url_pair_id);
 CREATE INDEX idx_captures_status ON captures(status);
+-- Supports the diagnostic lookup in readSessionResults that finds the most
+-- recent capture for a (session, url, viewport_name) when the capture_cache
+-- entry is missing. Without it, the joined query plan scans every capture in
+-- the session under idx_captures_run, which becomes O(captures × pairs) right
+-- after a "Recapture all" flushes the whole capture_cache.
+CREATE INDEX idx_captures_url_vp ON captures(url, viewport_name);
 
 CREATE TABLE comparison_runs (
   id TEXT PRIMARY KEY,

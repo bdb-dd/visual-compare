@@ -115,6 +115,7 @@ const INDEX_CREATIONS: IndexCreation[] = [
   { name: 'idx_acceptance_rules_session', ddl: 'CREATE INDEX idx_acceptance_rules_session ON acceptance_rules(session_id)' },
   { name: 'idx_acceptance_rules_signature', ddl: 'CREATE INDEX idx_acceptance_rules_signature ON acceptance_rules(signature, signature_version)' },
   { name: 'idx_acceptances_rule', ddl: 'CREATE INDEX idx_acceptances_rule ON acceptances(acceptance_rule_id)' },
+  { name: 'idx_captures_url_vp', ddl: 'CREATE INDEX idx_captures_url_vp ON captures(url, viewport_name)' },
 ];
 
 export interface MigrationResult {
