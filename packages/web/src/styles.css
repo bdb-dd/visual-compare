@@ -649,6 +649,63 @@ ul.diff-list li {
   max-width: 1280px;
 }
 
+/* Phase δ: shared filter strip below the mode tabs. Four zones —
+   shared Status, mode-specific extras (Level, Region+Change, Outcome).
+   Each zone has its own label and chip row. */
+.filter-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  background: #0e1014;
+  border: 1px solid #23262d;
+  border-radius: 8px;
+}
+.filter-strip__zone {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.filter-strip__zone-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6c7280;
+}
+.filter-strip__zone-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.filter-chip {
+  background: #15171c;
+  color: #aab1bd;
+  border: 1px solid #23262d;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.filter-chip:hover:not([disabled]) { color: #e5e7eb; }
+.filter-chip[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.filter-chip--active {
+  background: #1f3a8a;
+  color: #d4e1ff;
+  border-color: #1f3a8a;
+}
+.filter-chip__count {
+  margin-left: 4px;
+  color: #6c7280;
+  font-variant-numeric: tabular-nums;
+}
+.filter-chip--active .filter-chip__count { color: #b9d0ff; }
+
 /* Phase γ: split layout — list (left) + detail pane (right) when
    something is focused in Clusters or Anomalies mode. */
 .mode-body--split {

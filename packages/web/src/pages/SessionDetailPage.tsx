@@ -5,10 +5,16 @@ import { ActionsMenu } from '../components/ActionsMenu.js';
 import { AnomaliesTab } from '../components/AnomaliesTab.js';
 import { ClustersTab } from '../components/ClustersTab.js';
 import { DetailPane } from '../components/DetailPane.js';
+import { FilterStrip } from '../components/FilterStrip.js';
+import {
+  applyFilterStateToParams,
+  parseFilterState,
+  type FilterState,
+} from '../api/filterState.js';
 import { LmStatusPill } from '../components/LmStatusPill.js';
 import { PlanAndEvaluate } from '../components/PlanAndEvaluate.js';
 import { SessionConfigPanel } from '../components/SessionConfigPanel.js';
-import { SessionResultsList, type ResultsFilter } from '../components/SessionResultsList.js';
+import { SessionResultsList } from '../components/SessionResultsList.js';
 import { UrlPairsEditor } from '../components/UrlPairsEditor.js';
 import type {
   AcceptanceRow,
@@ -69,6 +75,17 @@ export function SessionDetailPage(): JSX.Element {
     },
     [searchParams, setSearchParams],
   );
+
+  // Phase δ: filter state is URL-driven, shared across the three modes.
+  const filterState = parseFilterState(searchParams);
+  const setFilterState = useCallback(
+    (next: FilterState) => {
+      const sp = new URLSearchParams(searchParams);
+      applyFilterStateToParams(next, sp);
+      setSearchParams(sp, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
   const [session, setSession] = useState<SessionRow | null>(null);
   const [config, setConfig] = useState<SessionConfig | null>(null);
   const [pairs, setPairs] = useState<UrlPairRow[]>([]);
@@ -87,7 +104,8 @@ export function SessionDetailPage(): JSX.Element {
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('review');
   const [detailTab, setDetailTab] = useState<DetailTab>('comparison');
   const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
-  const [resultsFilter, setResultsFilter] = useState<ResultsFilter>('needs_review');
+  // Phase δ: resultsFilter is no longer local — the shared filterState
+  // above drives row filtering too.
   const [selectedRow, setSelectedRow] = useState<SessionResultRow | null>(null);
   /**
    * Whether the next evaluation (and the current /results plan) should
@@ -446,6 +464,13 @@ export function SessionDetailPage(): JSX.Element {
         ))}
       </div>
 
+      <FilterStrip
+        mode={mode}
+        state={filterState}
+        onChange={setFilterState}
+      />
+
+
       {mode === 'clusters' && (
         <div className={`mode-body ${focusedClusterId ? 'mode-body--split' : 'mode-body--full'}`}>
           <div className="mode-body__list">
@@ -538,8 +563,8 @@ export function SessionDetailPage(): JSX.Element {
             <ReviewSidebar
               results={results}
               targetLevel={config.default_equivalence_level}
-              filter={resultsFilter}
-              onFilterChange={setResultsFilter}
+              filter={filterState}
+              onFilterChange={setFilterState}
               selectedKey={selectedRowKey}
               onSelect={(key, row) => {
                 setSelectedRowKey(key);
@@ -826,8 +851,8 @@ function parseViewports(optionsJson: string): string {
 interface ReviewSidebarProps {
   results: SessionResultsDto | null;
   targetLevel: EquivalenceLevelId;
-  filter: ResultsFilter;
-  onFilterChange: (next: ResultsFilter) => void;
+  filter: FilterState;
+  onFilterChange: (next: FilterState) => void;
   selectedKey: string | null;
   onSelect: (key: string | null, row: SessionResultRow | null) => void;
   onAcceptShortcut?: (row: SessionResultRow | null) => void;

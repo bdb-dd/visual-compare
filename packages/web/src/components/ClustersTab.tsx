@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
+import {
+  DEFAULT_FILTER_STATE,
+  statusToClusterReviewState,
+  type FilterState,
+} from '../api/filterState.js';
 import type {
   ClusterListDto,
-  ClusterReviewState,
   ClusterSummaryDto,
 } from '@visual-compare/api/types';
 
@@ -23,8 +27,6 @@ import type {
  * "Untagged" group at the bottom because they don't carry the cluster
  * review's semantic intent.
  */
-
-const REVIEW_STATES: Array<ClusterReviewState | 'all'> = ['all', 'open', 'accepted', 'rejected', 'split', 'anomaly'];
 
 type CategoryKey = 'header_nav' | 'main' | 'banners' | 'footer_aside' | 'anomalies' | 'untagged';
 
@@ -53,6 +55,12 @@ function categoryFor(cluster: ClusterSummaryDto): CategoryKey {
 export interface ClustersTabProps {
   sessionId: string;
   /**
+   * Phase δ: shared filter state. Status maps to the cluster review_state
+   * the API understands; region + change-type apply in-memory to the
+   * fetched cluster list. Default if omitted = DEFAULT_FILTER_STATE.
+   */
+  filter?: FilterState;
+  /**
    * Called when the reviewer clicks a cluster card. When omitted, the
    * card renders as a `<Link>` to the legacy standalone cluster page —
    * preserves behaviour for any caller still using the thin-shell
@@ -64,18 +72,30 @@ export interface ClustersTabProps {
   focusedClusterId?: string | null;
 }
 
-export function ClustersTab({ sessionId, onClusterFocus, focusedClusterId }: ClustersTabProps): JSX.Element {
+export function ClustersTab({
+  sessionId,
+  filter = DEFAULT_FILTER_STATE,
+  onClusterFocus,
+  focusedClusterId,
+}: ClustersTabProps): JSX.Element {
   const [data, setData] = useState<ClusterListDto | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [stateFilter, setStateFilter] = useState<ClusterReviewState | 'all'>('open');
   const [loading, setLoading] = useState(false);
+
+  // The status filter maps onto the cluster review_state query param —
+  // server-side filter when applicable, no filter when the status is
+  // 'all' or a row-only value ('regressed' / 'expanded').
+  const reviewStateParam = useMemo(() => {
+    const mapped = statusToClusterReviewState(filter.status);
+    return mapped && mapped !== 'all' ? mapped : undefined;
+  }, [filter.status]);
 
   const load = async (opts: { recompute?: boolean } = {}) => {
     setLoading(true);
     setError(null);
     try {
       const dto = await api.listClusters(sessionId, {
-        reviewState: stateFilter === 'all' ? undefined : stateFilter,
+        reviewState: reviewStateParam,
         recompute: opts.recompute,
       });
       setData(dto);
@@ -86,23 +106,37 @@ export function ClustersTab({ sessionId, onClusterFocus, focusedClusterId }: Clu
     }
   };
 
-  useEffect(() => { void load(); }, [sessionId, stateFilter]);
+  useEffect(() => { void load(); }, [sessionId, reviewStateParam]);
+
+  // Apply region + change-type in-memory. (Status is server-filtered via
+  // reviewStateParam above.) Cluster lists are small enough that this
+  // doesn't need memoised slicing structures; a plain filter walk is fine.
+  const filteredClusters = useMemo(() => {
+    if (!data) return [] as ClusterSummaryDto[];
+    let out = data.clusters;
+    if (filter.regions.length > 0) {
+      out = out.filter((c) => c.region_role !== null && filter.regions.includes(c.region_role));
+    }
+    if (filter.changes.length > 0) {
+      out = out.filter((c) => c.change_type !== null && filter.changes.includes(c.change_type));
+    }
+    return out;
+  }, [data, filter.regions, filter.changes]);
 
   const grouped = useMemo(() => {
     const buckets: Record<CategoryKey, ClusterSummaryDto[]> = {
       header_nav: [], main: [], banners: [], footer_aside: [], anomalies: [], untagged: [],
     };
-    if (!data) return buckets;
-    for (const c of data.clusters) buckets[categoryFor(c)].push(c);
+    for (const c of filteredClusters) buckets[categoryFor(c)].push(c);
     return buckets;
-  }, [data]);
+  }, [filteredClusters]);
 
   const totals = useMemo(() => {
     if (!data) return null;
-    const totalPairs = data.clusters.reduce((acc, c) => acc + c.pair_count, 0);
-    const totalMembers = data.clusters.reduce((acc, c) => acc + c.member_count, 0);
-    return { clusters: data.clusters.length, pairs: totalPairs, members: totalMembers };
-  }, [data]);
+    const totalPairs = filteredClusters.reduce((acc, c) => acc + c.pair_count, 0);
+    const totalMembers = filteredClusters.reduce((acc, c) => acc + c.member_count, 0);
+    return { clusters: filteredClusters.length, pairs: totalPairs, members: totalMembers };
+  }, [data, filteredClusters]);
 
   return (
     <>
@@ -127,31 +161,15 @@ export function ClustersTab({ sessionId, onClusterFocus, focusedClusterId }: Clu
 
       {error && <div className="error">{error}</div>}
 
-      <div className="clusters-page__filters">
-        {REVIEW_STATES.map((s) => {
-          const count = s === 'all'
-            ? Object.values(data?.by_review_state ?? {}).reduce((acc, n) => acc + n, 0)
-            : (data?.by_review_state[s] ?? 0);
-          return (
-            <button
-              key={s}
-              type="button"
-              className={`chip${stateFilter === s ? ' chip--active' : ''}`}
-              onClick={() => setStateFilter(s)}
-            >
-              {s} <span className="chip__count">{count}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {data && data.clusters.length === 0 && (
+      {data && filteredClusters.length === 0 && (
         <p className="clusters-page__empty">
-          No clusters under this filter. Try a different review state, or click Refresh to recompute the index.
+          No clusters match the current filters. Try widening the status,
+          region, or change-type selection above, or click Refresh to
+          recompute the index.
         </p>
       )}
 
-      {data && data.clusters.length > 0 && (
+      {data && filteredClusters.length > 0 && (
         <div className="clusters-page__groups">
           {CATEGORIES.map((c) => (
             grouped[c.key].length > 0 && (

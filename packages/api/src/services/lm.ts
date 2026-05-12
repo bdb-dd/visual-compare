@@ -22,33 +22,17 @@ import {
 // geometric signature for rows without these tags.
 // ---------------------------------------------------------------------------
 
-export const CHANGE_TYPES = [
-  'element_added',
-  'element_removed',
-  'element_replaced',
-  'text_changed',
-  'text_translated',
-  'image_changed',
-  'style_changed',
-  'count_changed',
-  'state_changed',
-  'other',
-] as const;
-export type ChangeType = (typeof CHANGE_TYPES)[number];
-
-export const REGION_ROLES = [
-  'header',
-  'nav_primary',
-  'nav_secondary',
-  'hero',
-  'main_content',
-  'aside',
-  'footer',
-  'overlay',
-  'alert_banner',
-  'other',
-] as const;
-export type RegionRole = (typeof REGION_ROLES)[number];
+// Canonical taxonomy enums live in `constants/taxonomy.ts` (no Node
+// deps) so the web package can import the same values for the unified
+// filter strip without pulling Node-typed lm.ts into web tsconfig.
+// Re-exported here for back-compat with existing import paths.
+export {
+  CHANGE_TYPES,
+  REGION_ROLES,
+  type ChangeType,
+  type RegionRole,
+} from '../constants/taxonomy.js';
+import { CHANGE_TYPES, REGION_ROLES } from '../constants/taxonomy.js';
 
 // ---------------------------------------------------------------------------
 // Response schema (zod) — must mirror the JSON Schema below.
