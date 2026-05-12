@@ -5,58 +5,12 @@ import type {
   SessionResultRow,
   SessionResultsSummary,
 } from '@visual-compare/api/types';
-
-export type ResultsFilter =
-  | 'all'
-  | 'needs_review'
-  | 'accepted'
-  | 'regressed'
-  | 'expanded'
-  | 'missing_b'
-  | 'missing_a'
-  | 'missing_both'
-  // Level-bucket filters driven by clicking histogram cells. Kept separate
-  // from the chip-row cycle (the chips are status-oriented; the histogram
-  // cells provide drill-down by pixel/LM verdict level).
-  | 'level_pixel_perfect'
-  | 'level_strict'
-  | 'level_tolerant'
-  | 'level_loose'
-  | 'level_none'
-  | 'level_pending'
-  | 'level_missing';
-
-const FILTER_LABELS: Record<ResultsFilter, string> = {
-  all: 'All',
-  needs_review: 'Needs review',
-  accepted: 'Accepted',
-  regressed: 'Regressed',
-  expanded: 'Expanded',
-  missing_b: 'Missing on B',
-  missing_a: 'Missing on A',
-  missing_both: 'Both missing',
-  level_pixel_perfect: 'pixel-perfect',
-  level_strict: 'strict',
-  level_tolerant: 'tolerant',
-  level_loose: 'loose',
-  level_none: 'none',
-  level_pending: 'pending',
-  level_missing: 'missing',
-};
-
-/** Map a histogram bucket key to its corresponding ResultsFilter value. */
-const LEVEL_BUCKET_TO_FILTER: Record<
-  keyof SessionResultsSummary['by_level'],
-  Extract<ResultsFilter, `level_${string}`>
-> = {
-  'pixel-perfect': 'level_pixel_perfect',
-  strict: 'level_strict',
-  tolerant: 'level_tolerant',
-  loose: 'level_loose',
-  none: 'level_none',
-  pending: 'level_pending',
-  missing: 'level_missing',
-};
+import {
+  levelMatches,
+  outcomeMatches,
+  type FilterState,
+  type Level,
+} from '../api/filterState.js';
 
 interface Props {
   results: SessionResultRow[];
@@ -64,8 +18,13 @@ interface Props {
   targetLevel: EquivalenceLevelId;
   selectedKey: string | null;
   onSelect: (key: string | null, row: SessionResultRow | null) => void;
-  filter: ResultsFilter;
-  onFilterChange: (next: ResultsFilter) => void;
+  /**
+   * Phase δ: shared filter state. The component reads status/levels/outcome
+   * from this and filters rows accordingly. region/change fields are
+   * ignored (rows don't carry the cluster taxonomy directly).
+   */
+  filter: FilterState;
+  onFilterChange: (next: FilterState) => void;
   /** "a" — open the accept dialog for the selected row. */
   onAcceptShortcut?: (row: SessionResultRow | null) => void;
   /** "A" — accept with the last-used label, no dialog. */
@@ -170,47 +129,38 @@ function isNeedsReview(r: SessionResultRow, targetLevel: EquivalenceLevelId): bo
   return !isAtLeastAsStrict(r.matched_at_level, targetLevel);
 }
 
-function rowMatchesFilter(
+function rowMatchesStatus(
   r: SessionResultRow,
-  filter: ResultsFilter,
+  filter: FilterState,
   targetLevel: EquivalenceLevelId,
 ): boolean {
-  if (filter === 'all') return true;
-  if (filter === 'needs_review') return isNeedsReview(r, targetLevel);
-  if (filter === 'accepted') return r.acceptance_status === 'accepted';
-  if (filter === 'regressed') return r.acceptance_status === 'regressed';
-  if (filter === 'expanded') return r.acceptance_status === 'expanded_diff';
-  if (filter === 'missing_b') return r.pair_outcome === 'b_missing';
-  if (filter === 'missing_a') return r.pair_outcome === 'a_missing';
-  if (filter === 'missing_both') return r.pair_outcome === 'both_missing';
-  // Level-bucket filters mirror the histogram's bucketing in
-  // summariseResults: missing-page rows bucket as 'missing' regardless of
-  // matched_at_level; everything else falls into pending / its level.
-  if (filter === 'level_missing') return r.pair_outcome !== 'both_present';
-  if (filter === 'level_pending') {
-    return r.pair_outcome === 'both_present' && r.matched_at_level === null;
+  switch (filter.status) {
+    case 'all': return true;
+    case 'needs_review': return isNeedsReview(r, targetLevel);
+    case 'accepted': return r.acceptance_status === 'accepted';
+    case 'regressed': return r.acceptance_status === 'regressed';
+    case 'expanded': return r.acceptance_status === 'expanded_diff';
+    // 'rejected' is a cluster-only state; FilterStrip disables the chip
+    // in Rows mode, but if the URL carries it we fall through to nothing
+    // matching to keep semantics consistent.
+    case 'rejected': return false;
   }
-  if (filter === 'level_pixel_perfect') {
-    return r.pair_outcome === 'both_present' && r.matched_at_level === 'pixel-perfect';
-  }
-  if (filter === 'level_strict') {
-    return r.pair_outcome === 'both_present' && r.matched_at_level === 'strict';
-  }
-  if (filter === 'level_tolerant') {
-    return r.pair_outcome === 'both_present' && r.matched_at_level === 'tolerant';
-  }
-  if (filter === 'level_loose') {
-    return r.pair_outcome === 'both_present' && r.matched_at_level === 'loose';
-  }
-  if (filter === 'level_none') {
-    return r.pair_outcome === 'both_present' && r.matched_at_level === 'none';
-  }
-  return false;
+}
+
+function rowMatchesFilter(
+  r: SessionResultRow,
+  filter: FilterState,
+  targetLevel: EquivalenceLevelId,
+): boolean {
+  if (!rowMatchesStatus(r, filter, targetLevel)) return false;
+  if (!outcomeMatches(filter.outcome, r.pair_outcome)) return false;
+  if (!levelMatches(filter.levels, r.matched_at_level, r.pair_outcome)) return false;
+  return true;
 }
 
 function sortAndFilter(
   rows: SessionResultRow[],
-  filter: ResultsFilter,
+  filter: FilterState,
   targetLevel: EquivalenceLevelId,
 ): SessionResultRow[] {
   const filtered = rows.filter((r) => rowMatchesFilter(r, filter, targetLevel));
@@ -222,58 +172,6 @@ function sortAndFilter(
     const bp = b.pixel?.changed_pct ?? -1;
     return bp - ap;
   });
-}
-
-function countFor(
-  rows: SessionResultRow[],
-  filter: ResultsFilter,
-  targetLevel: EquivalenceLevelId,
-): number {
-  let n = 0;
-  for (const r of rows) if (rowMatchesFilter(r, filter, targetLevel)) n += 1;
-  return n;
-}
-
-/**
- * Always shown — these are the row-state buckets reviewers need regardless
- * of whether there's anything in them. (Showing "0 accepted" still teaches
- * the user that the bucket exists.)
- */
-const STABLE_FILTERS: ResultsFilter[] = [
-  'all',
-  'needs_review',
-  'accepted',
-  'regressed',
-  'expanded',
-];
-
-/**
- * Conditional — shown only when their count > 0. Most sessions have zero
- * missing pages, and we don't want to clutter the filter bar with three
- * permanently-empty chips. They appear when there's something to filter to.
- */
-const MISSING_FILTERS: ResultsFilter[] = ['missing_b', 'missing_a', 'missing_both'];
-
-function visibleFilters(
-  rows: SessionResultRow[],
-  targetLevel: EquivalenceLevelId,
-  active: ResultsFilter,
-): ResultsFilter[] {
-  const out = [...STABLE_FILTERS];
-  for (const f of MISSING_FILTERS) {
-    // Keep the active chip even if its count drops to 0 mid-session — better
-    // to show "Missing on B (0)" briefly than to yank the active filter out
-    // from under the user.
-    if (active === f || countFor(rows, f, targetLevel) > 0) out.push(f);
-  }
-  return out;
-}
-
-function nextFilter(f: ResultsFilter, available: ResultsFilter[]): ResultsFilter {
-  if (available.length === 0) return f;
-  const idx = available.indexOf(f);
-  if (idx === -1) return available[0]!;
-  return available[(idx + 1) % available.length]!;
 }
 
 function isEditable(el: HTMLElement): boolean {
@@ -317,10 +215,6 @@ export function SessionResultsList({
     () => sortAndFilter(results, filter, targetLevel),
     [results, filter, targetLevel],
   );
-  const filtersToShow = useMemo(
-    () => visibleFilters(results, targetLevel, filter),
-    [results, targetLevel, filter],
-  );
   const listRef = useRef<HTMLDivElement | null>(null);
 
   // Auto-select the first visible row when the current selection drops out.
@@ -359,9 +253,6 @@ export function SessionResultsList({
       } else if (e.key === 'k' || e.key === 'ArrowUp') {
         e.preventDefault();
         moveSelection(visible, selectedKey, -1, onSelect);
-      } else if (e.key === 'f') {
-        e.preventDefault();
-        onFilterChange(nextFilter(filter, filtersToShow));
       } else if (e.key === 'a' && !e.shiftKey) {
         e.preventDefault();
         onAcceptShortcut?.(selectedRow);
@@ -384,9 +275,7 @@ export function SessionResultsList({
     visible,
     selectedKey,
     filter,
-    filtersToShow,
     onSelect,
-    onFilterChange,
     onAcceptShortcut,
     onQuickAcceptShortcut,
     onClearShortcut,
@@ -403,32 +292,7 @@ export function SessionResultsList({
             onFilterChange={onFilterChange}
           />
         )}
-        <div className="filter-bar" role="tablist" aria-label="Filter results">
-          {filtersToShow.map((f, i) => {
-            // Subtle separator between row-state filters and the conditional
-            // missing-page filters so reviewers see them as a distinct class.
-            const startsMissingGroup =
-              i > 0 &&
-              MISSING_FILTERS.includes(f) &&
-              !MISSING_FILTERS.includes(filtersToShow[i - 1]!);
-            return (
-              <button
-                key={f}
-                type="button"
-                role="tab"
-                aria-selected={filter === f}
-                className={`filter-btn ${filter === f ? 'active' : ''}${
-                  startsMissingGroup ? ' filter-btn-group-start' : ''
-                }`}
-                onClick={() => onFilterChange(f)}
-              >
-                {FILTER_LABELS[f]}
-                <span className="filter-count"> {countFor(results, f, targetLevel)}</span>
-              </button>
-            );
-          })}
-        </div>
-        <div className="muted filter-hint">j/k to navigate · f to cycle filter · a to accept</div>
+        <div className="muted filter-hint">j/k to navigate · a to accept · use the filter strip above</div>
       </div>
       <div className="comparison-list-rows" ref={listRef}>
         {visible.length === 0 ? (
@@ -510,6 +374,12 @@ const LEVEL_LABEL: Record<keyof SessionResultsSummary['by_level'], string> = {
  * see at a glance how many comparisons reach it. Zero-count buckets are
  * dimmed but still rendered to keep horizontal positions stable across
  * evaluations.
+ *
+ * Phase δ: clicking a cell toggles that level in/out of the multi-select
+ * level filter in the shared FilterState (single click → narrow to that
+ * level; click again → drop it back out). The filter-strip's Level zone
+ * shows the same chips up at the top of the page; the histogram
+ * provides a count-aware in-place toggle.
  */
 function HistogramStrip({
   summary,
@@ -519,27 +389,27 @@ function HistogramStrip({
 }: {
   summary: SessionResultsSummary;
   targetLevel: EquivalenceLevelId;
-  filter: ResultsFilter;
-  onFilterChange: (next: ResultsFilter) => void;
+  filter: FilterState;
+  onFilterChange: (next: FilterState) => void;
 }): JSX.Element {
   return (
     <div className="histogram-strip" role="toolbar" aria-label="Filter by matched level">
       {LEVEL_ORDER.map((lvl) => {
         const count = summary.by_level[lvl];
         const isTarget = lvl === targetLevel;
-        const cellFilter = LEVEL_BUCKET_TO_FILTER[lvl];
-        const isActive = filter === cellFilter;
-        // Toggle: clicking the already-active cell clears the filter back
-        // to 'all'. Clicking a different cell switches to that bucket.
-        // Zero-count cells stay clickable but render dimmer (parity with
-        // the "empty" class behaviour).
-        const onClick = () => onFilterChange(isActive ? 'all' : cellFilter);
+        const isActive = filter.levels.includes(lvl as Level);
+        const onClick = () => {
+          const next = isActive
+            ? filter.levels.filter((l) => l !== lvl)
+            : [...filter.levels, lvl as Level].sort();
+          onFilterChange({ ...filter, levels: next });
+        };
         return (
           <button
             key={lvl}
             type="button"
             className={`hist-cell ${isTarget ? 'target' : ''} ${count === 0 ? 'empty' : ''} ${isActive ? 'active' : ''}`}
-            title={`${LEVEL_LABEL[lvl]}: ${count}${isActive ? ' (click to clear filter)' : ' (click to filter)'}`}
+            title={`${LEVEL_LABEL[lvl]}: ${count}${isActive ? ' (click to remove from level filter)' : ' (click to narrow to this level)'}`}
             aria-pressed={isActive}
             onClick={onClick}
           >

@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
+import {
+  DEFAULT_FILTER_STATE,
+  statusToClusterReviewState,
+  type FilterState,
+} from '../api/filterState.js';
 import type {
   ClusterListDto,
   ClusterSummaryDto,
@@ -28,25 +33,45 @@ function severityRank(s: string | null | undefined): number {
 
 export interface AnomaliesTabProps {
   sessionId: string;
+  /**
+   * Phase δ: shared filter state. Status applies; Level + Outcome
+   * filters aren't trivially applicable here because the cluster
+   * summary doesn't carry the underlying comparison's
+   * pair_outcome / matched_at_level. TODO: enrich the cluster
+   * summary DTO with these fields (server-side) so Anomalies mode
+   * can honour the full filter taxonomy.
+   */
+  filter?: FilterState;
   /** Phase γ+ focus callback — opens the anomaly in the detail pane. */
   onClusterFocus?: (clusterId: string) => void;
   /** Cluster id currently highlighted by the parent. */
   focusedClusterId?: string | null;
 }
 
-export function AnomaliesTab({ sessionId, onClusterFocus, focusedClusterId }: AnomaliesTabProps): JSX.Element {
+export function AnomaliesTab({
+  sessionId,
+  filter = DEFAULT_FILTER_STATE,
+  onClusterFocus,
+  focusedClusterId,
+}: AnomaliesTabProps): JSX.Element {
   const [data, setData] = useState<ClusterListDto | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Status maps to the cluster API's reviewState filter when applicable.
+  const reviewStateParam = useMemo(() => {
+    const mapped = statusToClusterReviewState(filter.status);
+    return mapped && mapped !== 'all' ? mapped : undefined;
+  }, [filter.status]);
 
   useEffect(() => {
     let cancelled = false;
     setData(null);
     setError(null);
-    api.listClusters(sessionId)
+    api.listClusters(sessionId, reviewStateParam ? { reviewState: reviewStateParam } : undefined)
       .then((dto) => { if (!cancelled) setData(dto); })
       .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : String(err)); });
     return () => { cancelled = true; };
-  }, [sessionId]);
+  }, [sessionId, reviewStateParam]);
 
   const anomalies = useMemo(() => {
     if (!data) return [] as ClusterSummaryDto[];
