@@ -140,45 +140,180 @@ constant. Three variants:
 
 ### 3.4 Filter strip — shared taxonomy
 
-Filters are the most consequential shared concept. Proposal:
+Filters are the most consequential shared concept. The strip has three
+zones, left to right, with consistent visual treatment:
 
-| Chip | Rows mode | Clusters mode | Anomalies mode |
+```
+[ Status: all needs-review accepted regressed expanded ]    ← shared
+[ Level: pp strict tolerant loose none pending missing ]    ← Rows + Anomalies only
+[ Region: hdr nav main hero aside ftr ovrly alert other ]   ← Clusters only
+[ Change: added removed replaced text-changed translated ⋯] ← Clusters only
+[ Outcome: present a-missing b-missing both-missing ]       ← Rows + Anomalies only
+```
+
+#### Shared status chips (zone 1, always visible)
+
+Single-select. Maps to a shared `status` URL param. Each mode interprets
+the same status against its own underlying record.
+
+| Status | Rows | Clusters | Anomalies |
 |---|---|---|---|
-| All | shows all rows | shows all clusters | shows all singletons |
-| Needs review | rows with verdict missing the target OR regressed/expanded | clusters with `review_state='open'` | anomalies with state='open' |
-| Accepted | `acceptance_status='accepted'` | `review_state='accepted'` | state='accepted' |
-| Rejected | (n/a; row-level concept) | `review_state='rejected'` | state='rejected' |
-| Regressed | `acceptance_status='regressed'` | (n/a at cluster scope) | per-row regressed |
-| Expanded | `acceptance_status='expanded_diff'` | (n/a) | per-row expanded |
+| `all` | every row | every cluster | every singleton cluster |
+| `needs_review` (default) | `r.status === 'pending'` OR `matched_at_level` weaker than target OR `acceptance_status` ∈ {`regressed`, `expanded_diff`} | `review_state === 'open'` | `review_state === 'open'` |
+| `accepted` | `acceptance_status === 'accepted'` | `review_state === 'accepted'` | `review_state === 'accepted'` |
+| `rejected` | n/a — chip is **disabled with tooltip** ("Rejected is a cluster concept; switch to Clusters mode") | `review_state === 'rejected'` | `review_state === 'rejected'` |
+| `regressed` | `acceptance_status === 'regressed'` | n/a — disabled | passes through to the underlying singleton row |
+| `expanded` | `acceptance_status === 'expanded_diff'` | n/a — disabled | passes through |
 
-Mode-specific facets (extras shown after the shared chips):
+Disabled-with-tooltip is the right behavior (over hiding) — the chip
+position stays stable across mode switches, and the reviewer learns
+the cross-mode shape of each status.
 
-- Rows mode: level histogram cells (`level_pixel_perfect`, …,
-  `level_none`, `level_pending`, `level_missing`); pair_outcome
-  (`missing_b`, etc.).
-- Clusters mode: region_role grouping toggle, change_type filter.
+#### Level facets (zone 2, Rows + Anomalies modes)
 
-Filter state persists in URL query params so it's shareable and
-back/forward-navigable: `?status=needs_review&level=tolerant`.
+Multi-select. Maps to `level=<csv>` URL param. Each chip surfaces a
+count drawn from the response's `summary.by_level` histogram.
 
-When the user switches modes, applicable chips stay set; inapplicable
-ones are ignored (not cleared) so they re-engage on return.
+| Chip | Filter |
+|---|---|
+| `pp` | `matched_at_level === 'pixel-perfect'` |
+| `strict` | `matched_at_level === 'strict'` |
+| `tolerant` | `matched_at_level === 'tolerant'` |
+| `loose` | `matched_at_level === 'loose'` |
+| `none` | `matched_at_level === 'none'` |
+| `pending` | `status === 'pending'` (no verdict yet) |
+| `missing` | `pair_outcome !== 'both_present'` |
 
-### 3.5 Cross-mode gestures
+In Anomalies mode, the chips filter by the underlying comparison's
+level. (Cluster `change_type` is shown as text inside each row.)
 
-A small but important set of cross-mode actions:
+Hidden in Clusters mode (cluster signature has no `matched_at_level`).
 
-- **From a row → "Show cluster"**: jumps to Clusters mode with the
-  row's cluster focused. Helps the reviewer ask "is this part of
-  something broader?"
-- **From a cluster → "Show members in Rows"**: switches to Rows mode
-  with a filter applied that limits to that cluster's members. Useful
-  for inspecting each member with the full `ComparisonDetail` UI.
-- **Accept this row's cluster (one click)**: shortcut from a focused
-  row — open the cluster-accept dialog without leaving Rows mode.
+#### Region & change-type facets (zone 3, Clusters mode only)
 
-These are gates between modes; the modes themselves don't try to do
-each other's job.
+Multi-select. Maps to `region=<csv>` and `change=<csv>` URL params.
+Chips surface the cluster count per facet value (drawn from
+`difference_clusters` rows for the session).
+
+Region values: `header`, `nav_primary`, `nav_secondary`, `hero`,
+`main_content`, `aside`, `footer`, `overlay`, `alert_banner`, `other`.
+
+Change values: the 10 entries from `CHANGE_TYPES` in
+`services/lm.ts` (`element_added`, `element_removed`,
+`element_replaced`, `text_changed`, `text_translated`, `image_changed`,
+`style_changed`, `count_changed`, `state_changed`, `other`).
+
+The current category grouping in `ClustersPage` (Header & Navigation,
+Main content, …) becomes one possible *grouping* of the cluster list,
+toggled separately — not a filter. Reviewer can group by category or
+flat-list by pair_count.
+
+Hidden in Rows and Anomalies modes (rows don't carry these tags
+directly; their cluster does, but you'd filter on the cluster, not the
+row).
+
+#### Outcome facet (zone 4, Rows + Anomalies modes)
+
+Single-select. Maps to `outcome=<value>` URL param. Surfaces the
+`pair_outcome` of the underlying comparison.
+
+| Chip | Filter |
+|---|---|
+| `present` (default) | `pair_outcome === 'both_present'` |
+| `a-missing` | `pair_outcome === 'a_missing'` |
+| `b-missing` | `pair_outcome === 'b_missing'` |
+| `both-missing` | `pair_outcome === 'both_missing'` |
+
+Distinct from the level facet because missing-page rows are a
+qualitatively different review case (no diff to look at) and reviewers
+often want to sweep them as a batch.
+
+Hidden in Clusters mode.
+
+#### State persistence
+
+All filter params live in the URL query string, so:
+- Shareable: paste a URL, land in the same filter state.
+- Back/forward: browser navigation moves between filter states.
+- Mode-switch: applicable params persist; inapplicable ones are
+  preserved in the URL but not applied. Switching back re-engages
+  them. Example: `?status=accepted&level=tolerant` set in Rows mode
+  → switching to Clusters mode keeps `status=accepted` active and
+  preserves `level=tolerant` in the URL (no-op while in Clusters).
+
+#### Defaults
+
+Landing at `/sessions/:id` with no query string defaults to:
+`?status=needs_review&outcome=present` (current `SessionResultsList`
+behaviour). Default mode is **Clusters** (recommended start of the
+funnel).
+
+### 3.5 Actions menu
+
+A single, stable affordance: an **Actions** dropdown in the top-right
+of the detail pane, available regardless of mode. The button label
+stays `Actions ▾` so the muscle memory is one click + one selection,
+not a hunt for context-specific buttons scattered across the UI.
+
+The menu's contents are computed per focused item — the focused item
+knows its type (row, cluster, anomaly) and the menu lists what's
+applicable. Items that don't apply aren't hidden — they're disabled
+with a one-line reason, same UX principle as the disabled filter chips
+(§3.4): predictable layout, learnable cross-mode shape.
+
+#### Menu contents per focused-item type
+
+**Focused row** (Rows mode, or Anomalies mode after drill-in):
+
+| Action | Effect | Disabled when |
+|---|---|---|
+| Accept (with dialog) | Opens the per-row accept dialog (current behaviour). | row has no `matched_at_level` yet |
+| Quick accept | Reuses last-used label, no dialog. | same as above |
+| Clear acceptance | Deletes the per-row acceptance. | no acceptance exists |
+| —————————— | | |
+| Accept this cluster | Opens the **cluster** accept dialog for the row's cluster. The row's `cluster_id` from the DTO (§5.2) drives this. | row has no cluster (e.g. imagick-only row with no v1 tags) |
+| Show this row's cluster | Switches to Clusters mode and focuses the cluster. | same as above |
+| —————————— | | |
+| Open in new tab | Opens `/comparisons/:id` as a standalone permalink. | — |
+
+**Focused cluster** (Clusters mode):
+
+| Action | Effect | Disabled when |
+|---|---|---|
+| Accept cluster | Opens the cluster accept dialog (current behaviour). | `review_state === 'accepted'` |
+| Reject cluster | Opens the cluster reject dialog. | `review_state !== 'accepted'` |
+| Split cluster | (Deferred — disabled with the "Coming in a later phase" tooltip the cluster detail page already shows.) | always, for now |
+| —————————— | | |
+| Show members in Rows | Switches to Rows mode, applies a filter limiting to that cluster's `(url_pair_id, viewport)` pairs. URL: `?mode=rows&cluster=<id>` — Rows mode reads it and filters in-memory. | cluster has no members |
+| Accept entire category | Opens the category bulk-accept dialog for this cluster's `(region_role, change_type)`. | cluster has no region_role or no change_type, or category rule already exists |
+| —————————— | | |
+| Open in new tab | Opens `/sessions/:id/clusters/:cluster_id` as a permalink. | — |
+
+**Focused anomaly** (Anomalies mode):
+
+Same as the focused-row menu — singletons map 1:1 to a single
+comparison, so the per-row actions apply directly. The "Accept this
+cluster" item is effectively the same as "Accept (with dialog)" for a
+singleton, so it's collapsed: only the per-row actions show, plus
+"Show in Clusters" for jumping to the singleton's cluster card view.
+
+#### Keyboard parity
+
+Each action gets a single-letter shortcut surfaced in the menu (e.g.
+`Accept (with dialog) — A`). The menu is a discoverability surface;
+keys are the fast path. Shortcuts are unchanged from §3.6.
+
+#### Why a menu over inline buttons
+
+- One affordance to learn, regardless of focused-item type.
+- Layout doesn't shift as the item type changes — buttons appearing
+  and disappearing in toolbar slots is the worst kind of visual jitter.
+- Easy to extend in later phases (split cluster, "lock this cluster
+  signature", "mark for follow-up") without re-organising the toolbar.
+- Disabled-with-reason items teach the cross-mode model: a reviewer
+  who tries to "Accept this cluster" on a row that has none learns
+  *why* there's no cluster, which deepens their mental model of how
+  cluster review interacts with row review.
 
 ### 3.6 Keyboard model
 
@@ -242,16 +377,29 @@ These are additive and backwards compatible. No new endpoints.
 
 ### 5.3 URL design
 
-Options:
-- A) `/sessions/:id/review?mode=...&filter=...` (single route, query params)
-- B) `/sessions/:id/review/{clusters,rows,anomalies}` (sub-routes)
-- C) `/sessions/:id` stays as the unified surface; existing
-  `/sessions/:id/clusters` and `/anomalies` redirect to
-  `/sessions/:id?mode=clusters` etc.
+**Decision: option C.** `/sessions/:id` is the canonical unified
+surface. Existing routes redirect into it:
 
-Lean toward C for back-compat (existing deep links keep working) with
-the unified page at the canonical `/sessions/:id`. Filter state in
-query params for shareability.
+| Old URL | New behavior |
+|---|---|
+| `/sessions/:id` | The unified surface (default mode: Clusters). |
+| `/sessions/:id/clusters` | Redirects to `/sessions/:id?mode=clusters` with the user's last-used filter state replayed. |
+| `/sessions/:id/clusters/:cluster_id` | Redirects to `/sessions/:id?mode=clusters&focus=<cluster_id>`. The cluster opens in the detail pane. |
+| `/sessions/:id/anomalies` | Redirects to `/sessions/:id?mode=anomalies`. |
+| `/comparisons/:id` | Unchanged. Stays as a standalone permalink route for sharing a single comparison without a session context. (Already supported by the API; reviewers paste these into bug reports.) |
+
+Query params drive the unified surface's state, all optional:
+- `mode` — `clusters` (default) / `rows` / `anomalies`
+- `status` — `all` / `needs_review` (default) / `accepted` / `rejected` / `regressed` / `expanded`
+- `level` — comma-separated subset (Rows + Anomalies only)
+- `region`, `change` — comma-separated subset (Clusters only)
+- `outcome` — `present` (default) / `a-missing` / `b-missing` / `both-missing` (Rows + Anomalies only)
+- `focus` — the id of the currently-focused item (row's `pair_key` or cluster's id)
+- `group` — `category` (default in Clusters) / `flat` — grouping toggle within Clusters mode
+
+The router translates legacy URLs into the canonical form. Old
+browser bookmarks and external deep-links keep working without
+behavior change.
 
 ## 6. Phased rollout
 
@@ -337,27 +485,30 @@ Answers shape phase-γ+ refinements.
 
 ## 9. Open questions
 
-- **Canonical URL.** `/sessions/:id` vs `/sessions/:id/review`. Lean
-  toward keeping `/sessions/:id` as the unified surface and treating
-  `/clusters` / `/anomalies` as aliases that auto-switch the tab.
-- **Comparison detail page**. `/comparisons/:id` is currently a
-  standalone route. Keep it as a permalink, or fold into the unified
-  surface (open as a focused row in Rows mode with cross-session
-  routing)?
-- **Cluster detail permalink**. `/sessions/:id/clusters/:cluster_id`
-  becomes a panel state in the unified surface, but we want shareable
-  links. Two choices: keep the standalone page as a side-by-side
-  route, or extend the unified URL with a cluster id query param.
+Resolved during iteration:
+- ~~Canonical URL~~ — §5.3 decided: `/sessions/:id` is canonical; old
+  routes redirect with state preserved.
+- ~~Anomalies tab as its own surface vs collapse into Rows filter~~ —
+  kept as own tab. Flagged for revisit if Experiment 7.2 surfaces it.
+
+Still open:
+
 - **Performance on large sessions.** Mounting both `ClustersTab` and
   `SessionResultsList` even when one is hidden could be costly. Lean
   toward lazy-mounting per tab (only the active tab renders), with
   state persisted at the parent level so a tab-switch doesn't refetch.
-- **Anomalies tab content shape**. The current `AnomaliesPage` is
+- **Anomalies tab content shape.** The current `AnomaliesPage` is
   flat. The unified Anomalies tab might be richer (verdict glyph, ssim
   metrics, like Rows mode). Worth a UX sketch before phase β.
 - **Filter chip backward compat.** Existing reviewers have URLs with
   filter state in `localStorage` or muscle memory for the current chip
   bar. Phase δ should preserve as much as possible.
+- **Actions menu placement on multi-select.** The menu is described as
+  per-focused-item. If a future phase adds multi-select on rows or
+  clusters (e.g. select 5 anomalies → bulk accept), does the menu
+  switch to multi-target mode automatically, or does multi-select get
+  its own toolbar? Probably the former, but worth deciding before
+  multi-select lands.
 
 ## 10. What this scope does *not* commit to
 
