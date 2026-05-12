@@ -6,6 +6,7 @@ import { AnomaliesTab } from '../components/AnomaliesTab.js';
 import { ClustersTab } from '../components/ClustersTab.js';
 import { DetailPane } from '../components/DetailPane.js';
 import { FilterStrip } from '../components/FilterStrip.js';
+import { ShortcutsOverlay } from '../components/ShortcutsOverlay.js';
 import {
   applyFilterStateToParams,
   parseFilterState,
@@ -103,6 +104,8 @@ export function SessionDetailPage(): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('review');
   const [detailTab, setDetailTab] = useState<DetailTab>('comparison');
+  /** Phase ζ: cheat-sheet overlay toggle, opened via `?` key. */
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
   // Phase δ: resultsFilter is no longer local — the shared filterState
   // above drives row filtering too.
@@ -309,6 +312,57 @@ export function SessionDetailPage(): JSX.Element {
   useEffect(() => {
     if (results) cursorRef.current = new Date().toISOString();
   }, [results?.session_id]);
+
+  // Phase ζ: page-level keyboard shortcuts.
+  // - 1/2/3 switch mode (works regardless of focus).
+  // - c in Rows mode jumps to the selected row's primary cluster.
+  // - ? toggles the shortcuts cheat-sheet overlay.
+  // - Escape closes the overlay when open.
+  // SessionResultsList still owns j/k/a/A/r/Escape inside Rows mode;
+  // those don't overlap with the global keys handled here.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Ignore typing into form controls / contenteditable.
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (target.isContentEditable) return;
+      }
+      // Always handle Escape closing the overlay so it works even with
+      // a modifier (rare but harmless).
+      if (e.key === 'Escape' && showShortcuts) {
+        e.preventDefault();
+        setShowShortcuts(false);
+        return;
+      }
+      // Don't compete with browser/system modifier shortcuts.
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === '?') {
+        e.preventDefault();
+        setShowShortcuts((v) => !v);
+        return;
+      }
+      if (e.key === '1') { e.preventDefault(); setMode('clusters'); return; }
+      if (e.key === '2') { e.preventDefault(); setMode('rows'); return; }
+      if (e.key === '3') { e.preventDefault(); setMode('anomalies'); return; }
+      if (e.key === 'c' && !e.shiftKey) {
+        // Row → cluster jump. Only meaningful in Rows mode with a
+        // selected row that has a cluster.
+        if (mode !== 'rows') return;
+        const clusterId = selectedRow?.cluster_id ?? null;
+        if (!clusterId) return;
+        e.preventDefault();
+        const sp = new URLSearchParams(searchParams);
+        sp.delete('mode');
+        sp.set('focus', clusterId);
+        setSearchParams(sp, { replace: true });
+        return;
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [showShortcuts, mode, selectedRow, setMode, searchParams, setSearchParams]);
 
   const handleEvaluationComplete = () => {
     void refreshResults();
@@ -705,6 +759,7 @@ export function SessionDetailPage(): JSX.Element {
       </div>
       )}
 
+      {showShortcuts && <ShortcutsOverlay onClose={() => setShowShortcuts(false)} />}
     </main>
   );
 }
