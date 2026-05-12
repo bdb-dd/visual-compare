@@ -287,7 +287,7 @@ CREATE TABLE evaluations (
   capture_run_id       TEXT REFERENCES capture_runs(id) ON DELETE SET NULL,
   comparison_run_id    TEXT REFERENCES comparison_runs(id) ON DELETE SET NULL,
   cache_hits           TEXT NOT NULL DEFAULT '{}',
-  status               TEXT NOT NULL CHECK(status IN ('pending', 'running', 'complete', 'error')),
+  status               TEXT NOT NULL CHECK(status IN ('pending', 'running', 'complete', 'error', 'cancelled')),
   error_message        TEXT,
   started_at           TEXT NOT NULL,
   completed_at         TEXT
@@ -295,6 +295,9 @@ CREATE TABLE evaluations (
 
 CREATE INDEX idx_evaluations_session ON evaluations(session_id);
 CREATE INDEX idx_evaluations_status ON evaluations(status);
+
+-- Schema version. Bumped when in-place migrations are needed; see schema.ts.
+PRAGMA user_version = 1;
 
 -- ---------------------------------------------------------------------------
 -- Acceptances: user marks a (session, url_pair, viewport) as "reviewed and

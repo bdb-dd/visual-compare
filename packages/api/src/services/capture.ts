@@ -216,6 +216,12 @@ async function applyReadinessSequence(
 export interface StartCaptureRunInput {
   sessionId: string;
   options: CaptureRunOptionsParsed;
+  /**
+   * Optional signal for cooperative cancellation. When set, the bounded
+   * limit-loop checks `aborted` before pulling each next capture. In-flight
+   * captures finish naturally — Playwright `page.goto` is not interrupted.
+   */
+  signal?: AbortSignal;
 }
 
 export interface StartCaptureRunResult {
@@ -238,7 +244,7 @@ export function startCaptureRun(
   input: StartCaptureRunInput,
 ): StartCaptureRunResult {
   const { db, queue, artifactStore, worker } = deps;
-  const { sessionId, options } = input;
+  const { sessionId, options, signal } = input;
 
   const allPairs = listUrlPairs(db, sessionId);
   if (allPairs.length === 0) {
@@ -298,7 +304,21 @@ export function startCaptureRun(
     const limit = createLimit(options.concurrency);
     await Promise.all(
       captures.map((capture) =>
-        limit(() => runOneCapture({ db, artifactStore, worker, options }, capture, ctx)),
+        limit(async () => {
+          // Cooperative cancel: skip captures that haven't been picked up yet
+          // when the evaluation was cancelled. Already-started captures finish
+          // (Playwright doesn't honor an external AbortSignal mid-navigation),
+          // so worst-case wait is one capture's wall-time per active slot.
+          if (signal?.aborted) {
+            db.prepare(
+              `UPDATE captures SET status = 'error', error_message = 'cancelled'
+                 WHERE id = ? AND status = 'pending'`,
+            ).run(capture.id);
+            ctx.incrementProgress();
+            return;
+          }
+          await runOneCapture({ db, artifactStore, worker, options }, capture, ctx);
+        }),
       ),
     );
   });

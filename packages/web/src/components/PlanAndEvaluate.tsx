@@ -39,6 +39,10 @@ export function PlanAndEvaluate({
   const [evaluation, setEvaluation] = useState<EvaluationStatusDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [promptPanelOpen, setPromptPanelOpen] = useState(false);
+  // True between the moment the user clicks Stop and the orchestrator
+  // settling the row to `cancelled`. Drives the "Stopping…" label so the
+  // button can't be clicked twice. Reset on every fresh evaluation.
+  const [stopRequested, setStopRequested] = useState(false);
   const pollRef = useRef<number | null>(null);
   const onCompleteRef = useRef(onEvaluationComplete);
   onCompleteRef.current = onEvaluationComplete;
@@ -55,7 +59,11 @@ export function PlanAndEvaluate({
       try {
         const res = await api.getEvaluation(evaluationId);
         setEvaluation(res.evaluation);
-        if (res.evaluation.status === 'complete' || res.evaluation.status === 'error') {
+        if (
+          res.evaluation.status === 'complete' ||
+          res.evaluation.status === 'error' ||
+          res.evaluation.status === 'cancelled'
+        ) {
           if (pollRef.current !== null) {
             window.clearInterval(pollRef.current);
             pollRef.current = null;
@@ -84,6 +92,7 @@ export function PlanAndEvaluate({
       latestEvaluation.status === 'running' || latestEvaluation.status === 'pending';
     if (!isLive) return;
     setEvaluation(latestEvaluation);
+    setStopRequested(false);
     startPolling(latestEvaluation.id);
     // intentional: don't depend on `evaluation` (avoid restart loops); we
     // only adopt once per latestEvaluation id.
@@ -92,11 +101,16 @@ export function PlanAndEvaluate({
 
   const click = async () => {
     setError(null);
+    setStopRequested(false);
     try {
       const res = await api.evaluate(sessionId, invokeLm ? { invoke_lm: true } : undefined);
       const initial = await api.getEvaluation(res.evaluation_id);
       setEvaluation(initial.evaluation);
-      if (initial.evaluation.status === 'complete' || initial.evaluation.status === 'error') {
+      if (
+        initial.evaluation.status === 'complete' ||
+        initial.evaluation.status === 'error' ||
+        initial.evaluation.status === 'cancelled'
+      ) {
         onEvaluationComplete();
       } else {
         startPolling(res.evaluation_id);
@@ -106,30 +120,59 @@ export function PlanAndEvaluate({
     }
   };
 
+  const stop = async () => {
+    if (!evaluation) return;
+    setError(null);
+    setStopRequested(true);
+    try {
+      const res = await api.cancelEvaluation(evaluation.id);
+      // The orchestrator marks the row `cancelled` once in-flight work
+      // settles, which can take seconds. Reflect whatever the server returned
+      // now; polling will reconcile when the row flips.
+      setEvaluation(res.evaluation);
+    } catch (err) {
+      setStopRequested(false);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const captureMisses = results?.plan.capture_misses ?? null;
   const comparisonMisses = results?.plan.comparison_misses ?? null;
   const allCached =
     captureMisses !== null && comparisonMisses !== null && captureMisses === 0 && comparisonMisses === 0;
   const isRunning = evaluation?.status === 'running' || evaluation?.status === 'pending';
+  const isStopping = isRunning && stopRequested;
   const progress = evaluation?.progress ?? null;
-  const runningLabel = progress
-    ? `Evaluating ${progress.phase === 'capture' ? 'captures' : 'comparisons'}… ${progress.current}/${progress.total}`
-    : 'Evaluating…';
-  const buttonLabel = isRunning
-    ? runningLabel
-    : allCached
-      ? 'All cached'
-      : captureMisses !== null && comparisonMisses !== null
-        ? `Evaluate (${captureMisses} captures · ${comparisonMisses} comparisons missing)`
-        : 'Evaluate';
+  // Single-button label rotates through three modes: stopping (after Stop
+  // click, while in-flight work drains), running (active eval), idle (the
+  // resume case is just the misses-count idle label — clicking it
+  // re-evaluates and the planner skips cached work).
+  const buttonLabel = isStopping
+    ? progress
+      ? `Stopping… ${progress.current}/${progress.total}`
+      : 'Stopping…'
+    : isRunning
+      ? progress
+        ? `Stop (${progress.phase === 'capture' ? 'captures' : 'comparisons'} ${progress.current}/${progress.total})`
+        : 'Stop'
+      : allCached
+        ? 'All cached'
+        : captureMisses !== null && comparisonMisses !== null
+          ? `Evaluate (${captureMisses} captures · ${comparisonMisses} comparisons missing)`
+          : 'Evaluate';
 
   return (
     <>
       <div className="evaluate-control">
         <button
           className="btn primary"
-          onClick={() => void click()}
-          disabled={isRunning || !results || allCached}
+          onClick={() => void (isRunning ? stop() : click())}
+          disabled={isStopping || (!isRunning && (!results || allCached))}
+          title={
+            isRunning
+              ? 'Stop dispatching new work. In-flight tasks finish; click Evaluate again to resume — cached work is skipped.'
+              : undefined
+          }
         >
           {buttonLabel}
         </button>
@@ -161,7 +204,9 @@ export function PlanAndEvaluate({
                 ? `Errored: ${evaluation.error_message ?? 'unknown'}`
                 : evaluation?.status === 'complete'
                   ? 'Evaluation complete'
-                  : `Status: ${evaluation?.status ?? ''}…`}
+                  : evaluation?.status === 'cancelled'
+                    ? 'Evaluation stopped'
+                    : `Status: ${evaluation?.status ?? ''}…`}
           </p>
         )}
       </div>
