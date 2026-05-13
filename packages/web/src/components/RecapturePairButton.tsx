@@ -7,8 +7,16 @@ interface Props {
   className?: string;
   /** Compact variant for use inside dense list rows. */
   compact?: boolean;
-  /** Fires after a successful trigger, so the caller can refresh state. */
-  onTriggered?: () => void;
+  /**
+   * Fires after the invalidate + evaluate kick-off succeeds, with the
+   * evaluate result. Callers may return a Promise (e.g. to poll the
+   * evaluation and then navigate); the button stays in "Recapturing…"
+   * until the returned promise resolves so the user sees one continuous
+   * busy state across the whole pipeline rather than a flicker.
+   */
+  onTriggered?: (
+    result: { evaluation_id: string; coalesced: boolean },
+  ) => void | Promise<void>;
 }
 
 export function RecapturePairButton({
@@ -26,8 +34,8 @@ export function RecapturePairButton({
     setBusy(true);
     setError(null);
     try {
-      await api.recapturePair(sessionId, pairId);
-      onTriggered?.();
+      const result = await api.recapturePair(sessionId, pairId);
+      await onTriggered?.(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

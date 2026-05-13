@@ -116,16 +116,60 @@ export const api = {
    * Drop the cached captures for this pair (both A and B), then trigger an
    * evaluation scoped to it. The new captures get fresh shas so the pixel
    * and LM caches miss naturally and the full pipeline re-runs end-to-end.
+   * `invoke_lm: true` so the LM second-pass actually runs when the LM
+   * cache misses — Recapture is the gesture you reach for when a verdict
+   * (often an LM one) needs to be re-derived.
    */
   recapturePair: async (sessionId: string, pairId: string) => {
     await api.invalidateCaptures(sessionId, { pair_ids: [pairId] });
-    return api.evaluate(sessionId, { url_pair_ids: [pairId] });
+    return api.evaluate(sessionId, { url_pair_ids: [pairId], invoke_lm: true });
+  },
+
+  /**
+   * Recapture every distinct pair that contributes to this cluster. Uses
+   * the same chain as recapturePair, fanned out over the cluster's member
+   * pair ids. Throws if the cluster has no resolvable members.
+   */
+  recaptureCluster: async (sessionId: string, clusterId: string) => {
+    const dto = await api.getCluster(sessionId, clusterId, { limit: 10000 });
+    const pairIds = [...new Set(dto.members.map((m) => m.url_pair_id))];
+    if (pairIds.length === 0) {
+      throw new Error('Cluster has no member pairs to recapture');
+    }
+    await api.invalidateCaptures(sessionId, { pair_ids: pairIds });
+    return api.evaluate(sessionId, { url_pair_ids: pairIds, invoke_lm: true });
   },
 
   listEvaluations: (id: string) =>
     request<{ evaluations: EvaluationStatusDto[] }>(`/api/sessions/${id}/evaluations`),
   getEvaluation: (id: string) =>
     request<{ evaluation: EvaluationStatusDto }>(`/api/evaluations/${id}`),
+
+  /**
+   * Poll an evaluation until it reaches a terminal state and return the
+   * final row. Caps at `timeoutMs` (default 5 min) so callers never hang
+   * forever; on timeout the most recent poll result is returned. Used by
+   * post-Recapture flows that want to do follow-up work (locate the new
+   * comparison id, recompute clusters) once the eval is actually done.
+   */
+  waitForEvaluation: async (
+    id: string,
+    opts: { intervalMs?: number; timeoutMs?: number } = {},
+  ) => {
+    const intervalMs = opts.intervalMs ?? 1500;
+    const timeoutMs = opts.timeoutMs ?? 5 * 60 * 1000;
+    const startedAt = Date.now();
+    let evaluation: EvaluationStatusDto | null = null;
+    while (Date.now() - startedAt < timeoutMs) {
+      const { evaluation: ev } = await api.getEvaluation(id);
+      evaluation = ev;
+      if (ev.status === 'complete' || ev.status === 'error' || ev.status === 'cancelled') {
+        return ev;
+      }
+      await new Promise<void>((r) => setTimeout(r, intervalMs));
+    }
+    return evaluation;
+  },
   cancelEvaluation: (id: string) =>
     request<{ evaluation: EvaluationStatusDto }>(`/api/evaluations/${id}/cancel`, {
       method: 'POST',
@@ -213,6 +257,16 @@ export const api = {
     ),
   getComparisonDetail: (id: string) =>
     request<ComparisonDetailDto>(`/api/comparisons/${id}`),
+  listComparisons: (opts: { comparison_run_id?: string; session_id?: string; status?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.comparison_run_id) params.set('comparison_run_id', opts.comparison_run_id);
+    if (opts.session_id) params.set('session_id', opts.session_id);
+    if (opts.status) params.set('status', opts.status);
+    const qs = params.toString();
+    return request<{ comparisons: ComparisonDto[] }>(
+      `/api/comparisons${qs ? `?${qs}` : ''}`,
+    );
+  },
 
   listCaptureRuns: (sessionId: string) =>
     request<{ capture_runs: CaptureRunRow[] }>(`/api/capture-runs?session_id=${encodeURIComponent(sessionId)}`),
