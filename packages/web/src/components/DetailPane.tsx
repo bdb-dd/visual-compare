@@ -19,6 +19,8 @@ import type {
  * encapsulates the focused-item delegation.
  */
 
+const noop = (): void => {};
+
 export type Focused =
   | {
       kind: 'row';
@@ -43,13 +45,28 @@ export interface DetailPaneProps {
   acceptance?: AcceptanceRow | null;
   openAcceptDialogTrigger?: number;
   onAcceptanceChanged?: (label?: string | null) => void;
+  /** Fires when a Recapture kicks off; SessionDetailPage uses this to refresh its evaluations list. */
+  onRecaptureStarted?: (evaluation_id: string) => void;
 
   // Cluster-focus passthroughs.
   onClusterChanged?: () => void;
+  /** Fires when the cluster panel loads or updates its cluster row. */
+  onClusterLoaded?: (cluster: import('@visual-compare/api/types').DifferenceClusterRow) => void;
+  /** Fires when the cluster panel loads/refreshes the full cluster detail DTO. */
+  onClusterDataLoaded?: (data: import('@visual-compare/api/types').ClusterDetailDto) => void;
   /** Trigger counter the ActionsMenu bumps to open the cluster accept dialog. */
   clusterAcceptDialogTrigger?: number;
   /** Counterpart for cluster reject. */
   clusterRejectDialogTrigger?: number;
+  /** Counter the parent bumps to ask the cluster panel to re-fetch (post-Recapture). */
+  clusterRefreshTrigger?: number;
+  /**
+   * Member focus is lifted to the page so the inline ClustersTab list
+   * shares state with the panel. Required when `focused.kind === 'cluster'`;
+   * row-mode callers can omit (defaults are unused there).
+   */
+  focusedMemberId?: string | null;
+  onMemberFocus?: (id: string | null) => void;
 }
 
 export function DetailPane({
@@ -61,9 +78,15 @@ export function DetailPane({
   acceptance,
   openAcceptDialogTrigger,
   onAcceptanceChanged,
+  onRecaptureStarted,
   onClusterChanged,
+  onClusterLoaded,
+  onClusterDataLoaded,
   clusterAcceptDialogTrigger,
   clusterRejectDialogTrigger,
+  clusterRefreshTrigger,
+  focusedMemberId,
+  onMemberFocus,
 }: DetailPaneProps): JSX.Element {
   return (
     <section className="detail-pane">
@@ -102,6 +125,7 @@ export function DetailPane({
             acceptance={acceptance ?? null}
             openAcceptDialogTrigger={openAcceptDialogTrigger}
             onAcceptanceChanged={onAcceptanceChanged}
+            onRecaptureStarted={onRecaptureStarted}
           />
         )}
         {focused?.kind === 'row' && !focused.comparisonId && (
@@ -114,8 +138,13 @@ export function DetailPane({
             sessionId={sessionId}
             clusterId={focused.clusterId}
             onChanged={onClusterChanged}
+            onClusterLoaded={onClusterLoaded}
+            onDataLoaded={onClusterDataLoaded}
             openAcceptDialogTrigger={clusterAcceptDialogTrigger}
             openRejectDialogTrigger={clusterRejectDialogTrigger}
+            refreshTrigger={clusterRefreshTrigger}
+            focusedMemberId={focusedMemberId ?? null}
+            onMemberFocus={onMemberFocus ?? noop}
           />
         )}
       </div>

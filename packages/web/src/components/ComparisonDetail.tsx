@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ImageWithBoxes } from './ImageWithBoxes.js';
 import { RecapturePairButton } from './RecapturePairButton.js';
@@ -32,6 +33,13 @@ interface Props {
   /** Called after a successful upsert/delete; receives the saved label so the parent can remember "last used". */
   onAcceptanceChanged?: (label?: string | null) => void;
   onLoaded?: (detail: ComparisonDetailDto) => void;
+  /**
+   * Fires the instant a Recapture kicks off an evaluation, before the
+   * polling/navigation flow runs. The parent (SessionDetailPage) uses this
+   * to refresh its evaluations list so PlanAndEvaluate in the header
+   * adopts the new eval and shows its progress.
+   */
+  onRecaptureStarted?: (evaluation_id: string) => void;
 }
 
 const VIEW_MODES: { id: ViewMode; label: string }[] = [
@@ -50,12 +58,15 @@ export function ComparisonDetail({
   openAcceptDialogTrigger,
   onAcceptanceChanged,
   onLoaded,
+  onRecaptureStarted,
 }: Props): JSX.Element {
   const [detail, setDetail] = useState<ComparisonDetailDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showBoxes, setShowBoxes] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('diff');
   const [refreshTick, setRefreshTick] = useState(0);
+  const [recapturing, setRecapturing] = useState(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
     setDetail(null);
@@ -110,6 +121,12 @@ export function ComparisonDetail({
 
   return (
     <>
+      {recapturing && (
+        <div className="recapture-banner" role="status" aria-live="polite">
+          Recapturing… waiting for new captures and verdict. The comparison
+          will update automatically when ready.
+        </div>
+      )}
       <div className="detail-head">
         <div className="dh-title-row">
           {isMissing ? (
@@ -144,17 +161,45 @@ export function ComparisonDetail({
             sessionId={url_pair.session_id}
             pairId={url_pair.id}
             compact
-            onTriggered={() => setRefreshTick((t) => t + 1)}
+            onTriggered={async ({ evaluation_id }) => {
+              // Tell the parent right away so the session header's
+              // PlanAndEvaluate can adopt the new eval and start showing
+              // progress while we poll for the resulting comparison id.
+              onRecaptureStarted?.(evaluation_id);
+              setRecapturing(true);
+              try {
+                const newId = await pollForNewComparisonId(
+                  evaluation_id,
+                  url_pair.id,
+                  c.viewport_name,
+                );
+                // When embedded in a session view (sessionId prop set), the
+                // URL is the session's, not /comparisons/<id> — navigating
+                // would yank the user out of the session. Refresh in place
+                // instead and let the parent reconcile its focused state.
+                if (newId && newId !== id && !sessionId) {
+                  navigate(`/comparisons/${newId}`, { replace: true });
+                  return;
+                }
+                setRefreshTick((t) => t + 1);
+              } finally {
+                setRecapturing(false);
+              }
+            }}
           />
         </div>
         <div className="dh-urls">
           <div className="dh-url" title={url_pair.url_a}>
             <span className="dh-url-side">A</span>
-            <span>{url_pair.url_a}</span>
+            <a href={url_pair.url_a} target="_blank" rel="noreferrer">
+              {url_pair.url_a}
+            </a>
           </div>
           <div className="dh-url" title={url_pair.url_b}>
             <span className="dh-url-side">B</span>
-            <span>{url_pair.url_b}</span>
+            <a href={url_pair.url_b} target="_blank" rel="noreferrer">
+              {url_pair.url_b}
+            </a>
           </div>
         </div>
         {!isMissing && (
@@ -536,4 +581,28 @@ function fmtPct(v: number | null): string {
 function fmtNum(v: number | null, digits = 3): string {
   if (v === null) return '—';
   return v.toFixed(digits);
+}
+
+/**
+ * Wait for the evaluation a Recapture kicked off, then locate the
+ * comparison row it produced for this (pair, viewport). Returns the new
+ * comparison id, or `null` if the evaluation didn't end up producing a
+ * matching row (errored, cancelled, or the new SHAs short-circuited so
+ * the orchestrator reused an existing comparison).
+ */
+async function pollForNewComparisonId(
+  evaluationId: string,
+  pairId: string,
+  viewportName: string,
+): Promise<string | null> {
+  const evaluation = await api.waitForEvaluation(evaluationId);
+  if (!evaluation || evaluation.status !== 'complete') return null;
+  if (!evaluation.comparison_run_id) return null;
+  const { comparisons } = await api.listComparisons({
+    comparison_run_id: evaluation.comparison_run_id,
+  });
+  const match = comparisons.find(
+    (c) => c.url_pair_id === pairId && c.viewport_name === viewportName,
+  );
+  return match?.id ?? null;
 }

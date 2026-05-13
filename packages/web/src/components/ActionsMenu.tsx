@@ -32,6 +32,8 @@ export interface ActionsMenuProps {
   // Cluster-focus handlers.
   onClusterAccept?: () => void;
   onClusterReject?: () => void;
+  /** Recapture every pair the cluster touches (drops caches + re-evaluates). */
+  onClusterRecapture?: () => void;
 
   // Cluster state passed through so we can disable Accept/Reject correctly.
   clusterReviewState?: 'open' | 'accepted' | 'rejected' | 'split' | 'anomaly' | null;
@@ -259,6 +261,14 @@ function computeItems(props: ActionsMenuProps): MenuItem[] {
       label: 'Show members in Rows',
       disabledReason: 'Needs row-filter-by-cluster — Phase δ',
       separator: true,
+    },
+    {
+      key: 'recapture',
+      label: 'Recapture cluster pairs',
+      onClick: props.onClusterRecapture,
+      disabledReason: props.onClusterRecapture
+        ? undefined
+        : 'No handler',
     },
     {
       key: 'accept-category',

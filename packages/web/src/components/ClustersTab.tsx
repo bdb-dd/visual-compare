@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
+import { RecapturePairButton } from './RecapturePairButton.js';
 import {
   statusToClusterReviewState,
   type FilterState,
 } from '../api/filterState.js';
 import type {
+  ClusterDetailDto,
   ClusterListDto,
+  ClusterMemberDto,
   ClusterSummaryDto,
 } from '@visual-compare/api/types';
 
@@ -71,6 +74,16 @@ export interface ClustersTabProps {
   onClusterFocus?: (clusterId: string) => void;
   /** Cluster id currently highlighted by the parent (Phase γ+ focus state). */
   focusedClusterId?: string | null;
+  /**
+   * Cluster detail DTO for the focused cluster, populated by the detail
+   * pane's onDataLoaded callback. When present, the inline Members list
+   * renders under the focused cluster row.
+   */
+  focusedClusterDetail?: ClusterDetailDto | null;
+  /** Which member is currently active in the right-side image triple. */
+  focusedMemberId?: string | null;
+  /** Selecting a member updates the right-side detail pane. */
+  onMemberFocus?: (id: string | null) => void;
 }
 
 export function ClustersTab({
@@ -78,6 +91,9 @@ export function ClustersTab({
   filter,
   onClusterFocus,
   focusedClusterId,
+  focusedClusterDetail,
+  focusedMemberId,
+  onMemberFocus,
 }: ClustersTabProps): JSX.Element {
   const [data, setData] = useState<ClusterListDto | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -182,6 +198,9 @@ export function ClustersTab({
                 onBulkAccepted={() => void load()}
                 onClusterFocus={onClusterFocus}
                 focusedClusterId={focusedClusterId ?? null}
+                focusedClusterDetail={focusedClusterDetail ?? null}
+                focusedMemberId={focusedMemberId ?? null}
+                onMemberFocus={onMemberFocus}
               />
             )
           ))}
@@ -193,6 +212,9 @@ export function ClustersTab({
               onBulkAccepted={() => void load()}
               onClusterFocus={onClusterFocus}
               focusedClusterId={focusedClusterId ?? null}
+              focusedClusterDetail={focusedClusterDetail ?? null}
+              focusedMemberId={focusedMemberId ?? null}
+              onMemberFocus={onMemberFocus}
             />
           )}
           {grouped.untagged.length > 0 && (
@@ -203,6 +225,9 @@ export function ClustersTab({
               note="These come from the v0 geometric signature — imagick rows and v2-era LM responses that pre-date the v3 prompt. Will reduce after re-evaluation under v3."
               onClusterFocus={onClusterFocus}
               focusedClusterId={focusedClusterId ?? null}
+              focusedClusterDetail={focusedClusterDetail ?? null}
+              focusedMemberId={focusedMemberId ?? null}
+              onMemberFocus={onMemberFocus}
             />
           )}
         </div>
@@ -226,6 +251,9 @@ function CategoryGroup({
   onBulkAccepted,
   onClusterFocus,
   focusedClusterId,
+  focusedClusterDetail,
+  focusedMemberId,
+  onMemberFocus,
 }: {
   title: string;
   clusters: ClusterSummaryDto[];
@@ -234,6 +262,9 @@ function CategoryGroup({
   onBulkAccepted?: () => void;
   onClusterFocus?: (clusterId: string) => void;
   focusedClusterId?: string | null;
+  focusedClusterDetail?: ClusterDetailDto | null;
+  focusedMemberId?: string | null;
+  onMemberFocus?: (id: string | null) => void;
 }): JSX.Element {
   const totalPairs = clusters.reduce((acc, c) => acc + c.pair_count, 0);
   const maxPairs = clusters.reduce((acc, c) => Math.max(acc, c.pair_count), 1);
@@ -322,25 +353,32 @@ function CategoryGroup({
           const rowClass = `cluster-row${isFocused ? ' cluster-row--focused' : ''}`;
           const body = (
             <>
-              <div className="cluster-row__primary">
-                <span className="cluster-row__label">{c.element_label ?? '(unlabelled)'}</span>
-                <span className="cluster-row__change-type">{c.change_type ?? '—'}</span>
-                <span className={`cluster-row__sigv cluster-row__sigv--${c.signature_version}`}>
-                  {c.signature_version}
-                </span>
-                <span className={`cluster-row__state cluster-row__state--${c.review_state}`}>
-                  {c.review_state}
-                </span>
+              <div className="cluster-row__content">
+                <div className="cluster-row__primary">
+                  <span className="cluster-row__label">{c.element_label ?? '(unlabelled)'}</span>
+                  <span className="cluster-row__change-type">{c.change_type ?? '—'}</span>
+                  <span className={`cluster-row__sigv cluster-row__sigv--${c.signature_version}`}>
+                    {c.signature_version}
+                  </span>
+                  <span className={`cluster-row__state cluster-row__state--${c.review_state}`}>
+                    {c.review_state}
+                  </span>
+                  <span className="cluster-row__pairs">{c.pair_count} pair{c.pair_count === 1 ? '' : 's'}</span>
+                </div>
+                {c.sample?.description && (
+                  <p className="cluster-row__sample">{c.sample.description}</p>
+                )}
               </div>
-              <div className="cluster-row__bar">
-                <div className="cluster-row__bar-fill" style={{ width: `${(c.pair_count / maxPairs) * 100}%` }} />
-                <span className="cluster-row__bar-text">{c.pair_count} pair{c.pair_count === 1 ? '' : 's'}</span>
+              <div className="cluster-row__bar" aria-hidden="true">
+                <div
+                  className="cluster-row__bar-fill"
+                  style={{ height: `${(c.pair_count / maxPairs) * 100}%` }}
+                />
               </div>
-              {c.sample?.description && (
-                <p className="cluster-row__sample">{c.sample.description}</p>
-              )}
             </>
           );
+          const showMembers =
+            isFocused && focusedClusterDetail?.cluster.id === c.id;
           return (
             <li key={c.id}>
               {onClusterFocus ? (
@@ -356,6 +394,14 @@ function CategoryGroup({
                   {body}
                 </Link>
               )}
+              {showMembers && focusedClusterDetail && (
+                <InlineMemberList
+                  sessionId={sessionId}
+                  detail={focusedClusterDetail}
+                  focusedMemberId={focusedMemberId ?? null}
+                  onMemberFocus={onMemberFocus}
+                />
+              )}
             </li>
           );
         })}
@@ -368,6 +414,82 @@ function CategoryGroup({
           onCancel={() => setConfirming(null)}
         />
       )}
+    </section>
+  );
+}
+
+/**
+ * Inline Members list that appears under the focused cluster row in the
+ * left list. Clicking a member updates `focusedMemberId` in the page,
+ * which drives the right-side image triple + filmstrip in
+ * `ClusterDetailPanel`. Falls back to the cluster's representative when
+ * `focusedMemberId` is null.
+ */
+function InlineMemberList({
+  sessionId,
+  detail,
+  focusedMemberId,
+  onMemberFocus,
+}: {
+  sessionId: string;
+  detail: ClusterDetailDto;
+  focusedMemberId: string | null;
+  onMemberFocus?: (id: string | null) => void;
+}): JSX.Element {
+  const members: ClusterMemberDto[] = detail.members;
+  const repId = detail.representative?.difference_id ?? null;
+  const displayedId = focusedMemberId ?? repId;
+  return (
+    <section className="cluster-row__members">
+      <h4 className="cluster-row__members-title">
+        Members{' '}
+        <span className="cluster-row__members-count">
+          ({members.length}
+          {members.length < detail.cluster.member_count
+            ? ` of ${detail.cluster.member_count}`
+            : ''}
+          )
+        </span>
+      </h4>
+      <ul className="member-list">
+        {members.map((m) => {
+          const focused = displayedId === m.difference_id;
+          return (
+            <li
+              key={m.difference_id}
+              data-member-id={m.difference_id}
+              className={`member-row${focused ? ' member-row--focused' : ''}`}
+              onClick={() => onMemberFocus?.(m.difference_id)}
+              role="button"
+              tabIndex={-1}
+              aria-pressed={focused}
+              title="Click to preview this pair (or use j/k to step)"
+            >
+              <span className="member-row__url">{m.url_a}</span>
+              <span className="member-row__vp">{m.viewport_name}</span>
+              <span
+                className="member-row__nested"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <RecapturePairButton
+                  sessionId={sessionId}
+                  pairId={m.url_pair_id}
+                  compact
+                  className="member-row__recapture"
+                />
+              </span>
+              <Link
+                to={`/comparisons/${m.comparison_id}`}
+                className="member-row__detail"
+                title="Open full comparison detail"
+                onClick={(e) => e.stopPropagation()}
+              >
+                Open →
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }

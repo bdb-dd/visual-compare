@@ -126,6 +126,50 @@ export function SessionDetailPage(): JSX.Element {
   const [acceptDialogTrigger, setAcceptDialogTrigger] = useState(0);
   const [clusterAcceptTrigger, setClusterAcceptTrigger] = useState(0);
   const [clusterRejectTrigger, setClusterRejectTrigger] = useState(0);
+  const [clusterRefreshTrigger, setClusterRefreshTrigger] = useState(0);
+  /**
+   * Review state of the cluster currently shown in the detail pane.
+   * Lifted out of ClusterDetailPanel so ActionsMenu can correctly
+   * disable Accept (when already accepted) and Reject (when not yet
+   * accepted). Refreshed via onClusterLoaded from the panel.
+   */
+  const [focusedClusterReviewState, setFocusedClusterReviewState] =
+    useState<import('@visual-compare/api/types').ClusterReviewState | null>(null);
+  /**
+   * Cluster detail DTO for the currently focused cluster, lifted out of
+   * ClusterDetailPanel so the inline Members list under the focused row
+   * in ClustersTab can read the same members + representative. Populated
+   * by the panel's onDataLoaded callback.
+   */
+  const [focusedClusterDetail, setFocusedClusterDetail] = useState<
+    import('@visual-compare/api/types').ClusterDetailDto | null
+  >(null);
+  /**
+   * Which member of the focused cluster is currently in the image triple.
+   * Lifted from ClusterDetailPanel so the inline Members list in
+   * ClustersTab drives the same focus. `null` falls back to the
+   * cluster's representative.
+   */
+  const [focusedMemberId, setFocusedMemberId] = useState<string | null>(null);
+  // Reset the cached review state + member focus + cluster detail whenever
+  // focus moves to a different cluster (or clears). The detail panel
+  // re-fires onClusterLoaded / onDataLoaded once the new cluster's data
+  // lands.
+  useEffect(() => {
+    setFocusedClusterReviewState(null);
+    setFocusedMemberId(null);
+    setFocusedClusterDetail(null);
+  }, [focusedClusterId]);
+  /**
+   * Sticky toasts surfaced after each cluster Recapture's index recompute
+   * finishes. Each carries the original clusterId so the user can jump
+   * back to it — useful when the cluster has been emptied or shrunk by
+   * the recompute. Toasts stack so multiple in-flight recaptures don't
+   * clobber each other; dismissal is per-toast.
+   */
+  const [clusterRecaptureToasts, setClusterRecaptureToasts] = useState<
+    Array<{ id: string; clusterId: string }>
+  >([]);
   const [lastUsedLabel, setLastUsedLabel] = useState<string | null>(null);
 
   const refreshResults = useCallback(async () => {
@@ -466,6 +510,49 @@ export function SessionDetailPage(): JSX.Element {
     }
   };
 
+  // Cluster Recapture: kicks off the eval, then once it finishes we
+  // recompute the cluster index (the new differences may have shifted
+  // members between clusters, populated new ones, or emptied existing
+  // ones). If the user is still viewing the cluster we recaptured, bump
+  // its refresh trigger so the detail pane re-fetches the updated
+  // membership. The user may have navigated to a different cluster by
+  // the time recompute finishes — in that case we only recompute the
+  // index and skip the local refresh.
+  const handleClusterRecapture = (clusterId: string) => {
+    if (!session) return;
+    const sessionId = session.id;
+    const focusedAtClickTime = clusterId;
+    void (async () => {
+      try {
+        const { evaluation_id } = await api.recaptureCluster(sessionId, clusterId);
+        // Immediate refresh so the header surfaces the new eval right away.
+        void Promise.all([refreshEvaluations(), refreshResults()]);
+        const finalEval = await api.waitForEvaluation(evaluation_id);
+        if (!finalEval || finalEval.status !== 'complete') return;
+        // Recompute the cluster index off the new differences. Server-side
+        // also re-applies standing rules so accepted clusters stay accepted.
+        await api.listClusters(sessionId, { recompute: true });
+        if (focusedClusterId === focusedAtClickTime) {
+          setClusterRefreshTrigger((v) => v + 1);
+        }
+        // Sticky toast — the recompute may have emptied or shrunk the
+        // original cluster (members moved to differently-shaped signatures
+        // after recapture), so we surface a jump-back link rather than
+        // silently letting the user lose their place. Append (don't
+        // overwrite) so concurrent recaptures all get their own toast.
+        setClusterRecaptureToasts((prev) => [
+          ...prev,
+          { id: crypto.randomUUID(), clusterId: focusedAtClickTime },
+        ]);
+        // Results / evaluations may have new cache_hits and a fresh
+        // completed_at; refresh once more so the header settles.
+        void Promise.all([refreshEvaluations(), refreshResults()]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+  };
+
   if (error && !session) return <main><div className="error">{error}</div></main>;
   if (!session || !config) return <main><p className="muted">Loading…</p></main>;
 
@@ -475,6 +562,46 @@ export function SessionDetailPage(): JSX.Element {
 
   return (
     <main className="wide">
+      {clusterRecaptureToasts.length > 0 && (
+        <div className="cluster-recapture-toast-stack" aria-live="polite">
+          {clusterRecaptureToasts.map((t) => (
+            <div key={t.id} className="cluster-recapture-toast" role="status">
+              <span className="cluster-recapture-toast__msg">
+                Cluster index refreshed. Members may have moved — the original
+                cluster could be empty now.
+              </span>
+              <button
+                type="button"
+                className="cluster-recapture-toast__link"
+                onClick={() => {
+                  const sp = new URLSearchParams(searchParams);
+                  sp.delete('mode'); // clusters is the canonical default
+                  sp.set('focus', t.clusterId);
+                  setSearchParams(sp, { replace: false });
+                  setClusterRecaptureToasts((prev) =>
+                    prev.filter((x) => x.id !== t.id),
+                  );
+                }}
+              >
+                View cluster →
+              </button>
+              <button
+                type="button"
+                className="cluster-recapture-toast__close"
+                onClick={() =>
+                  setClusterRecaptureToasts((prev) =>
+                    prev.filter((x) => x.id !== t.id),
+                  )
+                }
+                aria-label="Dismiss"
+                title="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <header className="project-header">
         <div className="project-header-top">
           <p className="breadcrumb">
@@ -546,6 +673,9 @@ export function SessionDetailPage(): JSX.Element {
               filter={filterState}
               onClusterFocus={setFocusedClusterId}
               focusedClusterId={focusedClusterId}
+              focusedClusterDetail={focusedClusterDetail}
+              focusedMemberId={focusedMemberId}
+              onMemberFocus={setFocusedMemberId}
             />
           </div>
           {focusedClusterId && (
@@ -555,14 +685,21 @@ export function SessionDetailPage(): JSX.Element {
                 focused={{ kind: 'cluster', clusterId: focusedClusterId }}
                 onClose={() => setFocusedClusterId(null)}
                 onClusterChanged={() => void refreshResults()}
+                onClusterLoaded={(cluster) => setFocusedClusterReviewState(cluster.review_state)}
+                onClusterDataLoaded={setFocusedClusterDetail}
                 clusterAcceptDialogTrigger={clusterAcceptTrigger}
                 clusterRejectDialogTrigger={clusterRejectTrigger}
+                clusterRefreshTrigger={clusterRefreshTrigger}
+                focusedMemberId={focusedMemberId}
+                onMemberFocus={setFocusedMemberId}
                 actionsSlot={
                   <ActionsMenu
                     sessionId={session.id}
                     focused={{ kind: 'cluster', clusterId: focusedClusterId }}
+                    clusterReviewState={focusedClusterReviewState}
                     onClusterAccept={() => setClusterAcceptTrigger((v) => v + 1)}
                     onClusterReject={() => setClusterRejectTrigger((v) => v + 1)}
+                    onClusterRecapture={() => handleClusterRecapture(focusedClusterId)}
                   />
                 }
               />
@@ -588,14 +725,21 @@ export function SessionDetailPage(): JSX.Element {
                 focused={{ kind: 'cluster', clusterId: focusedClusterId }}
                 onClose={() => setFocusedClusterId(null)}
                 onClusterChanged={() => void refreshResults()}
+                onClusterLoaded={(cluster) => setFocusedClusterReviewState(cluster.review_state)}
+                onClusterDataLoaded={setFocusedClusterDetail}
                 clusterAcceptDialogTrigger={clusterAcceptTrigger}
                 clusterRejectDialogTrigger={clusterRejectTrigger}
+                clusterRefreshTrigger={clusterRefreshTrigger}
+                focusedMemberId={focusedMemberId}
+                onMemberFocus={setFocusedMemberId}
                 actionsSlot={
                   <ActionsMenu
                     sessionId={session.id}
                     focused={{ kind: 'cluster', clusterId: focusedClusterId }}
+                    clusterReviewState={focusedClusterReviewState}
                     onClusterAccept={() => setClusterAcceptTrigger((v) => v + 1)}
                     onClusterReject={() => setClusterRejectTrigger((v) => v + 1)}
+                    onClusterRecapture={() => handleClusterRecapture(focusedClusterId)}
                   />
                 }
               />
@@ -716,6 +860,7 @@ export function SessionDetailPage(): JSX.Element {
                   void refreshAcceptances();
                   void refreshResults();
                 }}
+                onRecaptureStarted={() => void refreshEvaluations()}
                 actionsSlot={
                   selectedRow?.comparison_id ? (
                     <ActionsMenu
