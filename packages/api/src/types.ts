@@ -372,8 +372,9 @@ export interface ClusterListDto {
 }
 
 /**
- * Member of a cluster — one differences row. Lightweight: enough to render
- * the member list and link to /comparisons/:id for full detail.
+ * Member of a cluster — one differences row, enriched with the comparison's
+ * image shas + pixel/LM metrics so the cluster detail UI can render any
+ * member's A/B/diff inline (j/k stepper) without a per-pair fetch.
  */
 export interface ClusterMemberDto {
   difference_id: string;
@@ -385,14 +386,6 @@ export interface ClusterMemberDto {
   description: string;
   severity: string | null;
   bounding_box: BoundingBoxPercent | null;
-}
-
-/**
- * The cluster's representative — enriched with the comparison's image shas
- * and pixel/LM metrics so the cluster detail page can render the sample
- * A/B/diff triple without a separate fetch.
- */
-export interface ClusterRepresentativeDto extends ClusterMemberDto {
   capture_a_sha: string | null;
   capture_b_sha: string | null;
   im_diff_sha: string | null;
@@ -401,6 +394,12 @@ export interface ClusterRepresentativeDto extends ClusterMemberDto {
   lm_summary: string | null;
   lm_confidence: number | null;
 }
+
+/**
+ * Representative carries the same shape as a member — kept as a distinct
+ * type so the detail DTO can mark which member the cluster picked.
+ */
+export type ClusterRepresentativeDto = ClusterMemberDto;
 
 export interface ClusterDetailDto {
   cluster: DifferenceClusterRow;
