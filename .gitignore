@@ -17,3 +17,6 @@ coverage/
 
 # test-corpus runner output
 tmp/
+
+# deployment secrets
+.kamal/secrets*
