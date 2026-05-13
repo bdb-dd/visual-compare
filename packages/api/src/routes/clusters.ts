@@ -92,20 +92,33 @@ export function clustersRouter(db: Db): Router {
     const limit = parsePositiveInt(req.query.limit, 50, 500);
     const members = listClusterMembers(db, sessionId, clusterId, limit);
 
+    const memberDtos: ClusterMemberDto[] = members.map((m): ClusterMemberDto => ({
+      difference_id: m.difference_id,
+      comparison_id: m.comparison_id,
+      url_pair_id: m.url_pair_id,
+      viewport_name: m.viewport_name,
+      url_a: m.url_a,
+      url_b: m.url_b,
+      description: m.description,
+      severity: m.severity,
+      bounding_box: parseBbox(m.bounding_box_json),
+      capture_a_sha: m.capture_a_sha,
+      capture_b_sha: m.capture_b_sha,
+      im_diff_sha: m.im_diff_sha,
+      ssim: m.ssim,
+      changed_pct: m.changed_pct,
+      lm_summary: m.lm_summary,
+      lm_confidence: m.lm_confidence,
+    }));
+    // Prefer the representative entry from the member list when present —
+    // keeps the two views in sync without a second SQL round-trip. Falls back
+    // to a dedicated lookup if the rep wasn't returned (e.g. clipped by limit).
     const dto: ClusterDetailDto = {
       cluster,
-      representative: representativeFor(db, cluster),
-      members: members.map((m): ClusterMemberDto => ({
-        difference_id: m.difference_id,
-        comparison_id: m.comparison_id,
-        url_pair_id: m.url_pair_id,
-        viewport_name: m.viewport_name,
-        url_a: m.url_a,
-        url_b: m.url_b,
-        description: m.description,
-        severity: m.severity,
-        bounding_box: parseBbox(m.bounding_box_json),
-      })),
+      representative:
+        memberDtos.find((m) => m.difference_id === cluster.representative_difference_id) ??
+        representativeFor(db, cluster),
+      members: memberDtos,
     };
     res.json(dto);
   });

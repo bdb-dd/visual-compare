@@ -70,21 +70,37 @@ export function recomputeClusters(
     element_label: string | null;
     severity: string | null;
   }
+  // Only consume diffs from the *latest* comparison per (pair, viewport).
+  // Recapture and re-evaluation produce new comparison rows alongside the
+  // old ones; without this scoping, the cluster index would pick up diffs
+  // from both, inflating member_count and letting an old (pre-recapture)
+  // diff win the representative tie-break — so the visible cluster image
+  // could still point at the previous captures' shas. Old comparison rows
+  // stay in the DB for history; they just don't feed the cluster index.
   const rows = db
     .prepare<[string], Row>(
-      `SELECT d.id              AS diff_id,
+      `WITH latest_comparison AS (
+         SELECT c.id, c.url_pair_id, c.viewport_name,
+                ROW_NUMBER() OVER (
+                  PARTITION BY c.url_pair_id, c.viewport_name
+                  ORDER BY c.created_at DESC
+                ) AS rn
+           FROM comparisons c
+           JOIN url_pairs p ON p.id = c.url_pair_id
+          WHERE p.session_id = ?
+       )
+       SELECT d.id              AS diff_id,
               d.signature       AS signature,
               d.signature_version AS signature_version,
               d.region_role     AS region_role,
               d.change_type     AS change_type,
               d.element_label   AS element_label,
               d.severity        AS severity,
-              c.viewport_name   AS viewport_name,
-              c.url_pair_id     AS url_pair_id
+              lc.viewport_name  AS viewport_name,
+              lc.url_pair_id    AS url_pair_id
          FROM differences d
-         JOIN comparisons c ON c.id = d.comparison_id
-         JOIN url_pairs   p ON p.id = c.url_pair_id
-        WHERE p.session_id = ?
+         JOIN latest_comparison lc ON lc.id = d.comparison_id
+        WHERE lc.rn = 1
           AND d.signature IS NOT NULL`,
     )
     .all(sessionId);
@@ -275,6 +291,13 @@ export interface ClusterMember {
   description: string;
   severity: string | null;
   bounding_box_json: string | null;
+  capture_a_sha: string | null;
+  capture_b_sha: string | null;
+  im_diff_sha: string | null;
+  ssim: number | null;
+  changed_pct: number | null;
+  lm_summary: string | null;
+  lm_confidence: number | null;
 }
 
 export function listClusterMembers(
@@ -283,24 +306,55 @@ export function listClusterMembers(
   clusterId: string,
   limit = 50,
 ): ClusterMember[] {
-  // Resolve signature first, then fetch member differences.
+  // Resolve signature first, then fetch member differences with the
+  // comparison's image shas + metrics joined in. The extra captures joins
+  // are cheap (id lookup) and let the UI swap A/B/diff per member without
+  // a per-pair round-trip.
+  //
+  // Same latest-per-(pair,viewport) scoping as `recomputeClusters`: a
+  // re-evaluation or Recapture leaves the old comparison + its diffs in
+  // place, and without this filter the member list (which drives the
+  // visible image triple) ends up surfacing diffs attached to
+  // pre-recapture comparisons — old shas, stale verdict — even when
+  // recompute correctly excluded those pairs from the cluster's
+  // aggregate counts.
   const cluster = getCluster(db, sessionId, clusterId);
   if (!cluster) return [];
   return db
     .prepare<[string, string, string, number], ClusterMember>(
-      `SELECT d.id                  AS difference_id,
-              d.comparison_id       AS comparison_id,
-              c.url_pair_id         AS url_pair_id,
-              c.viewport_name       AS viewport_name,
-              p.url_a               AS url_a,
-              p.url_b               AS url_b,
-              d.description         AS description,
-              d.severity            AS severity,
-              d.bounding_box_json   AS bounding_box_json
+      `WITH latest_comparison AS (
+         SELECT c.id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY c.url_pair_id, c.viewport_name
+                  ORDER BY c.created_at DESC
+                ) AS rn
+           FROM comparisons c
+           JOIN url_pairs p ON p.id = c.url_pair_id
+          WHERE p.session_id = ?
+       )
+       SELECT d.id                       AS difference_id,
+              d.comparison_id            AS comparison_id,
+              c.url_pair_id              AS url_pair_id,
+              c.viewport_name            AS viewport_name,
+              p.url_a                    AS url_a,
+              p.url_b                    AS url_b,
+              d.description              AS description,
+              d.severity                 AS severity,
+              d.bounding_box_json        AS bounding_box_json,
+              ca.screenshot_sha256       AS capture_a_sha,
+              cb.screenshot_sha256       AS capture_b_sha,
+              c.im_diff_sha256           AS im_diff_sha,
+              c.ssim                     AS ssim,
+              c.changed_pixel_percentage AS changed_pct,
+              c.lm_diff_summary          AS lm_summary,
+              c.lm_confidence            AS lm_confidence
          FROM differences d
-         JOIN comparisons c ON c.id = d.comparison_id
-         JOIN url_pairs   p ON p.id = c.url_pair_id
-        WHERE p.session_id        = ?
+         JOIN latest_comparison lc ON lc.id = d.comparison_id
+         JOIN comparisons c  ON c.id = d.comparison_id
+         JOIN url_pairs   p  ON p.id = c.url_pair_id
+         JOIN captures    ca ON ca.id = c.capture_a_id
+         JOIN captures    cb ON cb.id = c.capture_b_id
+        WHERE lc.rn              = 1
           AND d.signature         = ?
           AND d.signature_version = ?
         ORDER BY d.id

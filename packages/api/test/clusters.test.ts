@@ -40,18 +40,18 @@ function seed(db: Db, opts: {
       VALUES ('${jobId}', 'comparison', 'complete', '${now}');
     INSERT INTO capture_runs (id, session_id, job_id, options_json, created_at)
       VALUES ('${captureRunId}', '${sessionId}', '${jobId}', '{}', '${now}');
-    INSERT INTO captures (id, capture_run_id, url_pair_id, side, url, status, viewport_name, created_at)
+    INSERT INTO captures (id, capture_run_id, url_pair_id, side, url, status, viewport_name, screenshot_sha256, created_at)
       VALUES
-        ('cap1', '${captureRunId}', 'p1', 'a', 'https://a1', 'complete', 'desktop', '${now}'),
-        ('cap2', '${captureRunId}', 'p1', 'b', 'https://b1', 'complete', 'desktop', '${now}'),
-        ('cap3', '${captureRunId}', 'p2', 'a', 'https://a2', 'complete', 'desktop', '${now}'),
-        ('cap4', '${captureRunId}', 'p2', 'b', 'https://b2', 'complete', 'desktop', '${now}');
+        ('cap1', '${captureRunId}', 'p1', 'a', 'https://a1', 'complete', 'desktop', '${'a'.repeat(64)}', '${now}'),
+        ('cap2', '${captureRunId}', 'p1', 'b', 'https://b1', 'complete', 'desktop', '${'b'.repeat(64)}', '${now}'),
+        ('cap3', '${captureRunId}', 'p2', 'a', 'https://a2', 'complete', 'desktop', '${'c'.repeat(64)}', '${now}'),
+        ('cap4', '${captureRunId}', 'p2', 'b', 'https://b2', 'complete', 'desktop', '${'d'.repeat(64)}', '${now}');
     INSERT INTO comparison_runs (id, session_id, capture_run_id, job_id, options_json, created_at)
       VALUES ('${comparisonRunId}', '${sessionId}', '${captureRunId}', '${jobId}', '{}', '${now}');
-    INSERT INTO comparisons (id, comparison_run_id, url_pair_id, capture_a_id, capture_b_id, viewport_name, status, created_at)
+    INSERT INTO comparisons (id, comparison_run_id, url_pair_id, capture_a_id, capture_b_id, viewport_name, status, im_diff_sha256, ssim, changed_pixel_percentage, lm_diff_summary, lm_confidence, created_at)
       VALUES
-        ('cmp1', '${comparisonRunId}', 'p1', 'cap1', 'cap2', 'desktop', 'complete', '${now}'),
-        ('cmp2', '${comparisonRunId}', 'p2', 'cap3', 'cap4', 'desktop', 'complete', '${now}');
+        ('cmp1', '${comparisonRunId}', 'p1', 'cap1', 'cap2', 'desktop', 'complete', '${'e'.repeat(64)}', 0.92, 1.5, 'nav added', 0.81, '${now}'),
+        ('cmp2', '${comparisonRunId}', 'p2', 'cap3', 'cap4', 'desktop', 'complete', '${'f'.repeat(64)}', 0.88, 2.3, NULL, NULL, '${now}');
   `);
 
   const insertDiff = db.prepare(
@@ -231,6 +231,30 @@ describe('listClusterMembers', () => {
       expect(m.viewport_name).toBe('desktop');
       expect(m.url_a).toMatch(/^https:\/\/a/);
     }
+  });
+
+  it('carries each member\'s capture shas + comparison metrics', () => {
+    const { sessionId } = seed(db);
+    recomputeClusters(db, sessionId);
+    const a = listClusters(db, sessionId).find((c) => c.signature === 'sigA-v1')!;
+    const members = listClusterMembers(db, sessionId, a.id);
+    // Every member belongs to either cmp1 (p1) or cmp2 (p2); shas are
+    // populated for both pairs in the fixture.
+    for (const m of members) {
+      expect(m.capture_a_sha).toMatch(/^[a-f]{64}$/);
+      expect(m.capture_b_sha).toMatch(/^[a-f]{64}$/);
+      expect(m.im_diff_sha).toMatch(/^[a-f]{64}$/);
+      expect(typeof m.ssim).toBe('number');
+      expect(typeof m.changed_pct).toBe('number');
+    }
+    // cmp1 has lm_diff_summary populated; cmp2 leaves it null. Both should
+    // pass through faithfully.
+    const cmp1Member = members.find((m) => m.comparison_id === 'cmp1')!;
+    const cmp2Member = members.find((m) => m.comparison_id === 'cmp2')!;
+    expect(cmp1Member.lm_summary).toBe('nav added');
+    expect(cmp1Member.lm_confidence).toBeCloseTo(0.81);
+    expect(cmp2Member.lm_summary).toBeNull();
+    expect(cmp2Member.lm_confidence).toBeNull();
   });
 
   it('respects the limit parameter', () => {
