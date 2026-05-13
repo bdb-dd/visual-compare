@@ -702,6 +702,17 @@ async function runOneComparison(
           console.warn(
             `[lm] comparison ${comparison.id} LM call failed: ${lmOutcome.message}`,
           );
+          // Dump a snippet of the raw response so the next "no JSON object"
+          // failure is debuggable from the dev log (truncation vs. prose vs.
+          // something stranger). Capped because some models stream long
+          // chain-of-thought before failing.
+          if (lmOutcome.rawText) {
+            const snippet = lmOutcome.rawText.length > 2048
+              ? `${lmOutcome.rawText.slice(0, 2048)}…[+${lmOutcome.rawText.length - 2048} chars]`
+              : lmOutcome.rawText;
+            // eslint-disable-next-line no-console
+            console.warn(`[lm] comparison ${comparison.id} raw response: ${snippet}`);
+          }
           // Fall through — IM verdict from phase 1 stands.
         } else {
           // Success: reset breaker and persist LM verdict.

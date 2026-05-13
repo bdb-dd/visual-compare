@@ -75,6 +75,8 @@ For EACH difference, you must also emit three categorical tags so similar change
 
 Reply ONLY with JSON matching the supplied schema. Bounding boxes MUST be expressed as percentages of the image dimensions (0..100), NOT pixels. Each bounding box is an OBJECT with named fields x, y, width, height — never an array.
 
+Also emit a top-level "summary" field: ONE short sentence (≤120 chars) describing the overall difference in plain language for a human reviewer. When equivalent=true, summary may be "Equivalent." or a brief note like "Pages match." Do not include markdown, code fences, or trailing commentary.
+
 Worked examples:
 
   Sidebar navigation menu added in B:

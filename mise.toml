@@ -1,3 +1,10 @@
 [tools]
 node = "22"
 "npm:pnpm" = "10.33.3"
+
+[env]
+# Output-token cap for the local LM. Default in code is 1024; bumped here
+# so chatty vision responses have headroom to finish the JSON before the
+# server truncates and we fall into the tolerant-extract path with no
+# closing brace. See packages/api/src/services/lm.ts:329.
+LM_STUDIO_MAX_TOKENS = "4096"

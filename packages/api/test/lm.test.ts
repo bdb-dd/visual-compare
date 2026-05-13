@@ -61,6 +61,40 @@ describe('lmResponseSchema', () => {
     });
     expect(r.success).toBe(false);
   });
+
+  it('synthesizes summary from first difference when LM omits the field', () => {
+    // Mirrors the failure mode some local LMs hit under strict response_format:
+    // the JSON object is well-formed but `summary` is missing. coerceLmPayload
+    // fills it in so zod still accepts the response.
+    const raw = {
+      equivalent: false,
+      confidence: 0.9,
+      differences: [
+        {
+          description: 'Breadcrumb path differs between pages.',
+          severity: 'medium',
+          boundingBox: { x: 10, y: 5, width: 50, height: 3 },
+        },
+      ],
+    };
+    const r = lmResponseSchema.safeParse(coerceLmPayload(raw));
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.summary).toBe('Breadcrumb path differs between pages.');
+    }
+  });
+
+  it('falls back to "Equivalent." when summary missing and equivalent=true', () => {
+    const r = lmResponseSchema.safeParse(coerceLmPayload({
+      equivalent: true,
+      confidence: 0.95,
+      differences: [],
+    }));
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.summary).toBe('Equivalent.');
+    }
+  });
 });
 
 describe('v1 cluster-signature taxonomy (v3 prompt)', () => {
