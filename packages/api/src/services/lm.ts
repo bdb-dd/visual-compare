@@ -56,7 +56,11 @@ export const lmDifferenceSchema = z.object({
 export const lmResponseSchema = z.object({
   equivalent: z.boolean(),
   confidence: z.number().min(0).max(1),
-  summary: z.string(),
+  // Optional + defaulted: local LMs frequently drop `summary` even when the
+  // strict schema requests it. `coerceLmPayload` synthesizes a fallback from
+  // `differences[].description` before we get here, so by the time zod runs
+  // the field is always present in practice.
+  summary: z.string().default(''),
   differences: z.array(lmDifferenceSchema),
 });
 
@@ -73,7 +77,7 @@ export const LM_JSON_SCHEMA = {
   schema: {
     type: 'object',
     additionalProperties: false,
-    required: ['equivalent', 'confidence', 'summary', 'differences'],
+    required: ['equivalent', 'confidence', 'differences'],
     properties: {
       equivalent: { type: 'boolean' },
       confidence: { type: 'number', minimum: 0, maximum: 1 },
@@ -120,7 +124,7 @@ export const LM_JSON_SCHEMA_V3 = {
   schema: {
     type: 'object',
     additionalProperties: false,
-    required: ['equivalent', 'confidence', 'summary', 'differences'],
+    required: ['equivalent', 'confidence', 'differences'],
     properties: {
       equivalent: { type: 'boolean' },
       confidence: { type: 'number', minimum: 0, maximum: 1 },
@@ -796,6 +800,21 @@ export function coerceLmPayload(input: unknown): unknown {
   // Differences: normalize bounding boxes.
   if (Array.isArray(obj.differences)) {
     obj.differences = obj.differences.map((d) => coerceLmDifference(d)).filter(Boolean);
+  }
+
+  // Summary: many local LMs ignore the strict schema and omit it. Synthesize
+  // a usable one from the first difference's description so downstream UI +
+  // logs still have something to display, instead of failing validation.
+  if (typeof obj.summary !== 'string') {
+    const first = Array.isArray(obj.differences) && obj.differences.length > 0
+      ? obj.differences[0]
+      : null;
+    const firstDesc = first && typeof first === 'object' && !Array.isArray(first)
+      ? (first as Record<string, unknown>).description
+      : null;
+    obj.summary = typeof firstDesc === 'string' && firstDesc.length > 0
+      ? firstDesc
+      : (obj.equivalent === true ? 'Equivalent.' : '');
   }
 
   return obj;
