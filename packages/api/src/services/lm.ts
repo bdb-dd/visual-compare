@@ -434,6 +434,16 @@ export interface LmClient {
   analyze(args: Omit<AnalyzeArgs, 'config'>): Promise<AnalyzeOutcome>;
 }
 
+export interface CreateLmClientOptions {
+  /**
+   * Fired (best-effort, fire-and-forget) at the start of every analyze
+   * call. Used by the on-demand-GPU deployment to refresh a last-use
+   * timestamp that an out-of-process reaper consults to decide when to
+   * power the GPU down. Must never throw — errors are swallowed.
+   */
+  onLmUsage?: () => void | Promise<void>;
+}
+
 /**
  * Creates an OpenAI-compatible client pointed at LM Studio. Returns a small
  * surface (preflight, analyze, invalidatePreflight) so the comparison
@@ -442,6 +452,7 @@ export interface LmClient {
 export function createLmClient(
   config: LmConfig,
   cli: LmsCli = createLmsCli(readLmsCliConfigFromEnv()),
+  options: CreateLmClientOptions = {},
 ): LmClient {
   const client = new OpenAI({
     baseURL: config.baseURL,
@@ -469,6 +480,18 @@ export function createLmClient(
   };
 
   const analyze = async (args: Omit<AnalyzeArgs, 'config'>): Promise<AnalyzeOutcome> => {
+    if (options.onLmUsage) {
+      // Fire-and-forget. A failure to refresh the last-use timestamp must
+      // never block an LM call; the tracker logs its own errors.
+      try {
+        const p = options.onLmUsage();
+        if (p && typeof (p as Promise<void>).then === 'function') {
+          void (p as Promise<void>).catch(() => {});
+        }
+      } catch {
+        // ignore
+      }
+    }
     const outcome = await runAnalyze({ config, ...args }, client);
     if (isAnalyzeError(outcome)) {
       // A failed call usually means LM is misbehaving — drop the cache so the
