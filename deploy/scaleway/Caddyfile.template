@@ -1,0 +1,51 @@
+# Caddy v2 config for the API VM. Caddy auto-provisions a Let's Encrypt
+# certificate for $DOMAIN on first request. Variables are interpolated by
+# `envsubst` in deploy/scaleway/scripts/render-caddyfile.sh — Caddy itself
+# does NOT expand $VAR at config-load time.
+
+{
+    # Email for ACME / cert renewal notices.
+    email ${ACME_EMAIL}
+}
+
+${DOMAIN} {
+    encode zstd gzip
+
+    # Healthcheck bypasses auth so the platform / uptime monitors can probe.
+    @health path /healthz
+    handle @health {
+        reverse_proxy 127.0.0.1:3001
+    }
+
+    # Everything else requires basic auth.
+    handle {
+        basic_auth {
+            ${BASIC_AUTH_USER} ${BASIC_AUTH_HASH}
+        }
+
+        # API + artifact endpoints proxy to the Node process.
+        @api path /api/* /images/*
+        reverse_proxy @api 127.0.0.1:3001 {
+            # The LM preflight + analyze paths can take 60–180 s on a cold
+            # GPU. Bump proxy timeouts well past the default 30 s so the
+            # client doesn't see a 504 mid-warmup.
+            transport http {
+                read_timeout 300s
+                write_timeout 300s
+            }
+        }
+
+        # Static SPA build served from /opt/visual-compare/web.
+        root * /opt/visual-compare/web
+        try_files {path} /index.html
+        file_server
+    }
+
+    # Access + error logs to disk; journald keeps the unit's own stderr.
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 50mb
+            roll_keep 5
+        }
+    }
+}

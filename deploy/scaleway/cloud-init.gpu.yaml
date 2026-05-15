@@ -1,0 +1,101 @@
+#cloud-config
+# Cloud-init for the LM Studio GPU VM.
+#
+# Assumes a Scaleway GPU image (Ubuntu 24.04 with NVIDIA driver + CUDA
+# preinstalled). Installs LM Studio's headless `lms` toolchain, downloads
+# the configured model on first boot, and wires up a systemd unit that
+# starts the OpenAI-compatible server and loads the model whenever the
+# instance powers on.
+#
+# Placeholders `__SOMETHING__` are substituted by scripts/provision.sh.
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - curl
+  - ca-certificates
+  - unzip
+  - jq
+
+users:
+  - name: lm-studio
+    system: false
+    shell: /bin/bash
+    home: /home/lm-studio
+    create_home: true
+  - name: deploy
+    groups: sudo
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - __DEPLOY_SSH_KEY__
+
+write_files:
+  - path: /etc/lm-studio/env
+    permissions: '0644'
+    owner: root:root
+    content: |
+      LM_STUDIO_MODEL=__LM_STUDIO_MODEL__
+
+  - path: /etc/systemd/system/lm-studio.service
+    permissions: '0644'
+    encoding: b64
+    content: __SYSTEMD_LM_UNIT_B64__
+
+  # First-boot model download. Idempotent: `lms get` is a no-op if the
+  # model is already cached under ~/.cache/lm-studio/models.
+  - path: /usr/local/bin/lm-studio-first-boot.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      MARKER=/home/lm-studio/.first-boot-done
+      if [ -f "$MARKER" ]; then exit 0; fi
+      source /etc/lm-studio/env
+      sudo -u lm-studio bash -lc "/usr/local/bin/lms get '${LM_STUDIO_MODEL}' --yes"
+      touch "$MARKER"
+
+  # Restrict inbound :1234 to the API VM's IP. Scaleway security groups
+  # are the primary gate; this is a belt-and-braces local firewall.
+  - path: /etc/nftables.conf
+    permissions: '0644'
+    content: |
+      #!/usr/sbin/nft -f
+      flush ruleset
+      table inet filter {
+        chain input {
+          type filter hook input priority 0; policy drop;
+          ct state established,related accept
+          iif lo accept
+          ip protocol icmp accept
+          tcp dport 22 accept
+          ip saddr __API_VM_PRIVATE_IP__ tcp dport 1234 accept
+        }
+        chain forward { type filter hook forward priority 0; policy drop; }
+        chain output  { type filter hook output  priority 0; policy accept; }
+      }
+
+runcmd:
+  # ---- LM Studio install via the official script ----
+  # Runs as the lm-studio user so the toolchain lands at
+  # ~lm-studio/.lmstudio/bin. LMS_NO_MODIFY_PATH skips the installer's
+  # ~/.profile mutation — we symlink the binary instead.
+  - sudo -u lm-studio bash -lc 'curl -fsSL https://lmstudio.ai/install.sh | LMS_NO_MODIFY_PATH=1 bash'
+  - ln -sf /home/lm-studio/.lmstudio/bin/lms /usr/local/bin/lms
+  - chown -R lm-studio:lm-studio /home/lm-studio
+
+  # ---- Firewall ----
+  - systemctl enable nftables
+  - systemctl start nftables
+
+  # ---- First-boot model download (blocking — provisioning waits for it) ----
+  - /usr/local/bin/lm-studio-first-boot.sh
+
+  # ---- LM Studio service ----
+  - systemctl daemon-reload
+  - systemctl enable lm-studio.service
+  - systemctl start lm-studio.service
+
+final_message: "GPU VM ready after $UPTIME seconds — power off; API will start on demand."

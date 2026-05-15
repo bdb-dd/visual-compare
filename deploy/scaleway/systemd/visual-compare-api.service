@@ -1,0 +1,44 @@
+[Unit]
+Description=visual-compare API (Express + SQLite + Playwright + ImageMagick)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=visual-compare
+Group=visual-compare
+WorkingDirectory=/opt/visual-compare/packages/api
+
+# Secrets + config live in this file. Deploy step writes/refreshes it.
+# Format: KEY=value per line; no quoting (systemd EnvironmentFile semantics).
+EnvironmentFile=/etc/visual-compare/env
+
+# These two are intentionally hard-coded (not in the env file) so an
+# operator can't accidentally point the prod API at a dev DB.
+Environment=DB_PATH=/mnt/data/visual-compare.sqlite
+Environment=IMAGES_DIR=/mnt/data/images
+Environment=LM_LAST_USE_PATH=/mnt/data/lm-last-use
+Environment=LISTEN_HOST=127.0.0.1
+Environment=NODE_ENV=production
+
+ExecStart=/usr/bin/node dist/index.js
+
+Restart=on-failure
+RestartSec=5s
+# Playwright + ImageMagick can spike memory under load. Give the process
+# headroom on the DEV1-M (4 GB) tier without letting a runaway eat the box.
+MemoryMax=3G
+# A failing comparison shouldn't take the API down — but a wedged process
+# should be killable. 60 s is plenty for in-flight HTTP to drain.
+TimeoutStopSec=60s
+
+# Hardening — restrict filesystem and capabilities. /mnt/data is writable
+# because that's where SQLite + the image tree + the lm-last-use file live.
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/mnt/data /tmp
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

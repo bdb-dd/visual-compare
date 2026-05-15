@@ -1,0 +1,150 @@
+#cloud-config
+# Cloud-init for the API VM.
+#
+# This bootstraps the system to the point where `deploy.sh` from a
+# developer's laptop can push code, install deps, and start the service.
+# It does NOT clone the repo — code arrives via rsync at deploy time.
+#
+# Placeholders enclosed in `__SOMETHING__` are substituted by
+# scripts/provision.sh before this file is handed to Scaleway.
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - imagemagick
+  - libmagickwand-dev
+  - build-essential
+  - curl
+  - ca-certificates
+  - gnupg
+  - apt-transport-https
+  - debian-keyring
+  - debian-archive-keyring
+  - rsync
+  - jq
+  - xfsprogs
+  # Playwright system libs (Chromium runtime deps on Ubuntu 24.04).
+  - libnss3
+  - libnspr4
+  - libatk1.0-0t64
+  - libatk-bridge2.0-0t64
+  - libcups2t64
+  - libdrm2
+  - libxkbcommon0
+  - libxcomposite1
+  - libxdamage1
+  - libxfixes3
+  - libxrandr2
+  - libgbm1
+  - libpango-1.0-0
+  - libcairo2
+  - libasound2t64
+
+users:
+  - name: visual-compare
+    system: true
+    shell: /usr/sbin/nologin
+    home: /opt/visual-compare
+    create_home: false
+  - name: deploy
+    groups: sudo
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - __DEPLOY_SSH_KEY__
+
+write_files:
+  # Secrets + runtime config for the API. Pre-populated at provision time;
+  # operator can edit + `systemctl restart visual-compare-api` later.
+  - path: /etc/visual-compare/env
+    permissions: '0640'
+    owner: root:visual-compare
+    content: |
+      PORT=3001
+      LM_BACKEND=scaleway
+      LM_STUDIO_BASE_URL=__LM_STUDIO_BASE_URL__
+      LM_STUDIO_MODEL=__LM_STUDIO_MODEL__
+      LM_STUDIO_API_KEY=lm-studio
+      LM_STUDIO_MAX_TOKENS=4096
+      LM_IDLE_SHUTDOWN_MINUTES=60
+      SCW_GPU_ZONE=__SCW_GPU_ZONE__
+      SCW_GPU_INSTANCE_ID=__SCW_GPU_INSTANCE_ID__
+      SCW_SECRET_KEY=__SCW_SECRET_KEY__
+
+  # Caddy site config. The placeholders here are env-substituted at deploy
+  # time by render-caddyfile.sh — see Caddyfile.template in the repo.
+  - path: /etc/caddy/Caddyfile
+    permissions: '0644'
+    owner: root:root
+    content: |
+      # Placeholder — replaced by render-caddyfile.sh on first deploy.
+      :80 {
+        respond "visual-compare: awaiting first deploy" 503
+      }
+
+  - path: /etc/systemd/system/visual-compare-api.service
+    permissions: '0644'
+    encoding: b64
+    content: __SYSTEMD_API_UNIT_B64__
+
+  - path: /etc/cron.d/lm-idle-reaper
+    permissions: '0644'
+    encoding: b64
+    content: __CRON_REAPER_B64__
+
+runcmd:
+  # ---- Block volume: format if blank, mount at /mnt/data ----
+  # Scaleway block volumes show up as /dev/sdb on legacy or /dev/nvme1n1 on
+  # newer instance types. Probe for both. If the disk is unformatted (no
+  # filesystem signature) we create XFS — picked for SQLite-friendly large-
+  # file performance and online-resize support.
+  - |
+    set -e
+    DEV=""
+    for candidate in /dev/sdb /dev/nvme1n1; do
+      if [ -b "$candidate" ]; then DEV="$candidate"; break; fi
+    done
+    if [ -z "$DEV" ]; then
+      echo "no block volume found at /dev/sdb or /dev/nvme1n1" >&2
+      exit 1
+    fi
+    if ! blkid "$DEV" >/dev/null 2>&1; then
+      mkfs.xfs -L visual-compare-data "$DEV"
+    fi
+    mkdir -p /mnt/data
+    echo "LABEL=visual-compare-data /mnt/data xfs defaults,noatime,nofail 0 2" >> /etc/fstab
+    mount -a
+    mkdir -p /mnt/data/images
+    chown -R visual-compare:visual-compare /mnt/data
+    chmod 750 /mnt/data
+
+  # ---- Node 22 via NodeSource ----
+  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  - apt-get install -y nodejs
+
+  # ---- pnpm via corepack (matches packageManager in package.json) ----
+  - corepack enable
+  - corepack prepare pnpm@10.33.3 --activate
+
+  # ---- Caddy ----
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
+  - apt-get update -y
+  - apt-get install -y caddy
+  - mkdir -p /var/log/caddy
+
+  # ---- Code dir + log file ----
+  - mkdir -p /opt/visual-compare/packages/api /opt/visual-compare/packages/web
+  - chown -R visual-compare:visual-compare /opt/visual-compare
+  # The reaper logs as the visual-compare user; pre-create with the right ownership.
+  - touch /var/log/lm-idle-reaper.log
+  - chown visual-compare:visual-compare /var/log/lm-idle-reaper.log
+
+  # ---- Enable services. They'll fail-restart until deploy.sh lands the
+  # built code; that's fine — systemd will pick them up automatically. ----
+  - systemctl daemon-reload
+  - systemctl enable visual-compare-api.service
+  - systemctl enable caddy
+
+final_message: "API VM ready after $UPTIME seconds — run deploy.sh next."

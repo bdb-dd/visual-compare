@@ -15,14 +15,19 @@ import { JobQueue } from './services/queue.js';
 import { createArtifactStore } from './services/artifact-store.js';
 import { createPlaywrightCaptureWorker } from './services/capture.js';
 import { createLmClient, readLmConfigFromEnv } from './services/lm.js';
+import { createLmServerControllerFromEnv } from './services/lm-server-factory.js';
+import { createLmUsageTracker } from './services/lm-usage.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const PACKAGE_ROOT = resolve(dirname(__filename), '..');
 const REPO_ROOT = resolve(PACKAGE_ROOT, '..', '..');
 
 const PORT = Number(process.env.PORT ?? 3001);
+const LISTEN_HOST = process.env.LISTEN_HOST;
 const DB_PATH = process.env.DB_PATH ?? resolve(REPO_ROOT, 'data', 'visual-compare.sqlite');
 const IMAGES_DIR = process.env.IMAGES_DIR ?? resolve(REPO_ROOT, 'data', 'images');
+const LM_LAST_USE_PATH =
+  process.env.LM_LAST_USE_PATH ?? resolve(REPO_ROOT, 'data', 'lm-last-use');
 
 mkdirSync(IMAGES_DIR, { recursive: true });
 
@@ -69,20 +74,36 @@ const artifactStore = createArtifactStore(IMAGES_DIR);
 const captureWorker = createPlaywrightCaptureWorker();
 
 const lmConfig = readLmConfigFromEnv();
-const lm = createLmClient(lmConfig);
+const lmServer = createLmServerControllerFromEnv();
+const lmUsage = createLmUsageTracker({ path: LM_LAST_USE_PATH });
+const lm = createLmClient(lmConfig, lmServer.cli, { onLmUsage: () => lmUsage.record() });
 // eslint-disable-next-line no-console
-console.log(`[lm] base=${lmConfig.baseURL} model=${lmConfig.model} prompt=${lmConfig.promptVersion}`);
+console.log(
+  `[lm] base=${lmConfig.baseURL} model=${lmConfig.model} prompt=${lmConfig.promptVersion} backend=${lmServer.backend} (${lmServer.description})`,
+);
 
 const app = createApp({ db, queue, artifactStore, captureWorker, lm });
 
-const server = app.listen(PORT, () => {
+// Liveness probe for the reverse proxy / Scaleway healthcheck. Intentionally
+// cheap — no DB or LM round-trip; readiness is implied by the process being up.
+app.get('/healthz', (_req, res) => {
+  res.json({ ok: true });
+});
+
+const onListening = () => {
+  const host = LISTEN_HOST ?? 'localhost';
   // eslint-disable-next-line no-console
-  console.log(`[api] listening on http://localhost:${PORT}`);
+  console.log(`[api] listening on http://${host}:${PORT}`);
   // eslint-disable-next-line no-console
   console.log(`[api] data dir: ${IMAGES_DIR}`);
   // eslint-disable-next-line no-console
   console.log(`[api] sqlite:  ${DB_PATH}`);
-});
+  // eslint-disable-next-line no-console
+  console.log(`[api] lm last-use: ${LM_LAST_USE_PATH}`);
+};
+const server = LISTEN_HOST
+  ? app.listen(PORT, LISTEN_HOST, onListening)
+  : app.listen(PORT, onListening);
 
 const shutdown = async (signal: string) => {
   // eslint-disable-next-line no-console

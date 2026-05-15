@@ -20,3 +20,5 @@ tmp/
 
 # deployment secrets
 .kamal/secrets*
+deploy/scaleway/provision.env
+deploy/scaleway/state.env
