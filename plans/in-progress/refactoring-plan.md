@@ -230,10 +230,24 @@ persistent metrics row during evaluation.
 discoverable in one place, capture/compare load visible.
 
 
-## Phase 4 — Routing consolidation (~1 week)
+## Phase 4 — Routing consolidation (~1 week) — **done**
 
 **Depends on**: nothing structurally, but easier to land after Phase 1
 (less component churn). **Unblocks**: cleaner deep-links for Phase 5.
+
+Shipped on the `refactor` branch. Notes worth carrying forward:
+
+- **4.A**: legacy `/comparisons/:id` is a client-side redirect (loads
+  the comparison to learn its session id, then `<Navigate replace>`s).
+  The `!sessionId` heuristic in ComparisonDetail's Recapture path
+  broke once the standalone page also has a session id; replaced with
+  an explicit `onComparisonIdChange?` callback (parent decides).
+- **4.B**: URL schema documented inline at the top of
+  `SessionDetailPage`'s state block. Push history for discrete
+  navigation (mode switch, cross-mode jumps, Shift+Arrow), replace
+  for in-place edits (cluster click, filter chip, view mode toggle).
+  View mode now lives at `?view=ab|slider` (triple is canonical and
+  omitted).
 
 ### 4.A — Session-scoped comparison route (M)
 

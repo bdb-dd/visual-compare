@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ImageWithBoxes } from './ImageWithBoxes.js';
 import { RecapturePairButton } from './RecapturePairButton.js';
@@ -40,6 +39,15 @@ interface Props {
    * adopts the new eval and shows its progress.
    */
   onRecaptureStarted?: (evaluation_id: string) => void;
+  /**
+   * When provided, Recapture's "newer comparison row landed" path calls
+   * this with the new comparison id instead of running its own
+   * navigation. The standalone comparison page uses it to swap the URL
+   * to /sessions/<sid>/comparisons/<newId>. When omitted (DetailPane
+   * embed inside SessionDetailPage), the component refreshes in place
+   * and the parent stays on the session URL.
+   */
+  onComparisonIdChange?: (newId: string) => void;
 }
 
 const VIEW_MODES: { id: ViewMode; label: string }[] = [
@@ -59,6 +67,7 @@ export function ComparisonDetail({
   onAcceptanceChanged,
   onLoaded,
   onRecaptureStarted,
+  onComparisonIdChange,
 }: Props): JSX.Element {
   const [detail, setDetail] = useState<ComparisonDetailDto | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -66,7 +75,6 @@ export function ComparisonDetail({
   const [viewMode, setViewMode] = useState<ViewMode>('diff');
   const [refreshTick, setRefreshTick] = useState(0);
   const [recapturing, setRecapturing] = useState(false);
-  const navigate = useNavigate();
 
   useEffect(() => {
     setDetail(null);
@@ -173,13 +181,18 @@ export function ComparisonDetail({
                   url_pair.id,
                   c.viewport_name,
                 );
-                // When embedded in a session view (sessionId prop set), the
-                // URL is the session's, not /comparisons/<id> — navigating
-                // would yank the user out of the session. Refresh in place
-                // instead and let the parent reconcile its focused state.
-                if (newId && newId !== id && !sessionId) {
-                  navigate(`/comparisons/${newId}`, { replace: true });
-                  return;
+                // Two flavours of "the comparison id changed":
+                //   - parent supplied `onComparisonIdChange` (the
+                //     standalone page): hand the new id back so the
+                //     parent swaps the URL.
+                //   - parent didn't (DetailPane embed): refresh this
+                //     component in place. The session URL stays on the
+                //     row's session view.
+                if (newId && newId !== id) {
+                  if (onComparisonIdChange) {
+                    onComparisonIdChange(newId);
+                    return;
+                  }
                 }
                 setRefreshTick((t) => t + 1);
               } finally {

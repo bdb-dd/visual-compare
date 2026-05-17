@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type RefObject } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ImageWithBoxes } from './ImageWithBoxes.js';
 import type {
@@ -94,7 +94,19 @@ export function ClusterDetailPanel({
   const [dialog, setDialog] = useState<'accept' | 'reject' | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [banner, setBanner] = useState<ActionBanner | null>(null);
-  const [viewMode, setViewMode] = useState<'triple' | 'ab' | 'slider'>('triple');
+  // View mode is URL-backed so refresh / share / back-forward keep the
+  // selection. Replace-history on change (it's an in-place toggle, not a
+  // navigation — flooding history with view-mode flips would be wrong).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const viewModeParam = searchParams.get('view');
+  const viewMode: 'triple' | 'ab' | 'slider' =
+    viewModeParam === 'ab' || viewModeParam === 'slider' ? viewModeParam : 'triple';
+  const setViewMode = useCallback((next: 'triple' | 'ab' | 'slider') => {
+    const sp = new URLSearchParams(searchParams);
+    if (next === 'triple') sp.delete('view'); // canonical default → clean URL
+    else sp.set('view', next);
+    setSearchParams(sp, { replace: true });
+  }, [searchParams, setSearchParams]);
   const filmstripRef = useRef<HTMLDivElement>(null);
 
   // Callbacks are read via refs so the data-fetch effect doesn't re-run
@@ -369,7 +381,7 @@ export function ClusterDetailPanel({
           <div className="cluster-detail__sample-meta">
             <div>
               <strong>{isRepDisplayed ? 'Representative member:' : `Member ${displayedIndex + 1} of ${members.length}:`}</strong>{' '}
-              <Link to={`/comparisons/${displayed.comparison_id}`}>
+              <Link to={`/sessions/${sessionId}/comparisons/${displayed.comparison_id}`}>
                 {displayed.url_a}
               </Link>
               {!isRepDisplayed && (

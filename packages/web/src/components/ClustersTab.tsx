@@ -601,7 +601,7 @@ function InlineMemberList({
                 />
               </span>
               <Link
-                to={`/comparisons/${m.comparison_id}`}
+                to={`/sessions/${sessionId}/comparisons/${m.comparison_id}`}
                 className="member-row__detail"
                 title="Open full comparison detail"
                 onClick={(e) => e.stopPropagation()}
