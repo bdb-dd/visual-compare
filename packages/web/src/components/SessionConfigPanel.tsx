@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { api } from '../api/client.js';
+import { PromptConfigPanel } from './PromptConfigPanel.js';
 import type {
   EquivalenceLevelId,
   SessionConfig,
@@ -56,6 +57,10 @@ export function SessionConfigPanel({
     const opts = config.default_capture_options as { settleDelayMs?: number };
     return opts.settleDelayMs !== undefined ? String(opts.settleDelayMs) : '';
   });
+  const [waitForSelector, setWaitForSelector] = useState<string>(() => {
+    const opts = config.default_capture_options as { waitForSelector?: string };
+    return opts.waitForSelector ?? '';
+  });
   const [concurrency, setConcurrency] = useState<string>(() => {
     const opts = config.default_capture_options as { concurrency?: number };
     return opts.concurrency !== undefined ? String(opts.concurrency) : '';
@@ -95,6 +100,8 @@ export function SessionConfigPanel({
       const n = Number(settleDelayMs);
       if (Number.isFinite(n) && n >= 0) captureOpts.settleDelayMs = Math.round(n);
     }
+    const trimmedWaitFor = waitForSelector.trim();
+    if (trimmedWaitFor.length > 0) captureOpts.waitForSelector = trimmedWaitFor;
     if (concurrency.trim().length > 0) {
       const n = Number(concurrency);
       // Persist only when the user has typed a non-default integer ≥ 1.
@@ -140,10 +147,12 @@ export function SessionConfigPanel({
     const opts = config.default_capture_options as {
       hideSelectors?: string[];
       settleDelayMs?: number;
+      waitForSelector?: string;
       concurrency?: number;
     };
     setHideSelectors(opts.hideSelectors?.join('\n') ?? '');
     setSettleDelayMs(opts.settleDelayMs !== undefined ? String(opts.settleDelayMs) : '');
+    setWaitForSelector(opts.waitForSelector ?? '');
     setConcurrency(opts.concurrency !== undefined ? String(opts.concurrency) : '');
   }, [config, defaults.viewportName, defaults.level]);
 
@@ -172,7 +181,7 @@ export function SessionConfigPanel({
     // buildPayload reads each piece of local state directly; listing them as
     // deps captures every user edit. onSaved is treated as stable by callers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewportNames, targetLevel, language, category, pathPrefix, hideSelectors, settleDelayMs, concurrency, sessionId]);
+  }, [viewportNames, targetLevel, language, category, pathPrefix, hideSelectors, settleDelayMs, waitForSelector, concurrency, sessionId]);
 
   const toggle = <T,>(arr: T[], value: T): T[] =>
     arr.includes(value) ? arr.filter((x) => x !== value) : [...arr, value];
@@ -275,6 +284,18 @@ export function SessionConfigPanel({
         </label>
         <label className="field">
           <span>
+            Wait for selector
+            <span className="muted"> (CSS selector that must appear before screenshot; 10s timeout)</span>
+          </span>
+          <input
+            type="text"
+            value={waitForSelector}
+            onChange={(e) => setWaitForSelector(e.target.value)}
+            placeholder=".announcement-banner"
+          />
+        </label>
+        <label className="field">
+          <span>
             Capture concurrency
             {hostMaxConcurrency !== null && (
               <span className="muted"> (1–{hostMaxConcurrency} on this host)</span>
@@ -289,6 +310,20 @@ export function SessionConfigPanel({
             placeholder="8"
           />
         </label>
+      </section>
+
+      {/*
+        LM prompts. Collapsed by default — most operators never tune the
+        prompt text, and keeping this folded keeps the Config tab scannable.
+        The embedded PromptConfigPanel keeps its own header + save flow.
+      */}
+      <section>
+        <details>
+          <summary>
+            <h4 style={{ display: 'inline', margin: 0 }}>LM prompts</h4>
+          </summary>
+          <PromptConfigPanel sessionId={sessionId} />
+        </details>
       </section>
     </div>
   );
