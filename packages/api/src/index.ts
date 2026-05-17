@@ -17,6 +17,7 @@ import { createPlaywrightCaptureWorker } from './services/capture.js';
 import { createLmClient, readLmConfigFromEnv } from './services/lm.js';
 import { createLmServerControllerFromEnv } from './services/lm-server-factory.js';
 import { createLmUsageTracker } from './services/lm-usage.js';
+import { createLmActivityTracker } from './services/lm-activity.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const PACKAGE_ROOT = resolve(dirname(__filename), '..');
@@ -76,13 +77,24 @@ const captureWorker = createPlaywrightCaptureWorker();
 const lmConfig = readLmConfigFromEnv();
 const lmServer = createLmServerControllerFromEnv();
 const lmUsage = createLmUsageTracker({ path: LM_LAST_USE_PATH });
-const lm = createLmClient(lmConfig, lmServer.cli, { onLmUsage: () => lmUsage.record() });
+// LM activity histogram. `parallel` should match the systemd unit's
+// `--parallel N` so the frontend can normalize sample heights against the
+// real concurrency cap. Configurable via env so we don't have to keep two
+// places in sync by hand.
+const lmActivity = createLmActivityTracker({
+  parallel: process.env.LM_STUDIO_PARALLEL ? Number(process.env.LM_STUDIO_PARALLEL) : 2,
+});
+lmActivity.start();
+const lm = createLmClient(lmConfig, lmServer.cli, {
+  onLmUsage: () => lmUsage.record(),
+  beginLmCall: () => lmActivity.trackCall(),
+});
 // eslint-disable-next-line no-console
 console.log(
   `[lm] base=${lmConfig.baseURL} model=${lmConfig.model} prompt=${lmConfig.promptVersion} backend=${lmServer.backend} (${lmServer.description})`,
 );
 
-const app = createApp({ db, queue, artifactStore, captureWorker, lm });
+const app = createApp({ db, queue, artifactStore, captureWorker, lm, lmActivity });
 
 // Liveness probe for the reverse proxy / Scaleway healthcheck. Intentionally
 // cheap — no DB or LM round-trip; readiness is implied by the process being up.

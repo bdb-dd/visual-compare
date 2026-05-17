@@ -14,6 +14,7 @@ import type { ArtifactStore } from './services/artifact-store.js';
 import type { CaptureWorker } from './services/capture.js';
 import type { ComparisonImagick } from './services/comparison.js';
 import type { LmClient } from './services/lm.js';
+import type { LmActivityTracker } from './services/lm-activity.js';
 import { Evaluator } from './services/evaluator.js';
 
 export interface AppDeps {
@@ -25,6 +26,8 @@ export interface AppDeps {
   imagick?: ComparisonImagick;
   /** LM Studio client. Required for `semantic` and ambiguity-band paths. */
   lm?: LmClient;
+  /** Activity histogram source for /api/meta/lm-activity. */
+  lmActivity?: LmActivityTracker;
   /** Optional pre-built evaluator. Tests can pass one in to inspect drainAll(). */
   evaluator?: Evaluator;
 }
@@ -71,7 +74,7 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/evaluations', evaluationsRouter(deps.db, evaluator));
   app.use('/api/jobs', jobsRouter(deps.db));
   app.use('/api/lm-prompts', lmPromptsRouter(deps.db));
-  app.use('/api/meta', metaRouter({ lm: deps.lm }));
+  app.use('/api/meta', metaRouter({ lm: deps.lm, lmActivity: deps.lmActivity }));
 
   app.use('/images', express.static(deps.artifactStore.rootDir, {
     maxAge: '1y',

@@ -288,6 +288,9 @@ export const api = {
   getLmStatus: (force = false) =>
     request<LmStatusDto>(`/api/meta/lm-status${force ? '?force=1' : ''}`),
 
+  getLmActivity: () =>
+    request<LmActivityDto>('/api/meta/lm-activity'),
+
   listAcceptances: (sessionId: string) =>
     request<{ acceptances: AcceptanceRow[] }>(`/api/sessions/${sessionId}/acceptances`),
   createAcceptance: (
@@ -424,4 +427,13 @@ export interface LmStatusDto {
   reason?: string;
   message?: string;
   duration_ms?: number;
+}
+
+export interface LmActivityDto {
+  /** Oldest-first ring of in-flight `analyze` counts at sample time. */
+  samples: number[];
+  /** LM Studio's `--parallel` cap — denominator for sample normalization. */
+  parallel: number;
+  /** Sample cadence in ms. */
+  interval_ms: number;
 }

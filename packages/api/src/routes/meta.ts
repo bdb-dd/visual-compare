@@ -3,9 +3,11 @@ import { availableParallelism, cpus } from 'node:os';
 import { DEFAULT_VIEWPORTS, DEFAULT_VIEWPORT_NAME } from '../constants/viewports.js';
 import { EQUIVALENCE_LEVELS, DEFAULT_EQUIVALENCE_LEVEL } from '../constants/equivalence.js';
 import type { LmClient } from '../services/lm.js';
+import type { LmActivityTracker } from '../services/lm-activity.js';
 
 export interface MetaRouterDeps {
   lm?: LmClient;
+  lmActivity?: LmActivityTracker;
 }
 
 export function metaRouter(deps: MetaRouterDeps = {}): Router {
@@ -68,6 +70,17 @@ export function metaRouter(deps: MetaRouterDeps = {}): Router {
       loaded_model: pf.loadedModel,
       duration_ms: pf.durationMs,
     });
+  });
+
+  router.get('/lm-activity', (_req, res) => {
+    if (!deps.lmActivity) {
+      // No tracker registered → return an empty histogram so the
+      // frontend can still render the component without special-casing
+      // "tracker missing" (e.g. dev runs without the LM wired up).
+      res.json({ samples: [], parallel: 0, interval_ms: 0 });
+      return;
+    }
+    res.json(deps.lmActivity.snapshot());
   });
 
   return router;

@@ -134,6 +134,31 @@ th { color: #aab1bd; font-weight: 600; }
 .status-pill.complete { background: #14532d; color: #b3f5c5; }
 .status-pill.error { background: #5c1212; color: #ffb3b3; }
 
+/* LM activity sparkline. Sits next to the LM status pill; bars represent
+   in-flight `analyze` count per sample. Idle samples are a thin baseline
+   so the operator can distinguish "nothing happening" from "no data". */
+.lm-activity {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 18px;
+  width: 90px;
+  padding: 1px 2px;
+  background: #1a1d23;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+.lm-activity__bar {
+  flex: 1 1 auto;
+  min-width: 2px;
+  border-radius: 1px;
+  background: #3b6ee0;
+  transition: height 0.4s ease;
+}
+.lm-activity__bar--idle { background: #2a2e36; }
+.lm-activity__bar--low { background: #3b6ee0; }
+.lm-activity__bar--high { background: #6cb7ff; }
+
 .error {
   border: 1px solid #5c1212;
   background: #29080d;
