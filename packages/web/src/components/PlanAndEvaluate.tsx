@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { api } from '../api/client.js';
 import type { EvaluationStatusDto, SessionResultsDto } from '@visual-compare/api/types';
-import { PromptConfigPanel } from './PromptConfigPanel.js';
 
 interface Props {
   sessionId: string;
@@ -38,7 +37,6 @@ export function PlanAndEvaluate({
 }: Props): JSX.Element {
   const [evaluation, setEvaluation] = useState<EvaluationStatusDto | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [promptPanelOpen, setPromptPanelOpen] = useState(false);
   // True between the moment the user clicks Stop and the orchestrator
   // settling the row to `cancelled`. Drives the "Stopping…" label so the
   // button can't be clicked twice. Reset on every fresh evaluation.
@@ -188,14 +186,6 @@ export function PlanAndEvaluate({
           />{' '}
           LM second pass
         </label>
-        <button
-          type="button"
-          className="btn secondary"
-          onClick={() => setPromptPanelOpen((o) => !o)}
-          title="Tune the LM prompt — toggles, house rules, advanced raw-text editor."
-        >
-          {promptPanelOpen ? 'Hide LM prompt' : 'Configure LM prompt…'}
-        </button>
         {(error || evaluation) && (
           <p className="muted evaluate-status">
             {error
@@ -210,9 +200,6 @@ export function PlanAndEvaluate({
           </p>
         )}
       </div>
-      {promptPanelOpen && (
-        <PromptConfigPanel sessionId={sessionId} onClose={() => setPromptPanelOpen(false)} />
-      )}
     </>
   );
 }

@@ -9,7 +9,13 @@ import type {
 
 interface Props {
   sessionId: string;
-  onClose: () => void;
+  /**
+   * Called when the in-panel "Close" button is clicked. Omit when the
+   * panel is embedded in a parent that owns its own dismissal (e.g.
+   * the Config tab's collapsible section) — the Close button is hidden
+   * in that case.
+   */
+  onClose?: () => void;
 }
 
 type ToggleKind = 'scope' | 'trigger';
@@ -94,7 +100,7 @@ export function PromptConfigPanel({ sessionId, onClose }: Props): JSX.Element {
       <div className="prompt-config-panel">
         <div className="prompt-config-header">
           <h3>LM prompt configuration</h3>
-          <button className="btn secondary" onClick={onClose}>Close</button>
+          {onClose && <button className="btn secondary" onClick={onClose}>Close</button>}
         </div>
         <p className="muted">Failed to load: {error}</p>
       </div>
@@ -106,7 +112,7 @@ export function PromptConfigPanel({ sessionId, onClose }: Props): JSX.Element {
       <div className="prompt-config-panel">
         <div className="prompt-config-header">
           <h3>LM prompt configuration</h3>
-          <button className="btn secondary" onClick={onClose}>Close</button>
+          {onClose && <button className="btn secondary" onClick={onClose}>Close</button>}
         </div>
         <p className="muted">Loading…</p>
       </div>
@@ -123,7 +129,7 @@ export function PromptConfigPanel({ sessionId, onClose }: Props): JSX.Element {
     <div className="prompt-config-panel">
       <div className="prompt-config-header">
         <h3>LM prompt configuration</h3>
-        <button className="btn secondary" onClick={onClose}>Close</button>
+        {onClose && <button className="btn secondary" onClick={onClose}>Close</button>}
       </div>
       <p className="muted prompt-config-intro">
         Tune what the vision model treats as a meaningful difference for this session.
