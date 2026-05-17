@@ -75,6 +75,27 @@ function verdictOf(r: SessionResultRow, targetLevel: EquivalenceLevelId): Verdic
   return isAtLeastAsStrict(r.matched_at_level, targetLevel) ? 'passed' : 'failed';
 }
 
+/**
+ * If either capture errored, return a short badge label + a longer tooltip
+ * showing which side and the error. Null when both captures succeeded
+ * (and the regular missing/level badge should show instead).
+ */
+function captureFailureLabel(
+  r: SessionResultRow,
+): { label: string; tooltip: string } | null {
+  const aErr = r.capture_a_status.status === 'error';
+  const bErr = r.capture_b_status.status === 'error';
+  if (!aErr && !bErr) return null;
+  const which = aErr && bErr ? 'A+B' : aErr ? 'A' : 'B';
+  const reason = (aErr && r.capture_a_status.error_message)
+    || (bErr && r.capture_b_status.error_message)
+    || 'unknown error';
+  return {
+    label: `💥 capture failed (${which})`,
+    tooltip: `Capture failed on ${which}: ${reason}`,
+  };
+}
+
 function missingLabel(o: SessionResultRow['pair_outcome']): string | null {
   if (o === 'a_missing') return 'missing on A';
   if (o === 'b_missing') return 'missing on B';
@@ -158,7 +179,7 @@ function rowMatchesFilter(
   targetLevel: EquivalenceLevelId,
 ): boolean {
   if (!rowMatchesStatus(r, filter, targetLevel)) return false;
-  if (!outcomeMatches(filter.outcome, r.pair_outcome)) return false;
+  if (!outcomeMatches(filter.outcomes, r)) return false;
   if (!levelMatches(filter.levels, r.matched_at_level, r.pair_outcome)) return false;
   return true;
 }
@@ -312,6 +333,7 @@ export function SessionResultsList({
             const isSelected = key === selectedKey;
             const thumb = thumbUrl(r.pixel?.im_diff_sha256);
             const missing = missingLabel(r.pair_outcome);
+            const failedCapture = captureFailureLabel(r);
             return (
               <div
                 key={key}
@@ -345,9 +367,17 @@ export function SessionResultsList({
                     </div>
                     <div className="row-line muted">
                       <span className="viewport-badge">{r.viewport_name}</span>
+                      {failedCapture && (
+                        <span
+                          className="viewport-badge viewport-badge--error"
+                          title={failedCapture.tooltip}
+                        >
+                          {failedCapture.label}
+                        </span>
+                      )}
                       {missing ? (
                         <span className="viewport-badge">{missing}</span>
-                      ) : (
+                      ) : !failedCapture && (
                         <>
                           <span className="viewport-badge">{r.matched_at_level ?? '—'}</span>
                           <span className="changed-pct">{fmtPct(r.pixel?.changed_pct)}</span>

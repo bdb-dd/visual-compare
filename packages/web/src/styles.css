@@ -417,6 +417,10 @@ ul.diff-list li {
   border-radius: 4px;
   padding: 1px 6px;
 }
+.comparison-row .viewport-badge--error {
+  background: #3a1f1f;
+  color: #f8a4a4;
+}
 .comparison-row .changed-pct {
   font-variant-numeric: tabular-nums;
   font-size: 12px;

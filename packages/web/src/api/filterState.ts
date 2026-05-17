@@ -1,4 +1,4 @@
-import type { ClusterReviewState, MatchedAtLevel, PairOutcome } from '@visual-compare/api/types';
+import type { ClusterReviewState, MatchedAtLevel, PairOutcome, SessionResultRow } from '@visual-compare/api/types';
 
 /**
  * Shared filter state for the unified review surface (Phase δ). The same
@@ -8,19 +8,23 @@ import type { ClusterReviewState, MatchedAtLevel, PairOutcome } from '@visual-co
  * between filter states.
  *
  * URL contract:
- *   ?status=needs_review     (default, omitted from canonical URL)
- *   ?level=tolerant,loose    (comma-separated multi-select)
- *   ?region=nav_primary,...  (comma-separated multi-select)
- *   ?change=text_changed,... (comma-separated multi-select)
- *   ?outcome=present         (default, omitted from canonical URL)
+ *   ?status=needs_review               (default, omitted from canonical URL)
+ *   ?level=tolerant,loose              (comma-separated multi-select)
+ *   ?region=nav_primary,...            (comma-separated multi-select)
+ *   ?change=text_changed,...           (comma-separated multi-select)
+ *   ?outcome=present,capture-failed    (comma-separated multi-select)
  *
  * Default state (= what /sessions/:id renders without query string):
- *   { status: 'needs_review', levels: [], regions: [], changes: [], outcome: 'present' }
+ *   { status: 'needs_review', levels: [], regions: [], changes: [], outcomes: ['present'] }
  */
 
 export type Status = 'all' | 'needs_review' | 'accepted' | 'rejected' | 'regressed' | 'expanded';
 export type Level = MatchedAtLevel | 'pending' | 'missing';
-export type Outcome = 'present' | 'a-missing' | 'b-missing' | 'both-missing';
+// 'capture-failed' is orthogonal to the pair_outcome bucket (a pair can be
+// 'present' from the planner's perspective and still have failed captures
+// in the latest run, or vice versa). Outcomes are multi-select; selected
+// values are OR'd together. Empty = no outcome filter.
+export type Outcome = 'present' | 'a-missing' | 'b-missing' | 'both-missing' | 'capture-failed';
 
 export interface FilterState {
   status: Status;
@@ -30,7 +34,8 @@ export interface FilterState {
   regions: string[];
   /** Empty array = no change_type filter. */
   changes: string[];
-  outcome: Outcome;
+  /** Empty array = no outcome filter (all rows match). Selected values OR'd. */
+  outcomes: Outcome[];
 }
 
 export const DEFAULT_FILTER_STATE: FilterState = {
@@ -38,12 +43,12 @@ export const DEFAULT_FILTER_STATE: FilterState = {
   levels: [],
   regions: [],
   changes: [],
-  outcome: 'present',
+  outcomes: ['present'],
 };
 
 const STATUS_VALUES: readonly Status[] = ['all', 'needs_review', 'accepted', 'rejected', 'regressed', 'expanded'];
 const LEVEL_VALUES: readonly Level[] = ['pixel-perfect', 'strict', 'tolerant', 'loose', 'none', 'pending', 'missing'];
-const OUTCOME_VALUES: readonly Outcome[] = ['present', 'a-missing', 'b-missing', 'both-missing'];
+const OUTCOME_VALUES: readonly Outcome[] = ['present', 'a-missing', 'b-missing', 'both-missing', 'capture-failed'];
 
 function parseEnum<T extends string>(raw: string | null, allowed: readonly T[], fallback: T): T {
   return raw !== null && (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback;
@@ -66,12 +71,19 @@ function parseFreeSet(raw: string | null): string[] {
 }
 
 export function parseFilterState(searchParams: URLSearchParams): FilterState {
+  const rawOutcome = searchParams.get('outcome');
+  // Distinguish "no param" (use default) from "?outcome=" (explicitly empty,
+  // = no outcome filter, show all). parseSet returns [] in both cases, so
+  // check the raw value to recover the intent.
+  const outcomes = rawOutcome === null
+    ? DEFAULT_FILTER_STATE.outcomes
+    : parseSet(rawOutcome, OUTCOME_VALUES);
   return {
     status: parseEnum(searchParams.get('status'), STATUS_VALUES, DEFAULT_FILTER_STATE.status),
     levels: parseSet(searchParams.get('level'), LEVEL_VALUES),
     regions: parseFreeSet(searchParams.get('region')),
     changes: parseFreeSet(searchParams.get('change')),
-    outcome: parseEnum(searchParams.get('outcome'), OUTCOME_VALUES, DEFAULT_FILTER_STATE.outcome),
+    outcomes,
   };
 }
 
@@ -88,8 +100,15 @@ export function applyFilterStateToParams(state: FilterState, sp: URLSearchParams
   else sp.delete('region');
   if (state.changes.length > 0) sp.set('change', state.changes.join(','));
   else sp.delete('change');
-  if (state.outcome !== DEFAULT_FILTER_STATE.outcome) sp.set('outcome', state.outcome);
-  else sp.delete('outcome');
+  const defaultOutcomes = DEFAULT_FILTER_STATE.outcomes.join(',');
+  const currentOutcomes = state.outcomes.join(',');
+  if (currentOutcomes !== defaultOutcomes) {
+    // An empty selection is meaningful — encode as "outcome=" so the parser
+    // can distinguish "no param" (use default) from "explicitly empty".
+    sp.set('outcome', currentOutcomes);
+  } else {
+    sp.delete('outcome');
+  }
 }
 
 /**
@@ -110,15 +129,28 @@ export function statusToClusterReviewState(s: Status): ClusterReviewState | 'all
 }
 
 /**
- * Pair-outcome filter check shared by rows + anomalies modes.
+ * Pair-outcome filter check shared by rows + anomalies modes. Returns true
+ * when the row matches ANY of the selected outcomes, OR when no outcomes
+ * are selected (empty = no filter). `capture-failed` is orthogonal to
+ * pair_outcome — it's a property of the latest capture attempt rather than
+ * a property of the page content, so it gets its own predicate.
  */
-export function outcomeMatches(outcome: Outcome, pairOutcome: PairOutcome): boolean {
-  switch (outcome) {
-    case 'present': return pairOutcome === 'both_present';
-    case 'a-missing': return pairOutcome === 'a_missing';
-    case 'b-missing': return pairOutcome === 'b_missing';
-    case 'both-missing': return pairOutcome === 'both_missing';
-  }
+export function outcomeMatches(
+  outcomes: Outcome[],
+  row: Pick<SessionResultRow, 'pair_outcome' | 'capture_a_status' | 'capture_b_status'>,
+): boolean {
+  if (outcomes.length === 0) return true;
+  return outcomes.some((o) => {
+    switch (o) {
+      case 'present': return row.pair_outcome === 'both_present';
+      case 'a-missing': return row.pair_outcome === 'a_missing';
+      case 'b-missing': return row.pair_outcome === 'b_missing';
+      case 'both-missing': return row.pair_outcome === 'both_missing';
+      case 'capture-failed':
+        return row.capture_a_status.status === 'error'
+          || row.capture_b_status.status === 'error';
+    }
+  });
 }
 
 /**
