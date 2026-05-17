@@ -518,6 +518,93 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
     res.json(result);
   });
 
+  // Capture + comparison errors for a session, flattened into one list
+  // for the detail pane's "Errors" tab. Both captures.error_message and
+  // comparisons.error_message are persisted (see schema.sql); this route
+  // surfaces them with enough context (pair urls, viewport, timestamp)
+  // for an operator to track down what failed without diving into rows.
+  router.get('/:id/errors', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    if (!getSession(db, id)) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    interface CaptureErrorRow {
+      id: string;
+      url_pair_id: string;
+      side: string;
+      url: string;
+      viewport_name: string;
+      error_message: string;
+      timestamp: string;
+      url_pair_label: string | null;
+      url_a: string;
+      url_b: string;
+    }
+    const captureErrors = db
+      .prepare<[string], CaptureErrorRow>(
+        `SELECT c.id           AS id,
+                c.url_pair_id  AS url_pair_id,
+                c.side         AS side,
+                c.url          AS url,
+                c.viewport_name AS viewport_name,
+                c.error_message AS error_message,
+                COALESCE(c.captured_at, c.created_at) AS timestamp,
+                p.label        AS url_pair_label,
+                p.url_a        AS url_a,
+                p.url_b        AS url_b
+           FROM captures c
+           JOIN capture_runs cr ON cr.id = c.capture_run_id
+           JOIN url_pairs p     ON p.id = c.url_pair_id
+          WHERE cr.session_id = ?
+            AND c.status = 'error'
+            AND c.error_message IS NOT NULL
+          ORDER BY timestamp DESC
+          LIMIT 500`,
+      )
+      .all(id);
+    interface ComparisonErrorRow {
+      id: string;
+      url_pair_id: string;
+      viewport_name: string;
+      error_message: string;
+      timestamp: string;
+      url_pair_label: string | null;
+      url_a: string;
+      url_b: string;
+    }
+    const comparisonErrors = db
+      .prepare<[string], ComparisonErrorRow>(
+        `SELECT cmp.id           AS id,
+                cmp.url_pair_id  AS url_pair_id,
+                cmp.viewport_name AS viewport_name,
+                cmp.error_message AS error_message,
+                COALESCE(cmp.completed_at, cmp.created_at) AS timestamp,
+                p.label          AS url_pair_label,
+                p.url_a          AS url_a,
+                p.url_b          AS url_b
+           FROM comparisons cmp
+           JOIN comparison_runs cr ON cr.id = cmp.comparison_run_id
+           JOIN url_pairs p        ON p.id = cmp.url_pair_id
+          WHERE cr.session_id = ?
+            AND cmp.status = 'error'
+            AND cmp.error_message IS NOT NULL
+          ORDER BY timestamp DESC
+          LIMIT 500`,
+      )
+      .all(id);
+    res.json({
+      errors: [
+        ...captureErrors.map((r) => ({ kind: 'capture' as const, ...r })),
+        ...comparisonErrors.map((r) => ({ kind: 'comparison' as const, side: null, url: null, ...r })),
+      ].sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
+    });
+  });
+
   router.get('/:id/evaluations', (req, res) => {
     const id = req.params.id;
     if (!id) {

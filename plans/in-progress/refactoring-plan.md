@@ -175,9 +175,25 @@ tabs working with deep-links, representative visually clear, Reject
 works from any state.
 
 
-## Phase 3 — Metrics & visibility (a few days)
+## Phase 3 — Metrics & visibility (a few days) — **done**
 
 Independent of Phase 2 — different surface (top header, new tab).
+
+Shipped on the `refactor` branch. Notes worth carrying forward:
+
+- **3.A**: speed and ETA are computed client-side from a rolling
+  30-second sample buffer of polled progress updates — no server
+  changes needed. Buffer resets on evaluation id or phase change.
+- **3.B**: `/api/sessions/:id/errors` joins captures/comparisons with
+  url_pairs and returns up to 500 entries per table. Frontend groups
+  by exact `error_message` string. A first-render guard (`errors === null`)
+  is required because the load effect runs after the first paint;
+  without it the body de-references a null array.
+- **3.C**: the in-process tracker (`services/worker-activity.ts`)
+  mirrors the LM tracker's shape so Phase 6 can replace the data
+  source without UI changes. Capacity is observed at runtime via
+  `observeCapacity(n)` from capture/comparison; seed value is
+  `availableParallelism()` from `node:os`.
 
 ### 3.A — Metrics redesign (S)
 

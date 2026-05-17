@@ -186,6 +186,106 @@ export function PlanAndEvaluate({
           </p>
         )}
       </div>
+      {isRunning && progress && (
+        <EvaluationMetrics evaluationId={evaluation!.id} progress={progress} />
+      )}
     </>
   );
+}
+
+/**
+ * Total / Remaining / Speed / ETA strip shown only while an evaluation is
+ * running. Maintains a rolling sample buffer (last ~30s) of progress
+ * updates so speed reflects current throughput, not the whole-run average.
+ *
+ * Sample buffer resets on:
+ *   - evaluation id change (a different run)
+ *   - phase change (capture → comparison have different totals/items)
+ *
+ * Speed reads samples in the most recent phase only; ETA = remaining /
+ * speed. Both show "—" until there are at least two distinct samples.
+ */
+type Phase = 'capture' | 'comparison';
+interface ProgressSample {
+  ts: number;
+  current: number;
+  phase: Phase;
+}
+
+const SPEED_WINDOW_MS = 30_000;
+
+function EvaluationMetrics({
+  evaluationId,
+  progress,
+}: {
+  evaluationId: string;
+  progress: { phase: Phase; current: number; total: number };
+}): JSX.Element {
+  const [samples, setSamples] = useState<ProgressSample[]>([]);
+
+  // Reset the buffer when the evaluation changes — different run, no
+  // continuity. Phase changes are handled in the sampling effect below.
+  useEffect(() => {
+    setSamples([]);
+  }, [evaluationId]);
+
+  useEffect(() => {
+    const now = Date.now();
+    setSamples((prev) => {
+      const lastPhase = prev[prev.length - 1]?.phase;
+      const base = lastPhase && lastPhase !== progress.phase ? [] : prev;
+      const next: ProgressSample[] = [
+        ...base,
+        { ts: now, current: progress.current, phase: progress.phase },
+      ];
+      // Trim entries older than the speed window.
+      const cutoff = now - SPEED_WINDOW_MS;
+      return next.filter((s) => s.ts >= cutoff);
+    });
+  }, [progress.current, progress.phase]);
+
+  const remaining = Math.max(0, progress.total - progress.current);
+  // Speed and ETA are computed only from same-phase samples; the buffer
+  // resets on phase change so any sample in it is in the active phase.
+  let speed = 0;
+  if (samples.length >= 2) {
+    const first = samples[0]!;
+    const last = samples[samples.length - 1]!;
+    const elapsedSec = (last.ts - first.ts) / 1000;
+    const itemsDone = last.current - first.current;
+    if (elapsedSec > 0 && itemsDone > 0) {
+      speed = itemsDone / elapsedSec;
+    }
+  }
+  const etaSec = speed > 0 ? remaining / speed : null;
+
+  return (
+    <div className="evaluation-metrics" role="status" aria-live="polite">
+      <span className="evaluation-metrics__phase">{progress.phase}</span>
+      <Metric label="total" value={progress.total.toString()} />
+      <Metric label="remaining" value={remaining.toString()} />
+      <Metric label="speed" value={speed > 0 ? `${speed.toFixed(1)}/s` : '—'} />
+      <Metric label="ETA" value={etaSec !== null && Number.isFinite(etaSec) ? formatEta(etaSec) : '—'} />
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <span className="evaluation-metrics__item">
+      <span className="evaluation-metrics__label">{label}</span>
+      <span className="evaluation-metrics__value">{value}</span>
+    </span>
+  );
+}
+
+function formatEta(seconds: number): string {
+  if (seconds < 1) return '<1s';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  if (m < 60) return `${m}m ${s.toString().padStart(2, '0')}s`;
+  const h = Math.floor(m / 60);
+  const mr = m % 60;
+  return `${h}h ${mr.toString().padStart(2, '0')}m`;
 }

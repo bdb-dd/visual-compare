@@ -15,6 +15,7 @@ import type { CaptureWorker } from './services/capture.js';
 import type { ComparisonImagick } from './services/comparison.js';
 import type { LmClient } from './services/lm.js';
 import type { LmActivityTracker } from './services/lm-activity.js';
+import type { WorkerActivityTracker } from './services/worker-activity.js';
 import { Evaluator } from './services/evaluator.js';
 
 export interface AppDeps {
@@ -28,6 +29,8 @@ export interface AppDeps {
   lm?: LmClient;
   /** Activity histogram source for /api/meta/lm-activity. */
   lmActivity?: LmActivityTracker;
+  /** Activity histogram source for /api/meta/worker-activity (captures + comparisons). */
+  workerActivity?: WorkerActivityTracker;
   /** Optional pre-built evaluator. Tests can pass one in to inspect drainAll(). */
   evaluator?: Evaluator;
 }
@@ -45,6 +48,7 @@ export function createApp(deps: AppDeps): Express {
       worker: deps.captureWorker,
       imagick: deps.imagick,
       lm: deps.lm,
+      workerActivity: deps.workerActivity,
     });
 
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
@@ -57,6 +61,7 @@ export function createApp(deps: AppDeps): Express {
       queue: deps.queue,
       artifactStore: deps.artifactStore,
       worker: deps.captureWorker,
+      workerActivity: deps.workerActivity,
     }),
   );
   app.use('/api/captures', capturesRouter(deps.db));
@@ -68,13 +73,14 @@ export function createApp(deps: AppDeps): Express {
       artifactStore: deps.artifactStore,
       imagick: deps.imagick,
       lm: deps.lm,
+      workerActivity: deps.workerActivity,
     }),
   );
   app.use('/api/comparisons', comparisonsRouter(deps.db));
   app.use('/api/evaluations', evaluationsRouter(deps.db, evaluator));
   app.use('/api/jobs', jobsRouter(deps.db));
   app.use('/api/lm-prompts', lmPromptsRouter(deps.db));
-  app.use('/api/meta', metaRouter({ lm: deps.lm, lmActivity: deps.lmActivity }));
+  app.use('/api/meta', metaRouter({ lm: deps.lm, lmActivity: deps.lmActivity, workerActivity: deps.workerActivity }));
 
   app.use('/images', express.static(deps.artifactStore.rootDir, {
     maxAge: '1y',

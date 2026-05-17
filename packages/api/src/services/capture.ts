@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { chromium, type Browser, type Page, type Response } from 'playwright';
 import type { Db } from '../db/client.js';
 import { createLimit } from './concurrency.js';
+import type { WorkerActivityTracker } from './worker-activity.js';
 import type { ArtifactStore } from './artifact-store.js';
 import type { JobQueue } from './queue.js';
 import { listUrlPairs } from './sessions.js';
@@ -278,6 +279,8 @@ export interface CaptureRunDeps {
   queue: JobQueue;
   artifactStore: ArtifactStore;
   worker: CaptureWorker;
+  /** Optional in-flight tracker for the CPU usage indicator. */
+  workerActivity?: WorkerActivityTracker;
 }
 
 const SIDES: CaptureSide[] = ['a', 'b'];
@@ -385,6 +388,7 @@ export function startCaptureRun(
       )
       .all(captureRunId);
 
+    deps.workerActivity?.observeCapacity(options.concurrency);
     const limit = createLimit(options.concurrency);
     await Promise.all(
       captures.map((capture) =>
@@ -401,7 +405,12 @@ export function startCaptureRun(
             ctx.incrementProgress();
             return;
           }
-          await runOneCapture({ db, artifactStore, worker, options }, capture, ctx);
+          const release = deps.workerActivity?.trackCall();
+          try {
+            await runOneCapture({ db, artifactStore, worker, options }, capture, ctx);
+          } finally {
+            release?.();
+          }
         }),
       ),
     );

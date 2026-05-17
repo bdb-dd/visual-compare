@@ -7,6 +7,7 @@ import type { CaptureWorker } from './capture.js';
 import type { ComparisonImagick } from './comparison.js';
 import { userInstructionTemplateId, type LmClient } from './lm.js';
 import type { JobQueue } from './queue.js';
+import type { WorkerActivityTracker } from './worker-activity.js';
 import {
   captureRunOptionsSchema,
   startCaptureRun,
@@ -482,6 +483,12 @@ export interface EvaluatorDeps {
   worker: CaptureWorker;
   imagick?: ComparisonImagick;
   lm?: LmClient;
+  /**
+   * Worker activity histogram. Optional — tests don't need it.
+   * Capture and comparison runs report in-flight counts here so the
+   * CPU usage indicator in the session header reflects real load.
+   */
+  workerActivity?: WorkerActivityTracker;
   /**
    * Poll cadence for the streaming orchestrator. The orchestrator re-plans
    * + dispatches newly-ready comparison batches on this interval while the
