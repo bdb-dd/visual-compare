@@ -206,6 +206,7 @@ describe('CSV metadata extraction', () => {
         pixel_pct_delta: 0.5,
       },
       filter_query: {},
+      default_invoke_lm: false,
     });
   });
 });

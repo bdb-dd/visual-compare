@@ -115,8 +115,15 @@ export function SessionDetailPage(): JSX.Element {
    * include LM second-pass for target misses. Lifted up from
    * PlanAndEvaluate so refreshResults can pass the same flag — otherwise
    * the plan reports "All cached" even when LM cache misses exist.
+   *
+   * Initialized from the session config's `default_invoke_lm` and
+   * mirrored back to the config (via PUT) on every toggle so the
+   * preference survives reloads. The initial value (false) is overwritten
+   * the first time config loads — see the useEffect below.
    */
   const [invokeLm, setInvokeLm] = useState(false);
+  /** Hydrate the toggle from the persisted session default once config loads. */
+  const invokeLmHydratedRef = useRef(false);
   /**
    * Monotonic counter incremented when the keyboard shortcut for "open
    * accept dialog" fires. ComparisonDetail watches it and opens the form
@@ -240,6 +247,31 @@ export function SessionDetailPage(): JSX.Element {
         setError(err instanceof Error ? err.message : String(err));
       }
     })();
+  }, [id]);
+
+  // Hydrate the LM-toggle from the persisted session default exactly once
+  // per page load. After hydration, all changes flow through
+  // handleInvokeLmChange (which PATCHes the config), so the toggle and the
+  // config stay in sync.
+  useEffect(() => {
+    if (!config || invokeLmHydratedRef.current) return;
+    invokeLmHydratedRef.current = true;
+    setInvokeLm(config.default_invoke_lm);
+  }, [config]);
+
+  /**
+   * Set the local toggle and mirror to the session config in one call.
+   * Optimistic: local state updates immediately; the PUT is fire-and-forget
+   * because a transient PUT failure is recoverable (the next toggle retries)
+   * and shouldn't block the user.
+   */
+  const handleInvokeLmChange = useCallback((value: boolean): void => {
+    setInvokeLm(value);
+    void api.putSessionConfig(id, { default_invoke_lm: value }).then(
+      (r) => setConfig(r.config),
+      // eslint-disable-next-line no-console
+      (err) => console.warn('[invoke_lm] failed to persist toggle:', err),
+    );
   }, [id]);
 
   // Once the static bits load, fetch the dynamic plan/results.
@@ -634,7 +666,7 @@ export function SessionDetailPage(): JSX.Element {
             sessionId={session.id}
             results={results}
             invokeLm={invokeLm}
-            onInvokeLmChange={setInvokeLm}
+            onInvokeLmChange={handleInvokeLmChange}
             onEvaluationComplete={handleEvaluationComplete}
             latestEvaluation={lastEval ?? null}
           />
