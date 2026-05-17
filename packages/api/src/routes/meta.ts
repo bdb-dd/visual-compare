@@ -4,10 +4,12 @@ import { DEFAULT_VIEWPORTS, DEFAULT_VIEWPORT_NAME } from '../constants/viewports
 import { EQUIVALENCE_LEVELS, DEFAULT_EQUIVALENCE_LEVEL } from '../constants/equivalence.js';
 import type { LmClient } from '../services/lm.js';
 import type { LmActivityTracker } from '../services/lm-activity.js';
+import type { WorkerActivityTracker } from '../services/worker-activity.js';
 
 export interface MetaRouterDeps {
   lm?: LmClient;
   lmActivity?: LmActivityTracker;
+  workerActivity?: WorkerActivityTracker;
 }
 
 export function metaRouter(deps: MetaRouterDeps = {}): Router {
@@ -81,6 +83,14 @@ export function metaRouter(deps: MetaRouterDeps = {}): Router {
       return;
     }
     res.json(deps.lmActivity.snapshot());
+  });
+
+  router.get('/worker-activity', (_req, res) => {
+    if (!deps.workerActivity) {
+      res.json({ samples: [], capacity: 0, interval_ms: 0 });
+      return;
+    }
+    res.json(deps.workerActivity.snapshot());
   });
 
   return router;

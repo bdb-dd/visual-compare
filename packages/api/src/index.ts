@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { mkdirSync } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import { createApp } from './app.js';
 import { openDatabase } from './db/client.js';
 import { applySchema } from './db/schema.js';
@@ -18,6 +19,7 @@ import { createLmClient, readLmConfigFromEnv } from './services/lm.js';
 import { createLmServerControllerFromEnv } from './services/lm-server-factory.js';
 import { createLmUsageTracker } from './services/lm-usage.js';
 import { createLmActivityTracker } from './services/lm-activity.js';
+import { createWorkerActivityTracker } from './services/worker-activity.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const PACKAGE_ROOT = resolve(dirname(__filename), '..');
@@ -85,6 +87,13 @@ const lmActivity = createLmActivityTracker({
   parallel: process.env.LM_STUDIO_PARALLEL ? Number(process.env.LM_STUDIO_PARALLEL) : 2,
 });
 lmActivity.start();
+// Worker activity (captures + comparisons). Capacity floor seeded from
+// availableParallelism() so the histogram has a sane scale before the
+// first run advertises its concurrency cap.
+const workerActivity = createWorkerActivityTracker({
+  initialCapacity: availableParallelism(),
+});
+workerActivity.start();
 const lm = createLmClient(lmConfig, lmServer.cli, {
   onLmUsage: () => lmUsage.record(),
   beginLmCall: () => lmActivity.trackCall(),
@@ -94,7 +103,7 @@ console.log(
   `[lm] base=${lmConfig.baseURL} model=${lmConfig.model} prompt=${lmConfig.promptVersion} backend=${lmServer.backend} (${lmServer.description})`,
 );
 
-const app = createApp({ db, queue, artifactStore, captureWorker, lm, lmActivity });
+const app = createApp({ db, queue, artifactStore, captureWorker, lm, lmActivity, workerActivity });
 
 // Liveness probe for the reverse proxy / Scaleway healthcheck. Intentionally
 // cheap — no DB or LM round-trip; readiness is implied by the process being up.

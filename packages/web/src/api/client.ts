@@ -291,6 +291,12 @@ export const api = {
   getLmActivity: () =>
     request<LmActivityDto>('/api/meta/lm-activity'),
 
+  getWorkerActivity: () =>
+    request<WorkerActivityDto>('/api/meta/worker-activity'),
+
+  getSessionErrors: (sessionId: string) =>
+    request<{ errors: SessionErrorEntry[] }>(`/api/sessions/${sessionId}/errors`),
+
   listAcceptances: (sessionId: string) =>
     request<{ acceptances: AcceptanceRow[] }>(`/api/sessions/${sessionId}/acceptances`),
   createAcceptance: (
@@ -436,4 +442,30 @@ export interface LmActivityDto {
   parallel: number;
   /** Sample cadence in ms. */
   interval_ms: number;
+}
+
+export interface WorkerActivityDto {
+  /** Oldest-first ring of in-flight capture+comparison counts at sample time. */
+  samples: number[];
+  /** Observed concurrency ceiling — denominator for sample normalization. */
+  capacity: number;
+  /** Sample cadence in ms. */
+  interval_ms: number;
+}
+
+export interface SessionErrorEntry {
+  kind: 'capture' | 'comparison';
+  id: string;
+  url_pair_id: string;
+  url_pair_label: string | null;
+  url_a: string;
+  url_b: string;
+  /** Null for comparison errors (no per-side concept). */
+  side: 'a' | 'b' | null;
+  /** Null for comparison errors (the comparison row doesn't store a specific url). */
+  url: string | null;
+  viewport_name: string;
+  error_message: string;
+  /** ISO timestamp. */
+  timestamp: string;
 }

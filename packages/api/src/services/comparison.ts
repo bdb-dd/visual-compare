@@ -14,6 +14,7 @@ import { parseConnectedComponents } from './connected-components.js';
 import { computeMatchedAtLevel } from './equivalence.js';
 import { computeSignature } from './cluster-signature.js';
 import { createLimit } from './concurrency.js';
+import type { WorkerActivityTracker } from './worker-activity.js';
 import { getEquivalenceLevel, isAtLeastAsStrict } from '../constants/equivalence.js';
 import {
   isAnalyzeError,
@@ -78,6 +79,8 @@ export interface ComparisonRunDeps {
   queue: JobQueue;
   artifactStore: ArtifactStore;
   imagick?: ComparisonImagick;
+  /** Optional in-flight tracker for the CPU usage indicator. */
+  workerActivity?: WorkerActivityTracker;
   /**
    * LM Studio client. Required for `semantic` level and for ambiguity-band
    * tiebreaks; absence is treated as a hard error for those code paths.
@@ -298,6 +301,7 @@ export function startComparisonRunForPairs(
     // each other; SQLite serializes writers internally. The shared circuit
     // breaker is mutated under a JS-single-threaded model — sequential
     // increment/check is safe between awaits.
+    deps.workerActivity?.observeCapacity(options.concurrency);
     const limit = createLimit(options.concurrency);
     await Promise.all(
       comparisons.map((c) =>
@@ -313,15 +317,20 @@ export function startComparisonRunForPairs(
             ctx.incrementProgress();
             return;
           }
-          await runOneComparison(
-            deps,
-            imagick,
-            c,
-            options.targetLevel,
-            options.invokeLm ?? false,
-            circuit,
-            prompts,
-          );
+          const release = deps.workerActivity?.trackCall();
+          try {
+            await runOneComparison(
+              deps,
+              imagick,
+              c,
+              options.targetLevel,
+              options.invokeLm ?? false,
+              circuit,
+              prompts,
+            );
+          } finally {
+            release?.();
+          }
           ctx.incrementProgress();
         }),
       ),

@@ -14,10 +14,12 @@ import {
 } from '../api/filterState.js';
 import { LmStatusPill } from '../components/LmStatusPill.js';
 import { LmActivityHistogram } from '../components/LmActivityHistogram.js';
+import { WorkerActivityHistogram } from '../components/WorkerActivityHistogram.js';
 import { PlanAndEvaluate } from '../components/PlanAndEvaluate.js';
 import { SessionConfigPanel } from '../components/SessionConfigPanel.js';
 import { SessionResultsList } from '../components/SessionResultsList.js';
 import { UrlPairsEditor } from '../components/UrlPairsEditor.js';
+import { ErrorLogTab } from '../components/ErrorLogTab.js';
 import type {
   AcceptanceRow,
   CaptureRunRow,
@@ -34,7 +36,7 @@ import type {
 import type { EquivalenceLevelDef } from '@visual-compare/api/constants/equivalence';
 
 type SidebarTab = 'review' | 'config';
-type DetailTab = 'comparison' | 'history' | 'pairs';
+type DetailTab = 'comparison' | 'history' | 'pairs' | 'errors';
 type Mode = 'clusters' | 'rows' | 'anomalies';
 
 const MODE_VALUES: readonly Mode[] = ['clusters', 'rows', 'anomalies'];
@@ -639,6 +641,7 @@ export function SessionDetailPage(): JSX.Element {
               onRecaptureAll={() => void handleInvalidateAll()}
               onArchiveToggle={() => void handleArchive()}
             />
+            <WorkerActivityHistogram />
             <LmActivityHistogram />
             <LmStatusPill />
           </div>
@@ -853,6 +856,15 @@ export function SessionDetailPage(): JSX.Element {
             >
               URL pairs <span className="muted">({pairs.length})</span>
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={detailTab === 'errors'}
+              className={`tab ${detailTab === 'errors' ? 'active' : ''}`}
+              onClick={() => setDetailTab('errors')}
+            >
+              Errors
+            </button>
           </div>
 
           {detailTab === 'comparison' && (
@@ -939,6 +951,8 @@ export function SessionDetailPage(): JSX.Element {
               }}
             />
           )}
+
+          {detailTab === 'errors' && <ErrorLogTab sessionId={session.id} />}
         </section>
       </div>
       )}
