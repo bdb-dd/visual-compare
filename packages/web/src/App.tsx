@@ -1,9 +1,10 @@
-import type { JSX } from 'react';
+import { useEffect, useState, type JSX } from 'react';
 import { Navigate, NavLink, Route, Routes, useLocation, useParams } from 'react-router-dom';
 import { SessionsPage } from './pages/SessionsPage.js';
 import { SessionDetailPage } from './pages/SessionDetailPage.js';
 import { ComparisonDetailPage } from './pages/ComparisonDetailPage.js';
 import { LmStatusPill } from './components/LmStatusPill.js';
+import { api } from './api/client.js';
 
 export function App(): JSX.Element {
   return (
@@ -25,9 +26,55 @@ export function App(): JSX.Element {
           the pane opens directly on the named cluster.
         */}
         <Route path="/sessions/:id/clusters/:cluster_id" element={<RedirectToClusterFocus />} />
-        <Route path="/comparisons/:id" element={<ComparisonDetailPage />} />
+        {/*
+          Phase 4: comparison detail now lives under the session so the
+          URL itself carries the session context. The legacy
+          /comparisons/:id route redirects via a lookup so old share-links
+          continue to land in the right place.
+        */}
+        <Route path="/sessions/:id/comparisons/:comparison_id" element={<ComparisonDetailPage />} />
+        <Route path="/comparisons/:id" element={<LegacyComparisonRedirect />} />
       </Routes>
     </>
+  );
+}
+
+/**
+ * Legacy /comparisons/:id share-link handler. Looks up the comparison's
+ * session id and redirects to the session-scoped path. Renders a loading
+ * line while the fetch is in flight; falls back to the standalone page
+ * (no redirect) if the lookup errors so the user isn't left stranded.
+ */
+function LegacyComparisonRedirect(): JSX.Element {
+  const { id = '' } = useParams();
+  const { search } = useLocation();
+  const [target, setTarget] = useState<string | null>(null);
+  const [errored, setErrored] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getComparisonDetail(id)
+      .then((d) => {
+        if (cancelled) return;
+        setTarget(`/sessions/${d.url_pair.session_id}/comparisons/${id}${search}`);
+      })
+      .catch(() => {
+        if (!cancelled) setErrored(true);
+      });
+    return () => { cancelled = true; };
+  }, [id, search]);
+
+  if (target) return <Navigate to={target} replace />;
+  if (errored) {
+    // Fall back to the standalone page so the user can still see the
+    // comparison and pick up the error context from ComparisonDetail's
+    // own error rendering.
+    return <ComparisonDetailPage />;
+  }
+  return (
+    <main className="wide">
+      <p className="muted">Loading comparison…</p>
+    </main>
   );
 }
 

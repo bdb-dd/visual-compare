@@ -49,6 +49,19 @@ function parseMode(raw: string | null): Mode {
 
 export function SessionDetailPage(): JSX.Element {
   const { id = '' } = useParams();
+  // URL schema for this page (Phase 4 audit):
+  //   mode    = clusters | rows | anomalies   (clusters omitted as canonical)
+  //   focus   = cluster id (clusters / anomalies mode only)
+  //   cat     = category tab key (clusters mode only — owned by ClusterTab)
+  //   view    = comparison view mode (triple | ab | slider — owned by ClusterDetailPanel)
+  //   plus all filter chips (status / level / region / change / outcome) via
+  //   `applyFilterStateToParams`.
+  //
+  // Push vs replace policy:
+  //   - Discrete navigations (mode switch, cross-mode jumps, Shift+Arrow,
+  //     toast-driven jumps) PUSH so back/forward walks the journey.
+  //   - In-place edits (cluster click, filter chip toggle, view-mode
+  //     selector) REPLACE so rapid input doesn't flood history.
   const [searchParams, setSearchParams] = useSearchParams();
   const mode = parseMode(searchParams.get('mode'));
   const setMode = useCallback(
@@ -58,7 +71,9 @@ export function SessionDetailPage(): JSX.Element {
       else sp.set('mode', next);
       // Drop focus when switching modes — focus identifiers are mode-specific.
       sp.delete('focus');
-      setSearchParams(sp, { replace: true });
+      // Mode is a discrete navigation — push so back returns to the
+      // previous mode.
+      setSearchParams(sp, { replace: false });
     },
     [searchParams, setSearchParams],
   );
@@ -435,7 +450,9 @@ export function SessionDetailPage(): JSX.Element {
         const sp = new URLSearchParams(searchParams);
         sp.delete('mode');
         sp.set('focus', clusterId);
-        setSearchParams(sp, { replace: true });
+        // Cross-mode jump from a keyboard shortcut — push history so the
+        // user can back-button to where they were in Rows mode.
+        setSearchParams(sp, { replace: false });
         return;
       }
     };
@@ -908,19 +925,19 @@ export function SessionDetailPage(): JSX.Element {
                       onRowQuickAccept={(r) => void handleQuickAcceptShortcut(r)}
                       onRowClear={(r) => void handleClearShortcut(r)}
                       onRowAcceptCluster={(clusterId) => {
-                        // Jump to Clusters mode with the cluster focused
-                        // and immediately tick the accept-dialog trigger.
+                        // Cross-mode jump from a row's ActionsMenu — push
+                        // so back returns to the originating row view.
                         const sp = new URLSearchParams(searchParams);
                         sp.delete('mode'); // clusters is canonical default
                         sp.set('focus', clusterId);
-                        setSearchParams(sp, { replace: true });
+                        setSearchParams(sp, { replace: false });
                         setClusterAcceptTrigger((v) => v + 1);
                       }}
                       onRowShowCluster={(clusterId) => {
                         const sp = new URLSearchParams(searchParams);
                         sp.delete('mode');
                         sp.set('focus', clusterId);
-                        setSearchParams(sp, { replace: true });
+                        setSearchParams(sp, { replace: false });
                       }}
                     />
                   ) : null

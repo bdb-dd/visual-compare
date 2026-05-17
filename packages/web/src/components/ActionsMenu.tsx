@@ -225,7 +225,9 @@ function computeItems(props: ActionsMenuProps): MenuItem[] {
       {
         key: 'open',
         label: 'Open in new tab ↗',
-        href: focused.comparisonId ? `/comparisons/${focused.comparisonId}` : undefined,
+        href: focused.comparisonId
+          ? `/sessions/${props.sessionId}/comparisons/${focused.comparisonId}`
+          : undefined,
         disabledReason: focused.comparisonId ? undefined : 'No comparison id',
         separator: true,
       },
