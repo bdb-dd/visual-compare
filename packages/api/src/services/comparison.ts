@@ -56,7 +56,7 @@ export const comparisonRunOptionsSchema = z.object({
    * typical 8-core boxes that may also be running Playwright captures
    * alongside; bump to 8+ for dedicated comparison-only runs.
    */
-  concurrency: z.number().int().min(1).max(10).default(4),
+  concurrency: z.number().int().min(1).max(16).default(4),
 });
 
 export type ComparisonRunOptionsParsed = z.output<typeof comparisonRunOptionsSchema>;
@@ -156,6 +156,15 @@ export interface StartComparisonRunForPairsInput {
   options: ComparisonRunOptionsParsed;
   pairs: ExplicitComparisonPair[];
   /**
+   * When set, append the comparison rows to this existing comparison_run
+   * instead of creating a new one. The orchestrator uses this to stream
+   * batches of ready pairs into a single logical run while keeping each
+   * worker scoped to its own batch (so workers don't trample each other's
+   * pending rows). When unset, behaves like the original single-batch
+   * call: creates a fresh comparison_run row + the rows for `pairs`.
+   */
+  existingRunId?: string;
+  /**
    * Optional signal for cooperative cancellation. The limit-loop checks
    * `aborted` before each new comparison; in-flight ImageMagick / LM work
    * runs to completion.
@@ -218,22 +227,28 @@ export function startComparisonRunForPairs(
   }
 
   const jobId = queue.createJob({ type: 'comparison', progress_total: pairs.length });
-  const comparisonRunId = randomUUID();
+  const comparisonRunId = input.existingRunId ?? randomUUID();
   const now = new Date().toISOString();
+  // Captured here so the worker SELECTs only the rows this batch inserted —
+  // critical for the streaming case, where a previously-enqueued worker may
+  // already be processing other rows under the same comparison_run_id.
+  const insertedComparisonIds: string[] = [];
 
   const tx = db.transaction(() => {
-    db.prepare(
-      `INSERT INTO comparison_runs
-         (id, session_id, capture_run_id, job_id, options_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(
-      comparisonRunId,
-      sessionId,
-      captureRunId,
-      jobId,
-      JSON.stringify(options),
-      now,
-    );
+    if (!input.existingRunId) {
+      db.prepare(
+        `INSERT INTO comparison_runs
+           (id, session_id, capture_run_id, job_id, options_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(
+        comparisonRunId,
+        sessionId,
+        captureRunId,
+        jobId,
+        JSON.stringify(options),
+        now,
+      );
+    }
     const insertComparison = db.prepare(
       `INSERT INTO comparisons
          (id, comparison_run_id, url_pair_id, capture_a_id, capture_b_id,
@@ -241,8 +256,9 @@ export function startComparisonRunForPairs(
        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
     );
     for (const p of pairs) {
+      const cmpId = randomUUID();
       insertComparison.run(
-        randomUUID(),
+        cmpId,
         comparisonRunId,
         p.url_pair_id,
         p.capture_a_id,
@@ -250,16 +266,23 @@ export function startComparisonRunForPairs(
         p.viewport_name,
         now,
       );
+      insertedComparisonIds.push(cmpId);
     }
   });
   tx();
 
   queue.enqueue(jobId, async (ctx) => {
-    const comparisons = db
-      .prepare<[string], ComparisonRow>(
-        `SELECT * FROM comparisons WHERE comparison_run_id = ? ORDER BY created_at`,
-      )
-      .all(comparisonRunId);
+    // Scope this worker to the rows we just inserted. With the streaming
+    // orchestrator we may have multiple workers running concurrently
+    // against the same comparison_run; each must claim only its own batch.
+    const placeholders = insertedComparisonIds.map(() => '?').join(',');
+    const comparisons = insertedComparisonIds.length === 0
+      ? []
+      : db
+          .prepare<string[], ComparisonRow>(
+            `SELECT * FROM comparisons WHERE id IN (${placeholders}) ORDER BY created_at`,
+          )
+          .all(...insertedComparisonIds);
     const circuit: LmCircuit = {
       consecutiveFailures: 0,
       open: false,

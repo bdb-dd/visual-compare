@@ -14,5 +14,8 @@ export default defineConfig({
     pool: 'forks',
     fileParallelism: false,
     testTimeout: 20_000,
+    env: {
+      EVALUATOR_POLL_INTERVAL_MS: '10',
+    },
   },
 });

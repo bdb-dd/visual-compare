@@ -131,6 +131,7 @@ async function makeHarness(): Promise<Harness> {
     worker: captureWorker,
     imagick,
     lm,
+    pollIntervalMs: 10,
   });
   const app = createApp({ db, queue, artifactStore, captureWorker, imagick, lm, evaluator });
   return {

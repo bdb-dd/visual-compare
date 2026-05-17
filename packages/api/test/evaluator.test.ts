@@ -127,6 +127,7 @@ async function makeHarness(): Promise<Harness> {
     worker: captureWorker,
     imagick,
     lm,
+    pollIntervalMs: 10,
   });
   const app = createApp({ db, queue, artifactStore, captureWorker, imagick, lm, evaluator });
   return {
@@ -415,6 +416,7 @@ describe('evaluator cancel', () => {
       worker: blockingWorker,
       imagick: stubImagick(),
       lm: stubLm(),
+      pollIntervalMs: 10,
     });
     const start = evaluator.start(sessionId, {
       viewports: [desktop],
@@ -443,6 +445,91 @@ describe('evaluator cancel', () => {
       )
       .get(start.evaluation_id);
     expect(row?.status).toBe('cancelled');
+  });
+
+  it('streams comparisons in multiple batches under one comparison_run as captures land', async () => {
+    const sessionId = await uploadSession(h.app);
+
+    // Per-pair gates: hold pair 2's captures until after pair 1's land so
+    // the orchestrator has the opportunity to dispatch pair 1 in a first
+    // comparison batch before pair 2's captures complete.
+    const gatePair2 = makeGate();
+    let counter = 0;
+    const stagedWorker: CaptureWorker = {
+      capture: async (args) => {
+        const idx = counter++;
+        // uploadSession seeds 2 url pairs × 2 sides = 4 captures.
+        // Indices 0,1 belong to pair 1; 2,3 belong to pair 2.
+        if (idx >= 2) await gatePair2.released;
+        const dir = join(tmpdir(), 'vc-eval-stream-test');
+        await mkdir(dir, { recursive: true });
+        const path = join(dir, `cap-${idx}.png`);
+        await writeFile(path, Buffer.from(`url=${args.url}\n`));
+        return { tempPath: path, durationMs: 1, metadata: { idx } };
+      },
+      shutdown: async () => {},
+    };
+    const evaluator = new Evaluator({
+      db: h.db,
+      queue: h.queue,
+      artifactStore: h.artifactStore,
+      worker: stagedWorker,
+      imagick: stubImagick(),
+      lm: stubLm(),
+      pollIntervalMs: 10,
+    });
+    const start = evaluator.start(sessionId, {
+      viewports: [desktop],
+      target_level: 'tolerant',
+    });
+
+    // Let pair 1's two captures finish + the poll loop dispatch batch #1.
+    // The poll cadence is 10 ms (test override), so 60 ms is plenty.
+    await new Promise((r) => setTimeout(r, 60));
+
+    // Release pair 2 so the rest of the run can complete.
+    gatePair2.release();
+    while (evaluator.waitFor(start.evaluation_id)) {
+      await evaluator.drainAll();
+      await h.queue.drain();
+    }
+
+    // One comparison_run.
+    const runRow = h.db
+      .prepare<[string], { id: string }>(
+        `SELECT id FROM comparison_runs WHERE session_id = ?`,
+      )
+      .all(sessionId);
+    expect(runRow).toHaveLength(1);
+    const comparisonRunId = runRow[0]!.id;
+
+    // Two comparison rows (one per pair) attached to that run.
+    const compCount = h.db
+      .prepare<[string], { n: number }>(
+        `SELECT COUNT(*) AS n FROM comparisons WHERE comparison_run_id = ?`,
+      )
+      .get(comparisonRunId);
+    expect(compCount?.n).toBe(2);
+
+    // At least two comparison jobs landed — proof of batching.
+    // (The exact count is timing-dependent: 2 is the staging-intended case,
+    // but a slow CI box can produce 3 when the poll ticks split work
+    // finer-grained. The contract is "more than one".)
+    const jobCount = h.db
+      .prepare<unknown[], { n: number }>(
+        `SELECT COUNT(*) AS n FROM jobs WHERE type = 'comparison'`,
+      )
+      .get();
+    expect(jobCount?.n ?? 0).toBeGreaterThan(1);
+
+    // Evaluation finalized successfully.
+    const evalRow = h.db
+      .prepare<[string], { status: string; comparison_run_id: string | null }>(
+        `SELECT status, comparison_run_id FROM evaluations WHERE id = ?`,
+      )
+      .get(start.evaluation_id);
+    expect(evalRow?.status).toBe('complete');
+    expect(evalRow?.comparison_run_id).toBe(comparisonRunId);
   });
 
   it('POST /cancel returns 404 for an unknown evaluation', async () => {

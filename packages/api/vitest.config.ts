@@ -12,5 +12,11 @@ export default defineConfig({
     globals: false,
     pool: 'forks',
     testTimeout: 20_000,
+    env: {
+      // Tighten the evaluator's stream-orchestrator poll cadence so tests
+      // that exercise it don't sleep whole seconds between batch dispatches.
+      // Production default (2000 ms) lives in evaluator.ts.
+      EVALUATOR_POLL_INTERVAL_MS: '10',
+    },
   },
 });

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
 import type { ArtifactStore } from './artifact-store.js';
@@ -481,6 +482,14 @@ export interface EvaluatorDeps {
   worker: CaptureWorker;
   imagick?: ComparisonImagick;
   lm?: LmClient;
+  /**
+   * Poll cadence for the streaming orchestrator. The orchestrator re-plans
+   * + dispatches newly-ready comparison batches on this interval while the
+   * capture job is in flight. Default in production: 2000 ms (cheap on DB,
+   * tight enough that the GPU rarely idles between batches). Tests override
+   * with a small value (e.g. 10 ms) so they don't wait whole seconds.
+   */
+  pollIntervalMs?: number;
 }
 
 interface EvaluationRow {
@@ -507,7 +516,16 @@ export class Evaluator {
   #pending = new Map<string, PendingEvaluation>();
 
   constructor(deps: EvaluatorDeps) {
-    this.#deps = deps;
+    // If pollIntervalMs isn't passed explicitly, fall back to env so a
+    // global vitest config can set a tiny interval without every test
+    // having to thread the option through createApp.
+    const envPoll = process.env.EVALUATOR_POLL_INTERVAL_MS;
+    this.#deps = {
+      ...deps,
+      pollIntervalMs:
+        deps.pollIntervalMs ??
+        (envPoll && Number.isFinite(Number(envPoll)) ? Number(envPoll) : undefined),
+    };
   }
 
   /**
@@ -615,21 +633,22 @@ export class Evaluator {
     db.prepare(`UPDATE evaluations SET status = 'running' WHERE id = ?`).run(evaluationId);
 
     try {
-      // Pre-phase abort check: nothing has been queued yet, so we can mark
-      // cancelled immediately without waiting on a job's drain.
       if (signal.aborted) {
         this.#finalizeCancelled(evaluationId, null, null);
         return;
       }
 
-      // 1) Capture run for missing captures. Pass the planner's per-tuple
-      //    misses through `explicitCaptures` so we insert exactly one
-      //    captures row per actually-missing (pair, viewport, side) — the
-      //    legacy cartesian-product path would re-capture both sides of any
-      //    pair where either side was missing, and any rows left `pending`
-      //    after an interruption become permanent zombies (the in-memory
-      //    queue can't re-pick them up).
+      // -- Phase 1: kick off captures (don't await yet) -------------------
+      //
+      // Pass the planner's per-tuple misses through `explicitCaptures` so we
+      // insert exactly one captures row per actually-missing
+      // (pair, viewport, side) — the legacy cartesian-product path would
+      // re-capture both sides of any pair where either side was missing, and
+      // any rows left `pending` after an interruption become permanent
+      // zombies (the in-memory queue can't re-pick them up).
       let captureRunId: string | null = null;
+      let captureWait: Promise<void> | undefined;
+      let captureDone = false;
       if (initialPlan.capture_misses.length > 0) {
         const missingViewportNames = new Set(
           initialPlan.capture_misses.map((c) => c.viewport_name),
@@ -652,40 +671,58 @@ export class Evaluator {
           captureRunId,
           evaluationId,
         );
-        const wait = queue.waitForJob(captureResult.job_id);
-        if (wait) await wait;
+        captureWait = queue.waitForJob(captureResult.job_id);
+        if (captureWait) {
+          void captureWait.then(() => {
+            captureDone = true;
+          });
+        } else {
+          captureDone = true;
+        }
+      } else {
+        captureDone = true;
       }
 
-      if (signal.aborted) {
-        this.#finalizeCancelled(evaluationId, captureRunId, null);
-        return;
-      }
-
-      // 2) Re-plan now that captures are written. Determine remaining
-      //    comparison work and resolve sha pairs to capture-row ids.
-      const plan2 = planEvaluation(db, sessionId, config);
-      const captureRowsByPair = this.#loadCapturesForMisses(plan2.comparison_misses);
-
-      // 3) Single comparison run per evaluation. The pipeline records
-      //    matched_at_level per comparison from the cached pixel metrics.
-      //    TODO(phase-2): orchestrate the LM second pass on misses here.
-      const fallbackCaptureRunId = captureRunId ?? this.#anyCaptureRunForSession(sessionId);
+      // -- Phase 2: stream comparisons as pairs become ready --------------
+      //
+      // Each iteration re-plans (cheap query) and resolves capture row ids
+      // for any pair whose A/B captures have landed in the cache substrate.
+      // Newly-ready pairs are dispatched as a fresh comparison job that
+      // appends rows to the same logical comparison_run. Per-batch worker
+      // scoping (see startComparisonRunForPairs) prevents cross-batch row
+      // double-pickup; the per-type queue chain (see queue.ts) lets these
+      // jobs run concurrently with the in-flight capture job.
+      const comparisonOpts = comparisonRunOptionsSchema.parse({
+        targetLevel: config.target_level,
+        invokeLm: config.invoke_lm,
+      });
+      const dispatchedKeys = new Set<string>();
+      const comparisonJobIds: string[] = [];
       let comparisonRunId: string | null = null;
+      const fallbackCaptureRunId = (): string | null =>
+        captureRunId ?? this.#anyCaptureRunForSession(sessionId);
 
-      const pairs: ExplicitComparisonPair[] = [];
-      for (const m of plan2.comparison_misses) {
-        const key = `${m.url_pair_id}::${m.viewport_name}`;
-        const ids = captureRowsByPair.get(key);
-        if (!ids?.a || !ids?.b) continue;
-        pairs.push({
-          url_pair_id: m.url_pair_id,
-          viewport_name: m.viewport_name,
-          capture_a_id: ids.a,
-          capture_b_id: ids.b,
-        });
-      }
-      if (pairs.length > 0) {
-        if (!fallbackCaptureRunId) {
+      const dispatchReady = (): void => {
+        if (signal.aborted) return;
+        const plan = planEvaluation(db, sessionId, config);
+        const rowsByPair = this.#loadCapturesForMisses(plan.comparison_misses);
+        const pairs: ExplicitComparisonPair[] = [];
+        for (const m of plan.comparison_misses) {
+          const key = `${m.url_pair_id}::${m.viewport_name}`;
+          if (dispatchedKeys.has(key)) continue;
+          const ids = rowsByPair.get(key);
+          if (!ids?.a || !ids?.b) continue;
+          pairs.push({
+            url_pair_id: m.url_pair_id,
+            viewport_name: m.viewport_name,
+            capture_a_id: ids.a,
+            capture_b_id: ids.b,
+          });
+          dispatchedKeys.add(key);
+        }
+        if (pairs.length === 0) return;
+        const cr = fallbackCaptureRunId();
+        if (!cr) {
           throw new Error(
             'No capture run available to associate with this comparison run; ' +
               'this should be impossible when comparisons are missing.',
@@ -693,17 +730,44 @@ export class Evaluator {
         }
         const result = startComparisonRunForPairs(this.#deps, {
           sessionId,
-          captureRunId: fallbackCaptureRunId,
-          options: comparisonRunOptionsSchema.parse({
-            targetLevel: config.target_level,
-            invokeLm: config.invoke_lm,
-          }),
+          captureRunId: cr,
+          options: comparisonOpts,
           pairs,
           signal,
+          existingRunId: comparisonRunId ?? undefined,
         });
-        comparisonRunId = result.comparison_run_id;
-        const wait = queue.waitForJob(result.job_id);
+        if (!comparisonRunId) {
+          comparisonRunId = result.comparison_run_id;
+          db.prepare(
+            `UPDATE evaluations SET comparison_run_id = ? WHERE id = ?`,
+          ).run(comparisonRunId, evaluationId);
+        }
+        comparisonJobIds.push(result.job_id);
+      };
+
+      // Initial dispatch: any pairs already resolvable from cache hits.
+      dispatchReady();
+
+      // Poll loop while the capture job is still flying. The cadence
+      // balances "tight enough that the GPU rarely idles" against "loose
+      // enough to keep DB pressure trivial." 2s is small relative to capture
+      // latency (~5–30s/page) and to a typical verdict (~1–5s).
+      const pollMs = this.#deps.pollIntervalMs ?? 2000;
+      while (!captureDone && !signal.aborted) {
+        await sleep(pollMs);
+        if (signal.aborted) break;
+        dispatchReady();
+      }
+
+      // Final dispatch after captures resolve, to catch any pair that became
+      // ready in the gap between the last poll tick and capture completion.
+      if (!signal.aborted) dispatchReady();
+
+      // Await every dispatched comparison job.
+      for (const jobId of comparisonJobIds) {
+        const wait = queue.waitForJob(jobId);
         if (wait) await wait;
+        if (signal.aborted) break;
       }
 
       if (signal.aborted) {
@@ -711,7 +775,7 @@ export class Evaluator {
         return;
       }
 
-      // 4) Recompute cache_hits from the final state and mark complete.
+      // -- Phase 3: finalize -----------------------------------------------
       const finalPlan = planEvaluation(db, sessionId, config);
       db.prepare(
         `UPDATE evaluations
