@@ -43,6 +43,12 @@ const COLUMN_ADDITIONS: ColumnAddition[] = [
   { table: 'differences', column: 'signature_version', ddl: 'TEXT' },
   // Phase D: cluster-rule provenance on per-row acceptances.
   { table: 'acceptances',  column: 'acceptance_rule_id', ddl: 'TEXT REFERENCES acceptance_rules(id) ON DELETE SET NULL' },
+  // Persisted UI default for the LM-second-pass toggle.
+  {
+    table: 'sessions',
+    column: 'default_invoke_lm',
+    ddl: 'INTEGER NOT NULL DEFAULT 0 CHECK(default_invoke_lm IN (0, 1))',
+  },
 ];
 
 /**

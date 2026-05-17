@@ -1207,6 +1207,9 @@ export function readSessionResults(
     default_equivalence_level: config.target_level,
     region_match_config: config.region_match_config,
     filter_query: config.filter_query,
+    // Synthesized shape doesn't drive any pair-level decision in
+    // resolvePairConfig; default to false so the field is well-defined.
+    default_invoke_lm: false,
   };
 
   const out: SessionResultRow[] = [];

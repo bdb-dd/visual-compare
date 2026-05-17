@@ -184,6 +184,7 @@ export const sessionConfigSchema = z
     default_equivalence_level: equivalenceLevelSchema.default(DEFAULT_EQUIVALENCE_LEVEL),
     region_match_config: regionMatchConfigSchema.default({ ...DEFAULT_REGION_MATCH_CONFIG }),
     filter_query: filterQuerySchema.default({}),
+    default_invoke_lm: z.boolean().default(false),
   })
   .strict();
 
@@ -204,6 +205,7 @@ const EMPTY_CONFIG: SessionConfig = {
   default_equivalence_level: DEFAULT_EQUIVALENCE_LEVEL,
   region_match_config: { ...DEFAULT_REGION_MATCH_CONFIG },
   filter_query: {},
+  default_invoke_lm: false,
 };
 
 function parseJsonField<T>(value: string | null | undefined, fallback: T): T {
@@ -227,6 +229,9 @@ export function rowToSessionConfig(row: SessionRow): SessionConfig {
       parseJsonField<Record<string, unknown>>(row.region_match_config_json, {}),
     ),
     filter_query: parseJsonField<FilterQuery>(row.filter_query, {}),
+    // Tolerate the SQLite int. Migration adds the column with default 0,
+    // so any pre-migration read also resolves to false.
+    default_invoke_lm: (row.default_invoke_lm ?? 0) === 1,
   };
 }
 
@@ -273,7 +278,8 @@ export function updateSessionConfig(
             default_capture_options = ?,
             default_equivalence_level = ?,
             region_match_config_json = ?,
-            filter_query = ?
+            filter_query = ?,
+            default_invoke_lm = ?
       WHERE id = ?`,
   ).run(
     JSON.stringify(merged.default_viewports),
@@ -281,6 +287,7 @@ export function updateSessionConfig(
     merged.default_equivalence_level,
     JSON.stringify(merged.region_match_config),
     JSON.stringify(merged.filter_query),
+    merged.default_invoke_lm ? 1 : 0,
     id,
   );
   return merged;

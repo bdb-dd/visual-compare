@@ -108,6 +108,8 @@ export interface SessionRow {
   region_match_config_json: string;      // JSON: RegionMatchConfig
   filter_query: string;                  // JSON: FilterQuery
   archived_at: string | null;
+  /** SQLite 0/1 — see SessionConfig.default_invoke_lm. */
+  default_invoke_lm: number;
 }
 
 export interface FilterQuery {
@@ -136,6 +138,12 @@ export interface SessionConfig {
   default_equivalence_level: EquivalenceLevelId;
   region_match_config: RegionMatchConfig;
   filter_query: FilterQuery;
+  /**
+   * Persisted session default for the LM-second-pass toggle. The
+   * Evaluate button reads this on mount so the user's preference
+   * survives reloads; mutations flow through PUT /api/sessions/:id/config.
+   */
+  default_invoke_lm: boolean;
 }
 
 export interface UrlPairRow {

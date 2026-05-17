@@ -31,7 +31,10 @@ CREATE TABLE sessions (
   -- Per-pair overrides live in url_pair_config_overrides.
   region_match_config_json TEXT NOT NULL DEFAULT '{"growth_margin_pct":0.5,"displacement_tolerance_pct":1,"pixel_pct_delta":0.5}',
   filter_query TEXT NOT NULL DEFAULT '{}',
-  archived_at TEXT
+  archived_at TEXT,
+  -- Persisted UI default for the LM-second-pass toggle. Read by the
+  -- Evaluate button on mount so the operator's preference survives reloads.
+  default_invoke_lm INTEGER NOT NULL DEFAULT 0 CHECK(default_invoke_lm IN (0, 1))
 );
 
 CREATE TABLE url_pairs (
