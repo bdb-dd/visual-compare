@@ -39,17 +39,24 @@ export interface AcceptClusterResult {
   acceptances_preserved: number;
 }
 
-export interface RevokeClusterResult {
+export interface RejectClusterResult {
   cluster: DifferenceClusterRow;
   /** Number of acceptances deleted because they were rule-owned. */
   acceptances_revoked: number;
   /** Number of rule rows deleted. */
   rules_deleted: number;
 }
+/** @deprecated kept for one release; use RejectClusterResult. */
+export type RevokeClusterResult = RejectClusterResult;
 
 export class ClusterRuleError extends Error {
   constructor(
-    public readonly code: 'not_found' | 'already_accepted' | 'not_accepted',
+    public readonly code:
+      | 'not_found'
+      | 'already_accepted'
+      | 'not_accepted'
+      | 'already_rejected'
+      | 'not_rejectable',
     message: string,
   ) {
     super(message);
@@ -138,59 +145,66 @@ export function acceptCluster(
 }
 
 // ---------------------------------------------------------------------------
-// Reject (revoke)
+// Reject
 // ---------------------------------------------------------------------------
 
-export function revokeClusterAcceptance(
+/**
+ * Flip a cluster to 'rejected'. Allowed transitions:
+ *
+ *   open      → rejected   (no rules to clean up)
+ *   anomaly   → rejected   (no rules to clean up)
+ *   accepted  → rejected   (also deletes rule-owned acceptances and the rule row)
+ *
+ * Disallowed:
+ *
+ *   rejected  → rejected   (already_rejected, 409)
+ *   split     → rejected   (not_rejectable, 409 — split clusters are terminal)
+ */
+export function rejectCluster(
   db: Db,
   sessionId: string,
   clusterId: string,
   opts: { notes?: string | null } = {},
-): RevokeClusterResult {
+): RejectClusterResult {
   const cluster = getCluster(db, sessionId, clusterId);
   if (!cluster) {
     throw new ClusterRuleError('not_found', `Cluster ${clusterId} not found in session ${sessionId}`);
   }
-  // Only act when the cluster is currently accepted — rejecting an open or
-  // already-rejected cluster is a 409 from the API surface.
-  if (cluster.review_state !== 'accepted') {
-    throw new ClusterRuleError('not_accepted', `Cluster ${clusterId} is not in 'accepted' state (currently '${cluster.review_state}')`);
+  if (cluster.review_state === 'rejected') {
+    throw new ClusterRuleError('already_rejected', `Cluster ${clusterId} is already rejected`);
+  }
+  if (cluster.review_state === 'split') {
+    throw new ClusterRuleError('not_rejectable', `Cluster ${clusterId} has been split and cannot be rejected`);
   }
 
   const now = new Date().toISOString();
   const tx = db.transaction(() => {
-    // Find all rules that ever targeted this cluster's signature. In normal
-    // operation there's exactly one active rule, but defensive coding lets
-    // us recover from out-of-band rule rows.
-    const rules = db
-      .prepare<[string, string, string], { id: string }>(
-        `SELECT id FROM acceptance_rules
-          WHERE session_id        = ?
-            AND signature         = ?
-            AND signature_version = ?
-            AND scope             = 'cluster'`,
-      )
-      .all(sessionId, cluster.signature, cluster.signature_version);
-
-    if (rules.length === 0) {
-      // No rule row but cluster was 'accepted' — corrupt state. Still flip
-      // the cluster back to 'rejected' so the UI is consistent.
-      db.prepare(
-        `UPDATE difference_clusters
-            SET review_state = 'rejected', reviewed_at = ?, updated_at = ?
-          WHERE id = ? AND session_id = ?`,
-      ).run(now, now, clusterId, sessionId);
-      return { revoked: 0, rulesDeleted: 0 };
+    // Rule cleanup only matters when the cluster is currently accepted —
+    // open / anomaly clusters have no rule rows or rule-owned acceptances
+    // to delete, so we just flip the state.
+    let revoked = 0;
+    let rulesDeleted = 0;
+    if (cluster.review_state === 'accepted') {
+      const rules = db
+        .prepare<[string, string, string], { id: string }>(
+          `SELECT id FROM acceptance_rules
+            WHERE session_id        = ?
+              AND signature         = ?
+              AND signature_version = ?
+              AND scope             = 'cluster'`,
+        )
+        .all(sessionId, cluster.signature, cluster.signature_version);
+      if (rules.length > 0) {
+        const ruleIds = rules.map((r) => r.id);
+        const placeholders = ruleIds.map(() => '?').join(',');
+        revoked = db
+          .prepare(`DELETE FROM acceptances WHERE session_id = ? AND acceptance_rule_id IN (${placeholders})`)
+          .run(sessionId, ...ruleIds).changes;
+        rulesDeleted = db
+          .prepare(`DELETE FROM acceptance_rules WHERE id IN (${placeholders})`)
+          .run(...ruleIds).changes;
+      }
     }
-
-    const ruleIds = rules.map((r) => r.id);
-    const placeholders = ruleIds.map(() => '?').join(',');
-    const delAcceptances = db
-      .prepare(`DELETE FROM acceptances WHERE session_id = ? AND acceptance_rule_id IN (${placeholders})`)
-      .run(sessionId, ...ruleIds);
-    const delRules = db
-      .prepare(`DELETE FROM acceptance_rules WHERE id IN (${placeholders})`)
-      .run(...ruleIds);
 
     db.prepare(
       `UPDATE difference_clusters
@@ -201,18 +215,21 @@ export function revokeClusterAcceptance(
         WHERE id = ? AND session_id = ?`,
     ).run(opts.notes ?? null, now, now, clusterId, sessionId);
 
-    return { revoked: delAcceptances.changes, rulesDeleted: delRules.changes };
+    return { revoked, rulesDeleted };
   });
   const { revoked, rulesDeleted } = tx();
 
   const updated = getCluster(db, sessionId, clusterId);
-  if (!updated) throw new Error('post-revoke lookup failed');
+  if (!updated) throw new Error('post-reject lookup failed');
   return {
     cluster: updated,
     acceptances_revoked: revoked,
     rules_deleted: rulesDeleted,
   };
 }
+
+/** @deprecated use `rejectCluster` — same signature, broader accepted states. */
+export const revokeClusterAcceptance = rejectCluster;
 
 // ---------------------------------------------------------------------------
 // Read

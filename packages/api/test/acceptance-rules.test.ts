@@ -7,8 +7,8 @@ import {
   acceptCluster,
   applySessionRules,
   ClusterRuleError,
+  rejectCluster,
   revokeCategory,
-  revokeClusterAcceptance,
 } from '../src/services/acceptance-rules.js';
 
 /**
@@ -188,8 +188,18 @@ describe('acceptCluster', () => {
   });
 });
 
-describe('revokeClusterAcceptance', () => {
-  it('deletes only rule-owned acceptances; leaves manual acceptances alone', () => {
+describe('rejectCluster', () => {
+  it('open → rejected with no rule cleanup (open clusters have no rules)', () => {
+    const { sessionId, cluster } = seed(db);
+    // Cluster is 'open' by default after seeding.
+    const result = rejectCluster(db, sessionId, cluster.id, { notes: 'not a real diff' });
+    expect(result.acceptances_revoked).toBe(0);
+    expect(result.rules_deleted).toBe(0);
+    expect(result.cluster.review_state).toBe('rejected');
+    expect(result.cluster.review_notes).toBe('not a real diff');
+  });
+
+  it('accepted → rejected deletes rule-owned acceptances but preserves manual ones', () => {
     const { sessionId, cluster } = seed(db);
     // Plant a manual acceptance on p1 first.
     const now = new Date().toISOString();
@@ -204,8 +214,8 @@ describe('revokeClusterAcceptance', () => {
     ).run(sessionId, 'a'.repeat(64), 'b'.repeat(64), now, now);
 
     acceptCluster(db, sessionId, cluster.id);
-    // Now: p1 = manual (preserved), p2 = rule-created. Revoke.
-    const result = revokeClusterAcceptance(db, sessionId, cluster.id);
+    // Now: p1 = manual (preserved), p2 = rule-created. Reject.
+    const result = rejectCluster(db, sessionId, cluster.id);
     expect(result.acceptances_revoked).toBe(1); // only p2
     expect(result.rules_deleted).toBe(1);
     expect(result.cluster.review_state).toBe('rejected');
@@ -216,22 +226,23 @@ describe('revokeClusterAcceptance', () => {
     expect(remaining.map((r) => r.id)).toEqual(['manual-1']);
   });
 
-  it('throws not_accepted when the cluster is not in accepted state', () => {
+  it('throws already_rejected when the cluster is already rejected', () => {
     const { sessionId, cluster } = seed(db);
-    expect(() => revokeClusterAcceptance(db, sessionId, cluster.id))
-      .toThrowError(/not_accepted|not in 'accepted'/i);
+    rejectCluster(db, sessionId, cluster.id);
+    expect(() => rejectCluster(db, sessionId, cluster.id))
+      .toThrowError(/already_rejected|already rejected/i);
   });
 
   it('throws not_found for unknown cluster id', () => {
     seed(db);
-    expect(() => revokeClusterAcceptance(db, 's1', 'no-such-cluster'))
+    expect(() => rejectCluster(db, 's1', 'no-such-cluster'))
       .toThrow(ClusterRuleError);
   });
 
   it('lets a rejected cluster be re-accepted (fresh rule, fresh fan-out)', () => {
     const { sessionId, cluster } = seed(db);
     const first = acceptCluster(db, sessionId, cluster.id);
-    revokeClusterAcceptance(db, sessionId, cluster.id);
+    rejectCluster(db, sessionId, cluster.id);
     const second = acceptCluster(db, sessionId, cluster.id);
     expect(second.rule.id).not.toBe(first.rule.id);
     expect(second.acceptances_created).toBe(2);

@@ -15,9 +15,11 @@ import type {
  * Phase γ without leaving the unified surface.
  *
  * State flow:
- *   open      → Accept enabled, Reject disabled
- *   accepted  → Accept disabled, Reject enabled
+ *   open      → Accept enabled, Reject enabled
+ *   anomaly   → Accept enabled, Reject enabled
+ *   accepted  → Accept disabled, Reject enabled (revokes the rule)
  *   rejected  → Accept enabled (re-accept), Reject disabled
+ *   split     → Accept disabled, Reject disabled (terminal)
  *
  * The page shell owns the back-link; this panel handles its own
  * loading/error/data states without one.
@@ -92,7 +94,7 @@ export function ClusterDetailPanel({
   const [dialog, setDialog] = useState<'accept' | 'reject' | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [banner, setBanner] = useState<ActionBanner | null>(null);
-  const [viewMode, setViewMode] = useState<'triple' | 'slider'>('triple');
+  const [viewMode, setViewMode] = useState<'triple' | 'ab' | 'slider'>('triple');
   const filmstripRef = useRef<HTMLDivElement>(null);
 
   // Callbacks are read via refs so the data-fetch effect doesn't re-run
@@ -137,7 +139,9 @@ export function ClusterDetailPanel({
     if (openRejectDialogTrigger === undefined) return;
     if (lastRejectTriggerRef.current === openRejectDialogTrigger) return;
     lastRejectTriggerRef.current = openRejectDialogTrigger;
-    if (data && data.cluster.review_state === 'accepted') setDialog('reject');
+    if (data && data.cluster.review_state !== 'rejected' && data.cluster.review_state !== 'split') {
+      setDialog('reject');
+    }
   }, [openRejectDialogTrigger, data]);
 
   const handleAccept = async (input: { label: string; notes: string }): Promise<void> => {
@@ -186,8 +190,18 @@ export function ClusterDetailPanel({
   };
 
   const cluster = data?.cluster;
-  const members: ClusterMemberDto[] = useMemo(() => data?.members ?? [], [data]);
   const representative = data?.representative ?? null;
+  // Representative-first ordering. The signature service returns members
+  // in a stable order (mostly by url_pair_id); putting the representative
+  // up front means filmstrip and stepper start there by default.
+  const members: ClusterMemberDto[] = useMemo(() => {
+    const raw = data?.members ?? [];
+    const repId = representative?.difference_id;
+    if (!repId) return raw;
+    const rep = raw.find((m) => m.difference_id === repId);
+    if (!rep) return raw;
+    return [rep, ...raw.filter((m) => m.difference_id !== repId)];
+  }, [data, representative]);
 
   // Pair stepper. `displayed` drives the whole image triple + metrics block;
   // j/k arrows step focus through `members`. With no explicit focus we show
@@ -293,8 +307,20 @@ export function ClusterDetailPanel({
             type="button"
             className="btn secondary"
             onClick={() => setDialog('reject')}
-            disabled={cluster.review_state !== 'accepted' || actionBusy}
-            title={cluster.review_state !== 'accepted' ? 'Only accepted clusters can be rejected' : 'Reject this cluster: delete its rule-owned acceptances'}
+            disabled={
+              cluster.review_state === 'rejected' ||
+              cluster.review_state === 'split' ||
+              actionBusy
+            }
+            title={
+              cluster.review_state === 'rejected'
+                ? 'Already rejected'
+                : cluster.review_state === 'split'
+                  ? 'Split clusters cannot be rejected'
+                  : cluster.review_state === 'accepted'
+                    ? 'Reject this cluster: delete its rule-owned acceptances and flip state to rejected'
+                    : 'Reject this cluster'
+            }
           >
             Reject
           </button>
@@ -334,6 +360,7 @@ export function ClusterDetailPanel({
             <Filmstrip
               members={members}
               activeId={displayed.difference_id}
+              representativeId={representative?.difference_id ?? null}
               onSelect={onMemberFocus}
               stripRef={filmstripRef}
             />
@@ -341,7 +368,7 @@ export function ClusterDetailPanel({
 
           <div className="cluster-detail__sample-meta">
             <div>
-              <strong>{isRepDisplayed ? 'Representative:' : `Member ${displayedIndex + 1} of ${members.length}:`}</strong>{' '}
+              <strong>{isRepDisplayed ? 'Representative member:' : `Member ${displayedIndex + 1} of ${members.length}:`}</strong>{' '}
               <Link to={`/comparisons/${displayed.comparison_id}`}>
                 {displayed.url_a}
               </Link>
@@ -389,6 +416,16 @@ export function ClusterDetailPanel({
             <button
               type="button"
               role="tab"
+              aria-selected={viewMode === 'ab'}
+              className={`view-toggle__btn${viewMode === 'ab' ? ' view-toggle__btn--active' : ''}`}
+              onClick={() => setViewMode('ab')}
+              title="Side-by-side A and B without the diff overlay"
+            >
+              A | B
+            </button>
+            <button
+              type="button"
+              role="tab"
               aria-selected={viewMode === 'slider'}
               className={`view-toggle__btn${viewMode === 'slider' ? ' view-toggle__btn--active' : ''}`}
               onClick={() => setViewMode('slider')}
@@ -399,9 +436,9 @@ export function ClusterDetailPanel({
           </div>
 
           <div className={`cluster-detail__images cluster-detail__images--${viewMode}`}>
-            {viewMode === 'triple'
-              ? <ImageTriple member={displayed} bbox={displayedBbox} />
-              : <ImageSlider member={displayed} bbox={displayedBbox} />}
+            {viewMode === 'triple' && <ImageTriple member={displayed} bbox={displayedBbox} />}
+            {viewMode === 'ab' && <ImageAB member={displayed} bbox={displayedBbox} />}
+            {viewMode === 'slider' && <ImageSlider member={displayed} bbox={displayedBbox} />}
           </div>
         </section>
       ) : (
@@ -419,11 +456,13 @@ export function ClusterDetailPanel({
 function Filmstrip({
   members,
   activeId,
+  representativeId,
   onSelect,
   stripRef,
 }: {
   members: ClusterMemberDto[];
   activeId: string;
+  representativeId: string | null;
   onSelect: (id: string) => void;
   stripRef: RefObject<HTMLDivElement>;
 }): JSX.Element {
@@ -434,14 +473,15 @@ function Filmstrip({
         const fallback = imageUrl(m.capture_a_sha);
         const src = diff ?? fallback;
         const active = m.difference_id === activeId;
+        const isRep = m.difference_id === representativeId;
         return (
           <button
             key={m.difference_id}
             type="button"
             data-thumb-id={m.difference_id}
-            className={`filmstrip-thumb${active ? ' filmstrip-thumb--active' : ''}`}
+            className={`filmstrip-thumb${active ? ' filmstrip-thumb--active' : ''}${isRep ? ' filmstrip-thumb--representative' : ''}`}
             onClick={() => onSelect(m.difference_id)}
-            title={`${i + 1}. ${m.url_a}`}
+            title={isRep ? `Representative · ${m.url_a}` : `${i + 1}. ${m.url_a}`}
             aria-pressed={active}
           >
             {src ? (
@@ -449,7 +489,7 @@ function Filmstrip({
             ) : (
               <span className="filmstrip-thumb__missing">—</span>
             )}
-            <span className="filmstrip-thumb__index">{i + 1}</span>
+            <span className="filmstrip-thumb__index">{isRep ? '★' : i + 1}</span>
           </button>
         );
       })}
@@ -481,6 +521,35 @@ function ImageTriple({
       <figure>
         <figcaption>diff</figcaption>
         {diffUrl ? <ImageWithBoxes src={diffUrl} alt="pixel diff" boxes={boxes} /> : <span className="missing-img">no diff</span>}
+      </figure>
+    </>
+  );
+}
+
+/**
+ * A | B — side-by-side without the diff overlay. Useful when the diff
+ * is noisy (anti-aliasing, small displacements) but the layout
+ * difference between A and B is obvious to the eye.
+ */
+function ImageAB({
+  member,
+  bbox,
+}: {
+  member: ClusterMemberDto;
+  bbox: { x: number; y: number; width: number; height: number } | null;
+}): JSX.Element {
+  const aUrl = imageUrl(member.capture_a_sha);
+  const bUrl = imageUrl(member.capture_b_sha);
+  const boxes = bbox ? [bbox] : [];
+  return (
+    <>
+      <figure>
+        <figcaption>A</figcaption>
+        {aUrl ? <ImageWithBoxes src={aUrl} alt="capture A" boxes={boxes} /> : <span className="missing-img">no image</span>}
+      </figure>
+      <figure>
+        <figcaption>B</figcaption>
+        {bUrl ? <ImageWithBoxes src={bUrl} alt="capture B" boxes={boxes} /> : <span className="missing-img">no image</span>}
       </figure>
     </>
   );

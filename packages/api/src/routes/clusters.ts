@@ -13,7 +13,7 @@ import {
   applySessionRules,
   ClusterRuleError,
   revokeCategory,
-  revokeClusterAcceptance,
+  rejectCluster,
 } from '../services/acceptance-rules.js';
 import type {
   ClusterDetailDto,
@@ -183,7 +183,7 @@ export function clustersRouter(db: Db): Router {
       return;
     }
     try {
-      const result = revokeClusterAcceptance(db, sessionId, clusterId, {
+      const result = rejectCluster(db, sessionId, clusterId, {
         notes: body.data.notes,
       });
       res.status(200).json({

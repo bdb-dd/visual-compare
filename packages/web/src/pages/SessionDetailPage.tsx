@@ -78,6 +78,19 @@ export function SessionDetailPage(): JSX.Element {
     [searchParams, setSearchParams],
   );
 
+  // Push-history sibling for keyboard nav (Shift+Arrow). Each step adds a
+  // history entry so back/forward walks the cluster sequence — that's the
+  // contract for "discrete navigation" gestures, vs. the replace behavior
+  // used for clicks (rapid clicks shouldn't flood history).
+  const stepFocusedClusterId = useCallback(
+    (id: string) => {
+      const sp = new URLSearchParams(searchParams);
+      sp.set('focus', id);
+      setSearchParams(sp, { replace: false });
+    },
+    [searchParams, setSearchParams],
+  );
+
   // Phase δ: filter state is URL-driven, shared across the three modes.
   const filterState = parseFilterState(searchParams);
   const setFilterState = useCallback(
@@ -139,19 +152,38 @@ export function SessionDetailPage(): JSX.Element {
     import('@visual-compare/api/types').ClusterDetailDto | null
   >(null);
   /**
-   * Which member of the focused cluster is currently in the image triple.
-   * Lifted from ClusterDetailPanel so the inline Members list in
-   * ClustersTab drives the same focus. `null` falls back to the
-   * cluster's representative.
+   * Which member of each cluster the user last focused, keyed by
+   * cluster id. Persists across cluster navigation so revisiting a
+   * cluster restores the previously-focused member; the absence of a
+   * key falls back to the cluster's representative (handled in
+   * ClusterDetailPanel). Kept out of the URL on purpose — share links
+   * always open at the representative (per the refactor plan §7.3).
    */
-  const [focusedMemberId, setFocusedMemberId] = useState<string | null>(null);
-  // Reset the cached review state + member focus + cluster detail whenever
-  // focus moves to a different cluster (or clears). The detail panel
-  // re-fires onClusterLoaded / onDataLoaded once the new cluster's data
-  // lands.
+  const [clusterMemberFocus, setClusterMemberFocus] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  const focusedMemberId = focusedClusterId
+    ? clusterMemberFocus.get(focusedClusterId) ?? null
+    : null;
+  const setFocusedMemberId = useCallback(
+    (id: string | null) => {
+      if (!focusedClusterId) return;
+      setClusterMemberFocus((prev) => {
+        const next = new Map(prev);
+        if (id === null) next.delete(focusedClusterId);
+        else next.set(focusedClusterId, id);
+        return next;
+      });
+    },
+    [focusedClusterId],
+  );
+  // Reset the cached review state + cluster detail whenever focus moves
+  // to a different cluster (or clears). The detail panel re-fires
+  // onClusterLoaded / onDataLoaded once the new cluster's data lands.
+  // Member focus is per-cluster (see clusterMemberFocus above) so it
+  // doesn't need to be reset here.
   useEffect(() => {
     setFocusedClusterReviewState(null);
-    setFocusedMemberId(null);
     setFocusedClusterDetail(null);
   }, [focusedClusterId]);
   /**
@@ -660,6 +692,7 @@ export function SessionDetailPage(): JSX.Element {
               sessionId={session.id}
               filter={filterState}
               onClusterFocus={setFocusedClusterId}
+              onClusterStep={stepFocusedClusterId}
               focusedClusterId={focusedClusterId}
               focusedClusterDetail={focusedClusterDetail}
               focusedMemberId={focusedMemberId}
@@ -703,6 +736,7 @@ export function SessionDetailPage(): JSX.Element {
               sessionId={session.id}
               filter={filterState}
               onClusterFocus={setFocusedClusterId}
+              onClusterStep={stepFocusedClusterId}
               focusedClusterId={focusedClusterId}
             />
           </div>

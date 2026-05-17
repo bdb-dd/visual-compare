@@ -102,11 +102,25 @@ evaluator still respects the value per evaluation.
 rows/clusters/anomalies views.
 
 
-## Phase 2 — Cluster surface (~1 week)
+## Phase 2 — Cluster surface (~1 week) — **done**
 
 Larger interaction changes. Some shared surface area (ClustersTab,
 ClusterDetailPanel, ActionsMenu) — best done together to avoid merge
 conflicts.
+
+Shipped on the `refactor` branch. Notes worth carrying forward:
+
+- **2.E**: §0 Phase-0 design doc deferred — the user clarified inline
+  that open clusters must be directly rejectable, so the state machine
+  is encoded directly in `rejectCluster` (split / rejected stay
+  terminal). The legacy `revokeClusterAcceptance` name remains as a
+  one-release deprecated re-export.
+- **2.B**: Shift+Arrow pushes one history entry per step (per the
+  plan). Plain arrows for rows still replace. Watch how this lands in
+  practice — if it floods history we can switch to replace.
+- **2.C**: Per-cluster member focus uses a `Map<clusterId, memberId>`
+  in `SessionDetailPage` React state, not in the URL. Share links
+  always open at the representative.
 
 ### 2.A — Categories as tabs (S)
 
