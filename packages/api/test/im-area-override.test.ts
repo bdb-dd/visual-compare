@@ -67,7 +67,7 @@ function imagickWithBboxArea(bboxAreaPercent: number): ComparisonImagick {
         height: 100,
       };
     },
-    compareSsim: async () => 0.97,
+    compareSsim: async () => 0.98,
     extractConnectedComponents: async () => ({
       format: 'json' as const,
       raw: JSON.stringify([region]),
