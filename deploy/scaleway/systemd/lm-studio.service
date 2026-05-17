@@ -32,8 +32,22 @@ ExecStart=/bin/sh -c 'for i in $(seq 1 30); do /usr/bin/curl -fsS http://127.0.0
 # 3. Load the configured model with full GPU offload. `--identifier` makes
 #    the OpenAI-API model id match LM_STUDIO_MODEL exactly, so the API VM's
 #    preflight check (which compares against the configured model) succeeds.
+#
+#    `--context-length 32768` is sized to fit our actual prompt shape:
+#    two full-resolution 1440×900 vision images + the visual-compare
+#    system prompt + the JSON-schema output cap. With `--parallel 2` the
+#    context is split across slots → ~16K tokens per slot, comfortable
+#    for two images. Earlier `--parallel 4` with the default 8K context
+#    gave each slot ~2K tokens and every request 400'd with "Context size
+#    exceeded", tripping the API's per-run circuit breaker.
+#
+#    VRAM budget on the L40S (48 GB): 26B-A4B Q4_K_M weights ≈ 18 GB,
+#    KV cache for 32K × 2 slots ≈ 8–12 GB, leaving ~15 GB headroom.
+#    Pushing `--parallel` higher at this context length risks OOM; pushing
+#    `--context-length` higher buys nothing for our prompt shape.
+#
 #    `--yes` auto-resolves the ambiguous-key prompt for scripted use.
-ExecStart=/usr/local/bin/lms load ${LM_STUDIO_MODEL} --gpu max --identifier ${LM_STUDIO_MODEL} --yes
+ExecStart=/usr/local/bin/lms load ${LM_STUDIO_MODEL} --gpu max --parallel 2 --context-length 32768 --identifier ${LM_STUDIO_MODEL} --yes
 
 # Graceful stop: unload happens implicitly when the server is stopped.
 ExecStop=/usr/local/bin/lms server stop

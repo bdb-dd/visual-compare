@@ -13,8 +13,18 @@
 #   ./provision.sh wait-gpu     # tail cloud-init on the GPU over ssh
 #   ./provision.sh api          # create API instance + block volume
 #   ./provision.sh wait-api     # tail cloud-init on the API over ssh
-#   ./provision.sh stop-gpu     # power the GPU instance off (default state)
-#   ./provision.sh status       # print IDs + IPs
+#   ./provision.sh start-gpu      # power an existing stopped GPU back on
+#   ./provision.sh stop-gpu       # power the GPU instance off (default state)
+#   ./provision.sh open-gpu-port  # allow API VM → GPU on tcp/1234 (idempotent)
+#   ./provision.sh reserve-gpu-ip # capture the GPU IP id into state.env so it
+#                                 #   survives instance recreation
+#   ./provision.sh gpu-delete     # delete the GPU instance; preserves the IP
+#                                 #   if reserve-gpu-ip was run first
+#   ./provision.sh reserve-api-ip # capture the API IP id into state.env so it
+#                                 #   survives instance recreation
+#   ./provision.sh api-delete     # delete the API instance; preserves the IP
+#                                 #   if reserve-api-ip was run first
+#   ./provision.sh status         # print IDs + IPs
 #
 # All required secrets / parameters come from `provision.env` in this
 # directory. See `provision.env.example` for the shape.
@@ -89,6 +99,9 @@ load_env() {
   if [[ "$BASIC_AUTH_HASH" == *"REPLACE_ME"* ]]; then
     fail "BASIC_AUTH_HASH in $ENV_FILE is still the example placeholder. Generate one with: caddy hash-password --plaintext 'your-password'"
   fi
+  if [[ "$LM_STUDIO_BASE_URL" == *"10.0.0.2"* ]]; then
+    fail "LM_STUDIO_BASE_URL in $ENV_FILE is still the example placeholder (10.0.0.2). Set it to the GPU's actual IP (see: ./provision.sh gpu-ip)."
+  fi
 }
 
 load_state() {
@@ -136,6 +149,15 @@ cmd_gpu() {
     "SYSTEMD_LM_UNIT_B64=$(base64 < "$DEPLOY_DIR/systemd/lm-studio.service" | tr -d '\n')" \
     > "$rendered"
 
+  # If a previous instance reserved an IP we want to reuse, attach by id;
+  # otherwise let Scaleway allocate a fresh one. The id, once captured by
+  # gpu-reserve-ip, survives `gpu-delete` (which we pass with-ip=false).
+  local ip_arg="ip=new"
+  if [ -n "${SCW_GPU_IP_ID:-}" ]; then
+    ip_arg="ip=$SCW_GPU_IP_ID"
+    log "reusing reserved IP id $SCW_GPU_IP_ID"
+  fi
+
   log "creating GPU instance ($GPU_INSTANCE_TYPE root=${GPU_ROOT_VOLUME_SIZE_GB}GB in $SCW_GPU_ZONE)…"
   local id
   # ip=new is explicit on purpose. Without it scw may default to no
@@ -156,7 +178,7 @@ cmd_gpu() {
     project-id="$SCW_DEFAULT_PROJECT_ID" \
     cloud-init=@"$rendered" \
     name=visual-compare-lm \
-    ip=new \
+    "$ip_arg" \
     root-volume="sbs:${GPU_ROOT_VOLUME_SIZE_GB}GB")"
   save_state SCW_GPU_INSTANCE_ID "$id"
   log "GPU instance created: $id"
@@ -238,6 +260,16 @@ cmd_api() {
     > "$rendered"
 
   # ---- API instance with block volume attached ----
+  # If a previous instance reserved an IP we want to reuse, attach by id;
+  # otherwise let Scaleway allocate a fresh one. The id, once captured by
+  # reserve-api-ip, survives `api-delete` (which passes with-ip=false) so
+  # DNS doesn't churn across instance recreations.
+  local ip_arg="ip=new"
+  if [ -n "${SCW_API_IP_ID:-}" ]; then
+    ip_arg="ip=$SCW_API_IP_ID"
+    log "reusing reserved IP id $SCW_API_IP_ID"
+  fi
+
   log "creating API instance ($API_INSTANCE_TYPE in $SCW_API_ZONE)…"
   local id
   id="$(scw_create_id instance server create \
@@ -246,9 +278,9 @@ cmd_api() {
     zone="$SCW_API_ZONE" \
     project-id="$SCW_DEFAULT_PROJECT_ID" \
     cloud-init=@"$rendered" \
-    additional-volumes.0=block:"$vol_id" \
+    additional-volumes.0="$vol_id" \
     name=visual-compare-api \
-    ip=new)"
+    "$ip_arg")"
   save_state SCW_API_INSTANCE_ID "$id"
 
   scw instance server wait "$id" zone="$SCW_API_ZONE" timeout=10m
@@ -276,6 +308,199 @@ cmd_stop_gpu() {
   log "stopped. The API will power it on again on the next LM request."
 }
 
+cmd_start_gpu() {
+  load_env; load_state
+  [ -n "${SCW_GPU_INSTANCE_ID:-}" ] || fail "no GPU instance id in state"
+  # Idempotency: skip the poweron call if the instance is already running
+  # or in transition. `scw instance server start` rejects with
+  # "precondition failed: server should be stopped" otherwise.
+  local state
+  state="$(scw instance server get "$SCW_GPU_INSTANCE_ID" zone="$SCW_GPU_ZONE" -o json | jq -r '.state // "unknown"')"
+  case "$state" in
+    running)
+      log "GPU instance is already running; skipping poweron"
+      ;;
+    starting)
+      log "GPU instance is already starting; waiting for it to settle"
+      scw instance server wait "$SCW_GPU_INSTANCE_ID" zone="$SCW_GPU_ZONE" timeout=10m
+      ;;
+    stopped|"stopped in place"|archived)
+      log "powering on GPU instance ${SCW_GPU_INSTANCE_ID}…"
+      scw instance server start "$SCW_GPU_INSTANCE_ID" zone="$SCW_GPU_ZONE" >/dev/null
+      scw instance server wait  "$SCW_GPU_INSTANCE_ID" zone="$SCW_GPU_ZONE" timeout=10m
+      ;;
+    *)
+      fail "GPU instance is in unexpected state '$state'; refusing to act"
+      ;;
+  esac
+  # Refresh the cached IP — stop-in-place usually preserves it but
+  # snapshot/restore or migration can reassign.
+  local ip
+  ip="$(scw_server_ip "$SCW_GPU_INSTANCE_ID" "$SCW_GPU_ZONE")"
+  if [ -n "$ip" ] && [ "${GPU_PUBLIC_IP:-}" != "$ip" ]; then
+    save_state GPU_PUBLIC_IP "$ip"
+  fi
+  log "instance is running. lm-studio.service should auto-load the model"
+  log "within ~60s — verify with: ./provision.sh wait-gpu"
+}
+
+cmd_reserve_gpu_ip() {
+  load_env; load_state
+  [ -n "${SCW_GPU_INSTANCE_ID:-}" ] || fail "no GPU instance id in state — run ./provision.sh gpu first"
+  if [ -n "${SCW_GPU_IP_ID:-}" ]; then
+    log "GPU IP already tracked: $SCW_GPU_IP_ID  (= ${GPU_PUBLIC_IP:-<unknown>})"
+    return 0
+  fi
+
+  local ip_id ip_addr
+  ip_id="$(scw instance server get "$SCW_GPU_INSTANCE_ID" zone="$SCW_GPU_ZONE" -o json \
+    | jq -r '[.public_ip.id, ((.public_ips // []) | .[].id)] | map(select(. != null and . != "")) | .[0] // empty')"
+  [ -n "$ip_id" ] || fail "GPU instance has no public IP — start it first with ./provision.sh start-gpu"
+  ip_addr="$(scw_server_ip "$SCW_GPU_INSTANCE_ID" "$SCW_GPU_ZONE")"
+
+  save_state SCW_GPU_IP_ID "$ip_id"
+  log "tracked GPU IP id: $ip_id  (= $ip_addr)"
+  log "next \`./provision.sh gpu-delete\` will preserve this IP (with-ip=false);"
+  log "next \`./provision.sh gpu\` will re-attach it via \`ip=$ip_id\`."
+}
+
+cmd_gpu_delete() {
+  load_env; load_state
+  [ -n "${SCW_GPU_INSTANCE_ID:-}" ] || fail "no GPU instance id in state"
+
+  # Decide IP-preservation policy. If SCW_GPU_IP_ID is tracked, we keep
+  # the IP so the next provision can re-attach it; otherwise the IP is
+  # released alongside the instance (default Scaleway behaviour).
+  local with_ip="true"
+  if [ -n "${SCW_GPU_IP_ID:-}" ]; then
+    with_ip="false"
+    log "will preserve tracked IP $SCW_GPU_IP_ID across delete"
+  fi
+
+  log "stopping GPU instance $SCW_GPU_INSTANCE_ID …"
+  scw instance server stop "$SCW_GPU_INSTANCE_ID" zone="$SCW_GPU_ZONE" >/dev/null || true
+  scw instance server wait "$SCW_GPU_INSTANCE_ID" zone="$SCW_GPU_ZONE" timeout=5m
+  log "deleting instance (with-volumes=all with-ip=$with_ip) …"
+  scw instance server delete "$SCW_GPU_INSTANCE_ID" zone="$SCW_GPU_ZONE" \
+    with-volumes=all "with-ip=$with_ip" >/dev/null
+
+  # Strip the instance-bound state but keep the IP id if we preserved it.
+  sed -i.bak -E '/^(SCW_GPU_INSTANCE_ID|GPU_PUBLIC_IP)=/d' "$STATE_FILE" && rm -f "$STATE_FILE.bak"
+  log "instance deleted. state.env now: "
+  cat "$STATE_FILE" | sed 's/^/  /'
+}
+
+cmd_reserve_api_ip() {
+  load_env; load_state
+  [ -n "${SCW_API_INSTANCE_ID:-}" ] || fail "no API instance id in state — run ./provision.sh api first"
+  if [ -n "${SCW_API_IP_ID:-}" ]; then
+    log "API IP already tracked: $SCW_API_IP_ID  (= ${API_PUBLIC_IP:-<unknown>})"
+    return 0
+  fi
+
+  local ip_id ip_addr
+  ip_id="$(scw instance server get "$SCW_API_INSTANCE_ID" zone="$SCW_API_ZONE" -o json \
+    | jq -r '[.public_ip.id, ((.public_ips // []) | .[].id)] | map(select(. != null and . != "")) | .[0] // empty')"
+  [ -n "$ip_id" ] || fail "API instance has no public IP — is it running?"
+  ip_addr="$(scw_server_ip "$SCW_API_INSTANCE_ID" "$SCW_API_ZONE")"
+
+  save_state SCW_API_IP_ID "$ip_id"
+  log "tracked API IP id: $ip_id  (= $ip_addr)"
+  log "next \`./provision.sh api-delete\` will preserve this IP (with-ip=false);"
+  log "next \`./provision.sh api\` will re-attach it via \`ip=$ip_id\`."
+}
+
+cmd_api_delete() {
+  load_env; load_state
+  [ -n "${SCW_API_INSTANCE_ID:-}" ] || fail "no API instance id in state"
+
+  # Decide IP-preservation policy. If SCW_API_IP_ID is tracked, we keep
+  # the IP so the next provision can re-attach it; otherwise the IP is
+  # released alongside the instance (default Scaleway behaviour).
+  local with_ip="true"
+  if [ -n "${SCW_API_IP_ID:-}" ]; then
+    with_ip="false"
+    log "will preserve tracked IP $SCW_API_IP_ID across delete"
+  fi
+
+  log "stopping API instance $SCW_API_INSTANCE_ID …"
+  scw instance server stop "$SCW_API_INSTANCE_ID" zone="$SCW_API_ZONE" >/dev/null || true
+  scw instance server wait "$SCW_API_INSTANCE_ID" zone="$SCW_API_ZONE" timeout=5m
+  # `with-volumes=local` deletes only the boot/root volume; SBS-managed
+  # block volumes attached as additional-volumes are preserved so the
+  # SQLite DB + image artifacts survive the rebuild.
+  #
+  # WARNING: do NOT pass `with-volumes=all` here. It deletes EVERY volume
+  # attached to the instance, including the SBS data volume, irrecoverably.
+  log "deleting instance (with-volumes=local with-ip=$with_ip) …"
+  scw instance server delete "$SCW_API_INSTANCE_ID" zone="$SCW_API_ZONE" \
+    with-volumes=local "with-ip=$with_ip" >/dev/null
+
+  # Strip the instance-bound state but keep the IP id + block volume id.
+  sed -i.bak -E '/^(SCW_API_INSTANCE_ID|API_PUBLIC_IP)=/d' "$STATE_FILE" && rm -f "$STATE_FILE.bak"
+  log "instance deleted. state.env now: "
+  cat "$STATE_FILE" | sed 's/^/  /'
+}
+
+cmd_open_gpu_port() {
+  load_env; load_state
+  [ -n "${SCW_GPU_INSTANCE_ID:-}" ] || fail "no GPU instance id in state — run ./provision.sh gpu first"
+  [ -n "${API_PUBLIC_IP:-}" ] || fail "no API public IP in state — run ./provision.sh api first"
+
+  # The GPU instance might be stopped (default state) — that's fine, security
+  # group rules apply at SG level regardless of instance power state. They take
+  # effect on the next boot.
+
+  local sg_id
+  sg_id="$(scw instance server get "$SCW_GPU_INSTANCE_ID" zone="$SCW_GPU_ZONE" -o json \
+    | jq -r '.security_group.id // empty')"
+  [ -n "$sg_id" ] || fail "could not resolve security group for GPU instance $SCW_GPU_INSTANCE_ID"
+
+  local sg_name
+  sg_name="$(scw instance security-group get "$sg_id" zone="$SCW_GPU_ZONE" -o json \
+    | jq -r '.name // .security_group.name // "(unknown)"')"
+  log "GPU instance is in security group: $sg_name ($sg_id)"
+
+  # Heads-up if it's the project's default SG: any rule added here applies to
+  # every instance that shares this SG. Acceptable for a single-app project,
+  # noisy in a shared one.
+  if [[ "$sg_name" == "Default security group" ]]; then
+    log "note: this is the project-wide default SG. The rule will apply to all instances that use it."
+  fi
+
+  local cidr="${API_PUBLIC_IP}/32"
+
+  # Idempotency: check for an equivalent existing rule before creating.
+  # `list-rules` returns a bare array of rule objects.
+  local existing
+  existing="$(scw instance security-group list-rules security-group-id="$sg_id" zone="$SCW_GPU_ZONE" -o json \
+    | jq -r --arg ip "$cidr" '
+        .[]?
+        | select(
+            .direction == "inbound"
+            and (.protocol | ascii_upcase) == "TCP"
+            and .dest_port_from == 1234
+            and .ip_range == $ip
+          )
+        | .id' | head -1)"
+  if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+    log "rule already exists ($existing) — nothing to do."
+    return 0
+  fi
+
+  log "adding inbound rule: TCP 1234 from ${cidr} on SG ${sg_id}…"
+  scw instance security-group create-rule \
+    security-group-id="$sg_id" \
+    zone="$SCW_GPU_ZONE" \
+    direction=inbound \
+    action=accept \
+    protocol=TCP \
+    dest-port-from=1234 \
+    ip-range="$cidr" >/dev/null
+  log "rule added. API VM ($API_PUBLIC_IP) can now reach the GPU on port 1234."
+  log "to undo: scw instance security-group delete-rule security-group-id=$sg_id <rule-id> zone=$SCW_GPU_ZONE"
+}
+
 cmd_status() {
   load_env; load_state
   printf '%-32s %s\n' GPU_INSTANCE "${SCW_GPU_INSTANCE_ID:-<unset>}"
@@ -301,7 +526,13 @@ main() {
     wait-gpu)  shift; cmd_wait_gpu  "$@" ;;
     api)       shift; cmd_api       "$@" ;;
     wait-api)  shift; cmd_wait_api  "$@" ;;
-    stop-gpu)  shift; cmd_stop_gpu  "$@" ;;
+    start-gpu)      shift; cmd_start_gpu      "$@" ;;
+    stop-gpu)       shift; cmd_stop_gpu       "$@" ;;
+    open-gpu-port)  shift; cmd_open_gpu_port  "$@" ;;
+    reserve-gpu-ip) shift; cmd_reserve_gpu_ip "$@" ;;
+    gpu-delete)     shift; cmd_gpu_delete     "$@" ;;
+    reserve-api-ip) shift; cmd_reserve_api_ip "$@" ;;
+    api-delete)     shift; cmd_api_delete     "$@" ;;
     status)    shift; cmd_status    "$@" ;;
     "")        sed -n '2,30p' "$0" ;;
     *)         fail "unknown subcommand: $sub" ;;

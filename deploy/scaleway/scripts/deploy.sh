@@ -39,9 +39,20 @@ BASIC_AUTH_HASH="$BASIC_AUTH_HASH" \
 envsubst < "$DEPLOY_DIR/Caddyfile.template" > "$caddyfile_tmp"
 
 # ---- Sync code ----
-log "rsyncing source to $SSH_HOST:$REMOTE_ROOT…"
+# `/opt/visual-compare` is owned by the service user (`visual-compare`), which
+# the `deploy` user can't write to directly. `--rsync-path="sudo rsync"` runs
+# the remote rsync as root via passwordless sudo. Excludes:
+#  - `.git` (no trailing slash → matches the worktree-mode .git FILE too)
+#  - everything that would be re-created on the VM (node_modules, dist, data)
+#  - dev-only artefacts (.claude, .kamal, deploy/)
+log "rsyncing source to ${SSH_HOST}:${REMOTE_ROOT}…"
 rsync -az --delete \
-  --exclude .git/ \
+  --rsync-path="sudo rsync" \
+  --exclude .git \
+  --exclude .gitignore \
+  --exclude .claude/ \
+  --exclude .kamal/ \
+  --exclude deploy/ \
   --exclude node_modules/ \
   --exclude 'packages/*/node_modules/' \
   --exclude 'packages/*/dist/' \

@@ -2,7 +2,7 @@
 
 Bring up `visual-compare` on Scaleway:
 
-- **API VM** — `DEV1-M` (3 vCPU / 4 GB), Caddy + TLS + basic auth in front of
+- **API VM** — `POP2-HC-4C-8G` (4 dedicated AMD EPYC vCPU / 8 GB), Caddy + TLS + basic auth in front of
   the Node API. SQLite + image artifacts on an attached Block Storage volume.
 - **GPU VM** — `L4-1-24G`, LM Studio. Powered off by default; the API powers
   it on the first time it needs an LM verdict, and a cron job on the API VM
@@ -175,7 +175,7 @@ Updated against Scaleway's published rates — confirm in your console.
 
 | Item | Rate | Monthly assuming… |
 | --- | --- | --- |
-| DEV1-M (API) | ~€0.012/h always-on | ~€8 |
+| POP2-HC-4C-8G (API) | ~€0.11/h always-on | ~€78 |
 | Block Storage 50 GB | ~€0.075/GB/mo | ~€4 |
 | L4-1-24G (GPU) | ~€0.75/h, on-demand | ~€45 (2 h/day) |
 | Egress + DNS | metered | <€2 |

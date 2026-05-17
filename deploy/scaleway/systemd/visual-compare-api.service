@@ -20,6 +20,17 @@ Environment=IMAGES_DIR=/mnt/data/images
 Environment=LM_LAST_USE_PATH=/mnt/data/lm-last-use
 Environment=LISTEN_HOST=127.0.0.1
 Environment=NODE_ENV=production
+# Match the PLAYWRIGHT_BROWSERS_PATH that deploy.sh uses when installing
+# Chromium. Without this, Playwright defaults to ~/.cache/ms-playwright
+# (i.e. /home/visual-compare/.cache/…) where nothing was installed, and
+# capture jobs fail with "Executable doesn't exist".
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/visual-compare/.cache/ms-playwright
+
+# ImageMagick 7 lives at /usr/local/bin/magick (a wrapper script — see
+# cloud-init.api.yaml). The wrapper scopes LD_LIBRARY_PATH / MAGICK_* env
+# to the magick invocation only, so the bundle's libs don't reach
+# spawned Chromium (whose own glib has a conflicting ABI). The systemd
+# unit deliberately does NOT export those vars — keep them out.
 
 ExecStart=/usr/bin/node dist/index.js
 
