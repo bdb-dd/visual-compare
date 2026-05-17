@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { computeMatchedAtLevel } from '../src/services/equivalence.js';
 
+// New SSIM-dominant levels (see constants/equivalence.ts):
+//   pixel-perfect: pct=0, ssim=any
+//   strict:        ssim ≥ 0.99, pct ≤ 2,  ambig band ±0.005
+//   tolerant:      ssim ≥ 0.96, pct ≤ 10, ambig band ±0.015
+//   loose:         ssim ≥ 0.90, pct ≤ 25, ambig band ±0.025
+
 describe('computeMatchedAtLevel', () => {
   it('returns pixel-perfect when both metrics are perfect', () => {
     const r = computeMatchedAtLevel({
@@ -12,72 +18,73 @@ describe('computeMatchedAtLevel', () => {
     expect(r.inTargetAmbiguityBand).toBe(false);
   });
 
-  it('returns strict when pct just above 0 but below strict threshold', () => {
-    // strict: threshold=0.5, band=0.25 → in target band when pct ∈ [0.25, 0.75]
+  it('returns strict when SSIM passes strict floor and pct under guard', () => {
+    // ssim 0.995 ≥ 0.99 floor, pct 0.5 ≤ 2 guard.
     const r = computeMatchedAtLevel({
-      changedPixelPercentage: 0.1,
-      ssim: null,
+      changedPixelPercentage: 0.5,
+      ssim: 0.995,
       targetLevel: 'strict',
     });
     expect(r.pixelMatchedAtLevel).toBe('strict');
-    expect(r.inTargetAmbiguityBand).toBe(false);
+    // 0.995 is exactly inside strict's band [0.985, 0.995].
+    expect(r.inTargetAmbiguityBand).toBe(true);
   });
 
-  it('returns tolerant when pct is over strict but under tolerant', () => {
+  it('returns tolerant when SSIM is in tolerant range but below strict floor', () => {
+    // ssim 0.97 < 0.99 (strict) but ≥ 0.96 (tolerant); pct 1 within guards.
     const r = computeMatchedAtLevel({
       changedPixelPercentage: 1,
-      ssim: 0.99,
+      ssim: 0.97,
       targetLevel: 'tolerant',
     });
     expect(r.pixelMatchedAtLevel).toBe('tolerant');
   });
 
-  it('SSIM floor at tolerant skips to loose when SSIM is below 0.95', () => {
-    // pct=1 satisfies tolerant pct (≤5) but SSIM 0.9 < 0.95 floor.
-    // loose: pct≤15 ✓, SSIM≥0.85 ✓ → loose.
+  it('falls through to loose when SSIM passes loose but not tolerant', () => {
+    // ssim 0.92: < 0.96 (tolerant) but ≥ 0.90 (loose); pct 5 within guards.
     const r = computeMatchedAtLevel({
-      changedPixelPercentage: 1,
-      ssim: 0.9,
+      changedPixelPercentage: 5,
+      ssim: 0.92,
       targetLevel: 'tolerant',
     });
     expect(r.pixelMatchedAtLevel).toBe('loose');
   });
 
-  it('returns none when pct exceeds the loose threshold', () => {
+  it('returns none when SSIM is below the loose floor', () => {
     const r = computeMatchedAtLevel({
-      changedPixelPercentage: 20,
-      ssim: 0.9,
+      changedPixelPercentage: 5,
+      ssim: 0.5,
       targetLevel: 'tolerant',
     });
     expect(r.pixelMatchedAtLevel).toBe('none');
   });
 
-  it('returns none when SSIM is below the loose floor', () => {
+  it('returns none when pct exceeds the loose safety guard regardless of high SSIM', () => {
+    // Even at SSIM 0.99, a 30% pixel diff trips the catastrophic guard.
     const r = computeMatchedAtLevel({
-      changedPixelPercentage: 10,
-      ssim: 0.5,
-      targetLevel: 'loose',
+      changedPixelPercentage: 30,
+      ssim: 0.99,
+      targetLevel: 'tolerant',
     });
     expect(r.pixelMatchedAtLevel).toBe('none');
   });
 
-  it('flags inTargetAmbiguityBand when pct lands in the target band', () => {
-    // tolerant: threshold=5, band=2 → band is [3, 7]
+  it('flags inTargetAmbiguityBand when SSIM lands in the target band', () => {
+    // tolerant: min_ssim=0.96, band=0.015 → [0.945, 0.975]
     const r = computeMatchedAtLevel({
-      changedPixelPercentage: 4.5,
-      ssim: 0.99,
+      changedPixelPercentage: 1,
+      ssim: 0.955,
       targetLevel: 'tolerant',
     });
     expect(r.inTargetAmbiguityBand).toBe(true);
   });
 
-  it('inTargetAmbiguityBand is false outside the band even if a different level is in its band', () => {
-    // pct=14 is in loose's band ([10, 20]) but not strict's, so when target=strict
-    // we should not flag the band.
+  it('inTargetAmbiguityBand is false outside the target band', () => {
+    // ssim 0.90 is on loose's floor, not in tolerant's band.
     const r = computeMatchedAtLevel({
-      changedPixelPercentage: 14,
-      ssim: 0.9,
-      targetLevel: 'strict',
+      changedPixelPercentage: 5,
+      ssim: 0.90,
+      targetLevel: 'tolerant',
     });
     expect(r.inTargetAmbiguityBand).toBe(false);
   });
@@ -85,18 +92,22 @@ describe('computeMatchedAtLevel', () => {
   it('pixel-perfect target has no ambiguity band', () => {
     const r = computeMatchedAtLevel({
       changedPixelPercentage: 0,
-      ssim: null,
+      ssim: 1,
       targetLevel: 'pixel-perfect',
     });
     expect(r.inTargetAmbiguityBand).toBe(false);
   });
 
-  it('null SSIM does not block any level (treated as no signal)', () => {
+  it('null SSIM does not block on the SSIM gate but the pixel guard still applies', () => {
+    // pct=1 passes strict's pct guard (≤2); null SSIM is treated as
+    // "no signal" so we don't reject on the SSIM gate. Strict matches.
     const r = computeMatchedAtLevel({
       changedPixelPercentage: 1,
       ssim: null,
       targetLevel: 'tolerant',
     });
-    expect(r.pixelMatchedAtLevel).toBe('tolerant');
+    expect(r.pixelMatchedAtLevel).toBe('strict');
+    // No SSIM → band check is false even at the target.
+    expect(r.inTargetAmbiguityBand).toBe(false);
   });
 });

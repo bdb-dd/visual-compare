@@ -62,7 +62,7 @@ function countingImagick(): ComparisonImagick & {
         height: 100,
       };
     },
-    compareSsim: async () => 0.97,
+    compareSsim: async () => 0.98,
     extractConnectedComponents: async () => {
       out.extractCcCalls += 1;
       return { format: 'json' as const, raw: '[]' };

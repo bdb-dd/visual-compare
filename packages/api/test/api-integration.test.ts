@@ -57,7 +57,7 @@ function makeStubImagick(diffBytes: Buffer): ComparisonImagick {
         height: 100,
       };
     },
-    compareSsim: async (a, b) => (readFileSync(a).equals(readFileSync(b)) ? 1 : 0.97),
+    compareSsim: async (a, b) => (readFileSync(a).equals(readFileSync(b)) ? 1 : 0.98),
     extractConnectedComponents: async () => ({
       format: 'json',
       raw: JSON.stringify([
@@ -201,7 +201,7 @@ describe('API integration', () => {
     for (const c of compRun.body.comparisons) {
       expect(c.status).toBe('complete');
       expect(c.changed_pixel_percentage).toBe(1);
-      expect(c.ssim).toBe(0.97);
+      expect(c.ssim).toBe(0.98);
       expect(c.connected_component_count).toBe(1);
       // 1% pct + 0.97 SSIM → tolerant matches by pixel.
       expect(c.matched_at_level).toBe('tolerant');

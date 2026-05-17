@@ -58,7 +58,7 @@ function stubImagick(diffBytes: Buffer): ComparisonImagick {
         height: 100,
       };
     },
-    compareSsim: async () => 0.97,
+    compareSsim: async () => 0.98,
     extractConnectedComponents: async () => ({
       format: 'json',
       raw: JSON.stringify([
@@ -223,7 +223,7 @@ describe('cache upserts', () => {
     expect(pixelRows).toHaveLength(1);
     expect(pixelRows[0]!.pipeline_version).toBe(pipelineVersionFor('strict'));
     expect(pixelRows[0]!.changed_pct).toBe(1);
-    expect(pixelRows[0]!.ssim).toBe(0.97);
+    expect(pixelRows[0]!.ssim).toBe(0.98);
 
     const lmRows = h.db
       .prepare<unknown[], { prompt_id: string; model_id: string; invocation_reason: string; pipeline_version: string; verdict: number }>(

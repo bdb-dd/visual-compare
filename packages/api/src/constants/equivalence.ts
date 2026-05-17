@@ -4,21 +4,26 @@ export interface EquivalenceLevelDef {
   id: EquivalenceLevelId;
   name: string;
   description: string;
-  // Threshold expressed as percent (0-100). A comparison is equivalent when
-  // changed_pixel_percentage <= max_changed_pixel_percentage.
+  // Pixel-% safety guard, expressed as percent (0-100). A level can only
+  // match when `changed_pixel_percentage <= max_changed_pixel_percentage`.
+  // SSIM is the primary gate (see `min_ssim`); this guard exists so a
+  // catastrophic pixel diff can't sneak through on a misleadingly-high
+  // SSIM score (e.g. uniformly shifted images that happen to remain
+  // structurally similar). Generous values are intentional.
   max_changed_pixel_percentage: number;
-  // Ambiguity band (in percent points) around the threshold where LM Studio
-  // would be invoked as a tiebreaker.
-  ambiguity_band_percentage: number;
-  // Minimum SSIM (0-1) accepted as a perceptual signal for `tolerant`/`loose`
-  // levels. `pixel-perfect` and `strict` ignore SSIM.
+  // Ambiguity band (0-1) around the SSIM floor where LM Studio is invoked
+  // as a tiebreaker. A comparison is "in the target's ambiguity band"
+  // when its SSIM falls in [min_ssim - band, min_ssim + band].
+  ambiguity_band_ssim: number;
+  // Minimum SSIM (0-1) required for this level. SSIM is the PRIMARY gate;
+  // a level only matches when ssim ≥ min_ssim AND the pixel safety guard
+  // is satisfied. Null at pixel-perfect (where pct=0 alone is sufficient
+  // and SSIM cannot be computed in degenerate cases).
   min_ssim: number | null;
-  // ImageMagick tolerance applied to the per-pixel diff at this level. Higher
-  // values absorb more anti-aliasing / sub-pixel-shift noise at the cost of
-  // missing subtle real changes. Each session picks one level as its target
-  // and that target's tolerance drives the compareAe call. The pixel-cache
-  // key includes the level so the same captures can be measured at different
-  // tolerances without colliding.
+  // ImageMagick fuzz tolerance and blur for the per-pixel diff. Higher
+  // values absorb more anti-aliasing noise at the cost of missing subtle
+  // changes. The cache key includes the level so the same captures can
+  // be measured at different tolerances without colliding.
   tolerance: { fuzzPercent: number; blurSigma: number };
 }
 
@@ -30,36 +35,36 @@ export const EQUIVALENCE_LEVELS: EquivalenceLevelDef[] = [
     name: 'Pixel Perfect',
     description: 'Zero changed pixels.',
     max_changed_pixel_percentage: 0,
-    ambiguity_band_percentage: 0,
+    ambiguity_band_ssim: 0,
     min_ssim: null,
     tolerance: { fuzzPercent: 0, blurSigma: 0 },
   },
   {
     id: 'strict',
     name: 'Strict',
-    description: 'Very small pixel difference allowed.',
-    max_changed_pixel_percentage: 0.5,
-    ambiguity_band_percentage: 0.25,
-    min_ssim: null,
+    description: 'Practically pixel-identical (SSIM ≥ 0.99).',
+    max_changed_pixel_percentage: 2,
+    ambiguity_band_ssim: 0.005,
+    min_ssim: 0.99,
     tolerance: { fuzzPercent: 5, blurSigma: 0 },
   },
   {
     id: 'tolerant',
     name: 'Tolerant',
-    description: 'Moderate pixel/layout variance accepted.',
-    max_changed_pixel_percentage: 5,
-    ambiguity_band_percentage: 2,
-    min_ssim: 0.95,
-    tolerance: { fuzzPercent: 10, blurSigma: 0.5 },
+    description: 'Minor anti-aliasing or sub-pixel shift (SSIM ≥ 0.96).',
+    max_changed_pixel_percentage: 10,
+    ambiguity_band_ssim: 0.015,
+    min_ssim: 0.96,
+    tolerance: { fuzzPercent: 8, blurSigma: 0.3 },
   },
   {
     id: 'loose',
     name: 'Loose',
-    description: 'Broad visual similarity accepted.',
-    max_changed_pixel_percentage: 15,
-    ambiguity_band_percentage: 5,
-    min_ssim: 0.85,
-    tolerance: { fuzzPercent: 18, blurSigma: 1.0 },
+    description: 'Noticeable but tolerable variance (SSIM ≥ 0.90).',
+    max_changed_pixel_percentage: 25,
+    ambiguity_band_ssim: 0.025,
+    min_ssim: 0.90,
+    tolerance: { fuzzPercent: 12, blurSigma: 0.6 },
   },
 ];
 
