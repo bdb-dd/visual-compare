@@ -2162,6 +2162,110 @@ kbd {
 .cluster-detail__facets .facet--state-open { color: #d4e1ff; border-color: #1f3a8a; }
 .cluster-detail__facets .facet--state-accepted { color: #b3f5c5; border-color: #14532d; }
 .cluster-detail__facets .facet--state-rejected { color: #ffb3b3; border-color: #5c1212; }
+/* Partial-acceptance count: members the user accepted individually,
+   distinct from the full-cluster-accepted state. Uses a softer hue so
+   it doesn't read as "this cluster is accepted" on its own. */
+.cluster-detail__facets .facet--partial-accepted {
+  color: #f5d782;
+  border-color: #4a3a14;
+  background: #1a1610;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Cluster-state contextual banner above the per-member actions. Reads
+   the *cluster's* review state and tells the user what that means for
+   the focused member specifically (covered by a rule, overridden by a
+   per-member acceptance, etc.). */
+.cluster-detail__rule-note {
+  margin: 6px 0;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #23262d;
+  background: #15171c;
+}
+.cluster-detail__rule-note--accepted {
+  color: #b3f5c5;
+  border-color: #14532d;
+  background: #0e1c14;
+}
+.cluster-detail__rule-note--rejected {
+  color: #ffb3b3;
+  border-color: #5c1212;
+  background: #1c0e0e;
+}
+
+.dialog__field--checkbox {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+.dialog__field--checkbox input {
+  margin-top: 3px;
+}
+
+/* Per-member acceptance affordances. The accept/clear pair sits to the
+   right of the URL line in the sample meta so it's immediately reachable
+   when the user is looking at the focused member. */
+.cluster-detail__member-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.cluster-detail__member-state {
+  color: #b3f5c5;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 1px 6px;
+  background: #0e1c14;
+  border: 1px solid #14532d;
+  border-radius: 4px;
+}
+
+/* Accepted member tag on a filmstrip thumb. The rep badge already
+   occupies the bottom-left (index area); ✓ goes top-right. */
+.filmstrip-thumb--accepted {
+  border-color: #2f9461;
+}
+.filmstrip-thumb__accepted {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: #2f9461;
+  color: #0a0b0e;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 3px;
+  line-height: 14px;
+}
+
+/* Accepted member row in the inline Members list. Subtle green tint
+   on the left edge, plus a ✓ pill in the rep-badge column. */
+.member-row--accepted {
+  border-left: 3px solid #2f9461;
+  padding-left: 8px;
+}
+.member-row--accepted.member-row--representative {
+  /* Representative + accepted: keep the gold rep border, the ✓ pill
+     itself signals acceptance. Avoids fighting borders. */
+  border-left-color: #d4af37;
+}
+.member-row__accepted {
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #2f9461;
+  font-size: 12px;
+  font-weight: 700;
+  pointer-events: none;
+}
+.member-row--representative .member-row__accepted {
+  /* When also rep, shift slightly down so the ★ and ✓ don't overlap. */
+  top: calc(50% + 9px);
+}
 
 .cluster-detail__actions {
   display: flex;
@@ -2215,6 +2319,56 @@ kbd {
   border-radius: 8px;
   padding: 20px 22px;
   box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+}
+.dialog--wide {
+  width: min(760px, 92vw);
+}
+
+/* Split dialog — multi-select list of cluster members. The rep is
+   locked in (disabled checkbox + tag) so the source keeps its
+   signature anchor. */
+.split-dialog__list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  border: 1px solid #23262d;
+  border-radius: 6px;
+}
+.split-dialog__row {
+  padding: 6px 10px;
+}
+.split-dialog__row + .split-dialog__row {
+  border-top: 1px solid #1a1d24;
+}
+.split-dialog__row label {
+  display: grid;
+  grid-template-columns: auto 1fr 80px auto;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.split-dialog__row--rep label { cursor: default; }
+.split-dialog__url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.split-dialog__vp {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  color: #aab1bd;
+}
+.split-dialog__rep-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #d4af37;
+  border: 1px solid #4a3a14;
+  padding: 1px 5px;
+  border-radius: 3px;
 }
 .dialog__title {
   margin: 0 0 6px;

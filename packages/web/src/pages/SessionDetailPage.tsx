@@ -151,6 +151,10 @@ export function SessionDetailPage(): JSX.Element {
   const [clusterAcceptTrigger, setClusterAcceptTrigger] = useState(0);
   const [clusterRejectTrigger, setClusterRejectTrigger] = useState(0);
   const [clusterRefreshTrigger, setClusterRefreshTrigger] = useState(0);
+  // Bumped after cluster-shape-changing actions (Split, Recapture) and
+  // state changes (Accept/Reject) so ClustersTab re-fetches its list.
+  // Keeps the list in sync with the panel without manual refresh.
+  const [clusterListRefreshTrigger, setClusterListRefreshTrigger] = useState(0);
   /**
    * Review state of the cluster currently shown in the detail pane.
    * Lifted out of ClusterDetailPanel so ActionsMenu can correctly
@@ -717,6 +721,8 @@ export function SessionDetailPage(): JSX.Element {
               focusedClusterDetail={focusedClusterDetail}
               focusedMemberId={focusedMemberId}
               onMemberFocus={setFocusedMemberId}
+              acceptances={acceptances}
+              refreshTick={clusterListRefreshTrigger}
             />
           </div>
           {focusedClusterId && (
@@ -725,7 +731,10 @@ export function SessionDetailPage(): JSX.Element {
                 sessionId={session.id}
                 focused={{ kind: 'cluster', clusterId: focusedClusterId }}
                 onClose={() => setFocusedClusterId(null)}
-                onClusterChanged={() => void refreshResults()}
+                onClusterChanged={() => {
+                  void refreshResults();
+                  setClusterListRefreshTrigger((v) => v + 1);
+                }}
                 onClusterLoaded={(cluster) => setFocusedClusterReviewState(cluster.review_state)}
                 onClusterDataLoaded={setFocusedClusterDetail}
                 clusterAcceptDialogTrigger={clusterAcceptTrigger}
@@ -733,6 +742,11 @@ export function SessionDetailPage(): JSX.Element {
                 clusterRefreshTrigger={clusterRefreshTrigger}
                 focusedMemberId={focusedMemberId}
                 onMemberFocus={setFocusedMemberId}
+                acceptances={acceptances}
+                onMemberAcceptanceChanged={() => {
+                  void refreshAcceptances();
+                  void refreshResults();
+                }}
                 actionsSlot={
                   <ActionsMenu
                     sessionId={session.id}
@@ -766,7 +780,10 @@ export function SessionDetailPage(): JSX.Element {
                 sessionId={session.id}
                 focused={{ kind: 'cluster', clusterId: focusedClusterId }}
                 onClose={() => setFocusedClusterId(null)}
-                onClusterChanged={() => void refreshResults()}
+                onClusterChanged={() => {
+                  void refreshResults();
+                  setClusterListRefreshTrigger((v) => v + 1);
+                }}
                 onClusterLoaded={(cluster) => setFocusedClusterReviewState(cluster.review_state)}
                 onClusterDataLoaded={setFocusedClusterDetail}
                 clusterAcceptDialogTrigger={clusterAcceptTrigger}
@@ -774,6 +791,11 @@ export function SessionDetailPage(): JSX.Element {
                 clusterRefreshTrigger={clusterRefreshTrigger}
                 focusedMemberId={focusedMemberId}
                 onMemberFocus={setFocusedMemberId}
+                acceptances={acceptances}
+                onMemberAcceptanceChanged={() => {
+                  void refreshAcceptances();
+                  void refreshResults();
+                }}
                 actionsSlot={
                   <ActionsMenu
                     sessionId={session.id}

@@ -7,6 +7,7 @@ import {
   type FilterState,
 } from '../api/filterState.js';
 import type {
+  AcceptanceRow,
   ClusterDetailDto,
   ClusterListDto,
   ClusterMemberDto,
@@ -106,6 +107,15 @@ export interface ClustersTabProps {
   focusedMemberId?: string | null;
   /** Selecting a member updates the right-side detail pane. */
   onMemberFocus?: (id: string | null) => void;
+  /** Session acceptances — InlineMemberList tags accepted members with a ✓ pill. */
+  acceptances?: AcceptanceRow[];
+  /**
+   * Bumped by the parent after cluster-shape-changing actions (Split,
+   * Recapture) so this tab re-fetches its list. Accept/Reject also bump
+   * it so review_state in the cluster list stays in sync with the
+   * detail panel.
+   */
+  refreshTick?: number;
 }
 
 export function ClustersTab({
@@ -117,6 +127,8 @@ export function ClustersTab({
   focusedClusterDetail,
   focusedMemberId,
   onMemberFocus,
+  acceptances = [],
+  refreshTick = 0,
 }: ClustersTabProps): JSX.Element {
   const [data, setData] = useState<ClusterListDto | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -146,7 +158,7 @@ export function ClustersTab({
     }
   };
 
-  useEffect(() => { void load(); }, [sessionId, reviewStateParam]);
+  useEffect(() => { void load(); }, [sessionId, reviewStateParam, refreshTick]);
 
   // Apply region + change-type in-memory. (Status is server-filtered via
   // reviewStateParam above.) Cluster lists are small enough that this
@@ -305,6 +317,7 @@ export function ClustersTab({
               focusedClusterDetail={focusedClusterDetail ?? null}
               focusedMemberId={focusedMemberId ?? null}
               onMemberFocus={onMemberFocus}
+              acceptances={acceptances}
             />
           </div>
         </>
@@ -331,6 +344,7 @@ function CategoryGroup({
   focusedClusterDetail,
   focusedMemberId,
   onMemberFocus,
+  acceptances,
 }: {
   title: string;
   clusters: ClusterSummaryDto[];
@@ -342,6 +356,7 @@ function CategoryGroup({
   focusedClusterDetail?: ClusterDetailDto | null;
   focusedMemberId?: string | null;
   onMemberFocus?: (id: string | null) => void;
+  acceptances?: AcceptanceRow[];
 }): JSX.Element {
   const totalPairs = clusters.reduce((acc, c) => acc + c.pair_count, 0);
   const maxPairs = clusters.reduce((acc, c) => Math.max(acc, c.pair_count), 1);
@@ -477,6 +492,7 @@ function CategoryGroup({
                   detail={focusedClusterDetail}
                   focusedMemberId={focusedMemberId ?? null}
                   onMemberFocus={onMemberFocus}
+                  acceptances={acceptances ?? []}
                 />
               )}
             </li>
@@ -507,14 +523,21 @@ function InlineMemberList({
   detail,
   focusedMemberId,
   onMemberFocus,
+  acceptances,
 }: {
   sessionId: string;
   detail: ClusterDetailDto;
   focusedMemberId: string | null;
   onMemberFocus?: (id: string | null) => void;
+  acceptances: AcceptanceRow[];
 }): JSX.Element {
   const repId = detail.representative?.difference_id ?? null;
   const displayedId = focusedMemberId ?? repId;
+  const acceptedKeys = useMemo(() => {
+    const s = new Set<string>();
+    for (const a of acceptances) s.add(`${a.url_pair_id}::${a.viewport_name}`);
+    return s;
+  }, [acceptances]);
   // Sort the representative to the top so it's always the first row.
   // The original order otherwise mirrors the cluster's signature
   // ordering, which is the right secondary key.
@@ -572,7 +595,8 @@ function InlineMemberList({
         {members.map((m) => {
           const focused = displayedId === m.difference_id;
           const isRep = m.difference_id === repId;
-          const rowClass = `member-row${focused ? ' member-row--focused' : ''}${isRep ? ' member-row--representative' : ''}`;
+          const isAccepted = acceptedKeys.has(`${m.url_pair_id}::${m.viewport_name}`);
+          const rowClass = `member-row${focused ? ' member-row--focused' : ''}${isRep ? ' member-row--representative' : ''}${isAccepted ? ' member-row--accepted' : ''}`;
           return (
             <li
               key={m.difference_id}
@@ -583,10 +607,13 @@ function InlineMemberList({
               tabIndex={-1}
               aria-pressed={focused}
               title={isRep
-                ? 'Representative member — first shown when this cluster opens'
-                : 'Click to preview this pair (or use j/k to step)'}
+                ? `Representative member${isAccepted ? ' (accepted)' : ''}`
+                : isAccepted
+                  ? 'Accepted member · click to preview this pair'
+                  : 'Click to preview this pair (or use j/k to step)'}
             >
               {isRep && <span className="member-row__rep-badge" aria-label="representative">★</span>}
+              {isAccepted && <span className="member-row__accepted" aria-label="accepted">✓</span>}
               <span className="member-row__url">{m.url_a}</span>
               <span className="member-row__vp">{m.viewport_name}</span>
               <span

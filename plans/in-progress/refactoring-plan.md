@@ -275,10 +275,38 @@ and reachable via back/forward; old `/comparisons/:id` links continue
 to work.
 
 
-## Phase 5 — Acceptance model & unified detail view (~1–2 weeks)
+## Phase 5 — Acceptance model & unified detail view (~1–2 weeks) — **done**
 
 **Depends on**: Phase 4 (clean URL contract makes the unified view's
 state simpler). 5.C depends on 5.A.
+
+Shipped on the `refactor` branch. Notes worth carrying forward:
+
+- **5.A**: per-member acceptance reuses the row-acceptance endpoint
+  (`POST /api/sessions/:id/acceptances`) — no parallel mechanism. The
+  cluster header shows partial state ("3/12 accepted") as a separate
+  facet, distinct from cluster-rule acceptance. Filmstrip + inline
+  members list tag accepted entries with ✓.
+- **5.B**: split implemented by rewriting selected differences'
+  `signature` to `<original>:split:<uuid>`, then recomputing the
+  cluster index. The source cluster keeps its identity and state;
+  the new cluster starts open. Splits do not survive a full
+  re-evaluation — new differences land with the canonical signature.
+  The dialog locks the representative into the source half so the
+  source's signature anchor doesn't move.
+- **5.C**: scoped to "context-aware acceptance UI" rather than a full
+  ComparisonDetail rewrite. The cluster detail view keeps its own
+  triple/AB/slider rendering; the member-accept flow gets the full
+  label / notes / accept_any dialog matching the row flow, and the
+  meta block carries a contextual banner reading the cluster's
+  review_state for the focused member. A full
+  ComparisonDetail-everywhere unification is a larger refactor than
+  the plan exit criteria require ("right acceptance affordances for
+  its context") — left as a future cleanup.
+- **Cluster list refresh**: ClustersTab now takes a `refreshTick`
+  prop bumped by SessionDetailPage on every cluster-shape-changing
+  action (Accept/Reject/Split) so the list re-fetches without manual
+  intervention.
 
 ### 5.A — Accept single member (M)
 

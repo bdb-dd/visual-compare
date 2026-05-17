@@ -300,6 +300,141 @@ export interface ClusterMember {
   lm_confidence: number | null;
 }
 
+/**
+ * Split a cluster: extract a subset of its differences into a new
+ * cluster by rewriting their `signature` to a synthetic value
+ * (`<original>:split:<uuid>`). The next `recomputeClusters` then
+ * materialises the new cluster row.
+ *
+ * Notes:
+ *   - The source cluster keeps its review_state. The new cluster
+ *     starts open.
+ *   - Splits don't survive a full re-evaluation: new differences land
+ *     with the canonical signature from cluster-signature.ts, so the
+ *     extracted members would rejoin their original cluster on
+ *     re-eval. UI should communicate this.
+ *   - Must extract at least one and leave at least one in the source.
+ *     "Extract all" would be a rename; "extract none" is a no-op.
+ */
+export class SplitClusterError extends Error {
+  constructor(
+    public readonly code:
+      | 'not_found'
+      | 'empty_selection'
+      | 'all_selected'
+      | 'foreign_member',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SplitClusterError';
+  }
+}
+
+export interface SplitClusterResult {
+  source_cluster: DifferenceClusterRow;
+  new_cluster: DifferenceClusterRow;
+  recompute: RecomputeResult;
+}
+
+export function splitCluster(
+  db: Db,
+  sessionId: string,
+  clusterId: string,
+  memberDifferenceIds: string[],
+): SplitClusterResult {
+  const cluster = getCluster(db, sessionId, clusterId);
+  if (!cluster) {
+    throw new SplitClusterError('not_found', `Cluster ${clusterId} not found in session ${sessionId}`);
+  }
+  if (memberDifferenceIds.length === 0) {
+    throw new SplitClusterError('empty_selection', 'Must select at least one member to split off');
+  }
+
+  // Resolve the cluster's current member differences from `differences`
+  // directly (rather than `listClusterMembers`, which scopes to the
+  // latest comparison per pair — the union of those is what the user
+  // sees in the panel). The split must operate on the same set so the
+  // user's selection round-trips.
+  interface DiffIdRow { id: string }
+  const memberIdRows = db
+    .prepare<[string, string, string], DiffIdRow>(
+      `WITH latest_comparison AS (
+         SELECT c.id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY c.url_pair_id, c.viewport_name
+                  ORDER BY c.created_at DESC
+                ) AS rn
+           FROM comparisons c
+           JOIN url_pairs p ON p.id = c.url_pair_id
+          WHERE p.session_id = ?
+       )
+       SELECT d.id
+         FROM differences d
+         JOIN latest_comparison lc ON lc.id = d.comparison_id
+        WHERE lc.rn              = 1
+          AND d.signature         = ?
+          AND d.signature_version = ?`,
+    )
+    .all(sessionId, cluster.signature, cluster.signature_version);
+  const memberIds = new Set(memberIdRows.map((r) => r.id));
+  if (memberIds.size === 0) {
+    throw new SplitClusterError('not_found', `Cluster ${clusterId} has no current members`);
+  }
+
+  // Every id the caller passed must belong to this cluster.
+  const foreign = memberDifferenceIds.filter((id) => !memberIds.has(id));
+  if (foreign.length > 0) {
+    throw new SplitClusterError(
+      'foreign_member',
+      `${foreign.length} difference id${foreign.length === 1 ? '' : 's'} are not current members of cluster ${clusterId}`,
+    );
+  }
+  const selected = new Set(memberDifferenceIds);
+  if (selected.size >= memberIds.size) {
+    throw new SplitClusterError(
+      'all_selected',
+      'Cannot split off every member — at least one must remain in the source cluster',
+    );
+  }
+
+  const newSignature = `${cluster.signature}:split:${randomUUID().slice(0, 8)}`;
+  const placeholders = memberDifferenceIds.map(() => '?').join(',');
+
+  let recompute: RecomputeResult;
+  const tx = db.transaction(() => {
+    db.prepare(
+      `UPDATE differences
+          SET signature = ?
+        WHERE id IN (${placeholders})
+          AND signature         = ?
+          AND signature_version = ?`,
+    ).run(newSignature, ...memberDifferenceIds, cluster.signature, cluster.signature_version);
+    recompute = recomputeClusters(db, sessionId);
+  });
+  tx();
+
+  const sourceAfter = getCluster(db, sessionId, clusterId);
+  if (!sourceAfter) {
+    throw new Error('source cluster vanished after split — should be impossible since we left ≥1 member');
+  }
+  const newCluster = db
+    .prepare<[string, string, string], DifferenceClusterRow>(
+      `SELECT * FROM difference_clusters
+        WHERE session_id        = ?
+          AND signature         = ?
+          AND signature_version = ?`,
+    )
+    .get(sessionId, newSignature, cluster.signature_version);
+  if (!newCluster) {
+    throw new Error('new cluster missing after split — recompute should have created it');
+  }
+  return {
+    source_cluster: sourceAfter,
+    new_cluster: newCluster,
+    recompute: recompute!,
+  };
+}
+
 export function listClusterMembers(
   db: Db,
   sessionId: string,

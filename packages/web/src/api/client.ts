@@ -297,6 +297,21 @@ export const api = {
   getSessionErrors: (sessionId: string) =>
     request<{ errors: SessionErrorEntry[] }>(`/api/sessions/${sessionId}/errors`),
 
+  splitCluster: (
+    sessionId: string,
+    clusterId: string,
+    body: { member_difference_ids: string[] },
+  ) =>
+    request<{
+      source_cluster: import('@visual-compare/api/types').DifferenceClusterRow;
+      new_cluster: import('@visual-compare/api/types').DifferenceClusterRow;
+      recompute: { clusters_upserted: number; clusters_removed: number; members_indexed: number };
+    }>(`/api/sessions/${sessionId}/clusters/${clusterId}/split`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
   listAcceptances: (sessionId: string) =>
     request<{ acceptances: AcceptanceRow[] }>(`/api/sessions/${sessionId}/acceptances`),
   createAcceptance: (

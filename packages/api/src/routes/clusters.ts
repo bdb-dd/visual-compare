@@ -6,6 +6,8 @@ import {
   listClusterMembers,
   listClusters,
   recomputeClusters,
+  splitCluster,
+  SplitClusterError,
 } from '../services/clusters.js';
 import {
   acceptCategory,
@@ -193,6 +195,44 @@ export function clustersRouter(db: Db): Router {
       });
     } catch (err) {
       if (err instanceof ClusterRuleError) {
+        const status = err.code === 'not_found' ? 404 : 409;
+        res.status(status).json({ error: err.code, message: err.message });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  // Split a cluster: extract some members into a brand-new cluster.
+  // Implemented by rewriting the selected differences' signature to a
+  // synthetic suffix, then recomputing. See services/clusters.ts:
+  // splitCluster for the full state-machine notes.
+  const splitBodySchema = z
+    .object({
+      member_difference_ids: z.array(z.string().min(1)).min(1),
+    })
+    .strict();
+  router.post('/:cluster_id/split', (req, res) => {
+    const sessionId = (req.params as { id?: string }).id;
+    const clusterId = (req.params as { cluster_id?: string }).cluster_id;
+    if (!sessionId || !clusterId) {
+      res.status(400).json({ error: 'invalid_request' });
+      return;
+    }
+    const body = splitBodySchema.safeParse(req.body ?? {});
+    if (!body.success) {
+      res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
+      return;
+    }
+    try {
+      const result = splitCluster(db, sessionId, clusterId, body.data.member_difference_ids);
+      res.status(200).json({
+        source_cluster: result.source_cluster,
+        new_cluster: result.new_cluster,
+        recompute: result.recompute,
+      });
+    } catch (err) {
+      if (err instanceof SplitClusterError) {
         const status = err.code === 'not_found' ? 404 : 409;
         res.status(status).json({ error: err.code, message: err.message });
         return;
