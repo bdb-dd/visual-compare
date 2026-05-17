@@ -5,9 +5,6 @@ import type { EvaluationStatusDto, SessionResultsDto } from '@visual-compare/api
 interface Props {
   sessionId: string;
   results: SessionResultsDto | null;
-  /** Whether to run the LM second pass on target-level misses. Lifted to the parent so the plan can reflect LM-cache misses. */
-  invokeLm: boolean;
-  onInvokeLmChange: (next: boolean) => void;
   onEvaluationComplete: () => void;
   /**
    * Most-recent evaluation surfaced by the parent. When the page loads
@@ -30,8 +27,6 @@ const POLL_INTERVAL_MS = 1500;
 export function PlanAndEvaluate({
   sessionId,
   results,
-  invokeLm,
-  onInvokeLmChange,
   onEvaluationComplete,
   latestEvaluation,
 }: Props): JSX.Element {
@@ -101,7 +96,10 @@ export function PlanAndEvaluate({
     setError(null);
     setStopRequested(false);
     try {
-      const res = await api.evaluate(sessionId, invokeLm ? { invoke_lm: true } : undefined);
+      // invoke_lm comes from session config (set in the Config tab). The
+      // server defaults it from `session.default_invoke_lm` when not
+      // provided here.
+      const res = await api.evaluate(sessionId);
       const initial = await api.getEvaluation(res.evaluation_id);
       setEvaluation(initial.evaluation);
       if (
@@ -174,18 +172,6 @@ export function PlanAndEvaluate({
         >
           {buttonLabel}
         </button>
-        <label
-          className="muted evaluate-lm-toggle"
-          title="Invoke LM Studio as a second pass on comparisons that miss the target level."
-        >
-          <input
-            type="checkbox"
-            checked={invokeLm}
-            onChange={(e) => onInvokeLmChange(e.target.checked)}
-            disabled={isRunning}
-          />{' '}
-          LM second pass
-        </label>
         {(error || evaluation) && (
           <p className="muted evaluate-status">
             {error

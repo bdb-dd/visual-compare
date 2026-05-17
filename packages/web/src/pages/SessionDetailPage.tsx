@@ -112,20 +112,6 @@ export function SessionDetailPage(): JSX.Element {
   // above drives row filtering too.
   const [selectedRow, setSelectedRow] = useState<SessionResultRow | null>(null);
   /**
-   * Whether the next evaluation (and the current /results plan) should
-   * include LM second-pass for target misses. Lifted up from
-   * PlanAndEvaluate so refreshResults can pass the same flag — otherwise
-   * the plan reports "All cached" even when LM cache misses exist.
-   *
-   * Initialized from the session config's `default_invoke_lm` and
-   * mirrored back to the config (via PUT) on every toggle so the
-   * preference survives reloads. The initial value (false) is overwritten
-   * the first time config loads — see the useEffect below.
-   */
-  const [invokeLm, setInvokeLm] = useState(false);
-  /** Hydrate the toggle from the persisted session default once config loads. */
-  const invokeLmHydratedRef = useRef(false);
-  /**
    * Monotonic counter incremented when the keyboard shortcut for "open
    * accept dialog" fires. ComparisonDetail watches it and opens the form
    * on each tick. This avoids passing a boolean that we'd then need to
@@ -182,12 +168,14 @@ export function SessionDetailPage(): JSX.Element {
 
   const refreshResults = useCallback(async () => {
     try {
-      const r = await api.getResults(id, invokeLm ? { invoke_lm: true } : undefined);
+      // No invoke_lm override: the server reads session.default_invoke_lm
+      // when planning, which is the source of truth set in the Config tab.
+      const r = await api.getResults(id);
       setResults(r);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [id, invokeLm]);
+  }, [id]);
 
   const refreshAcceptances = useCallback(async () => {
     try {
@@ -250,31 +238,6 @@ export function SessionDetailPage(): JSX.Element {
     })();
   }, [id]);
 
-  // Hydrate the LM-toggle from the persisted session default exactly once
-  // per page load. After hydration, all changes flow through
-  // handleInvokeLmChange (which PATCHes the config), so the toggle and the
-  // config stay in sync.
-  useEffect(() => {
-    if (!config || invokeLmHydratedRef.current) return;
-    invokeLmHydratedRef.current = true;
-    setInvokeLm(config.default_invoke_lm);
-  }, [config]);
-
-  /**
-   * Set the local toggle and mirror to the session config in one call.
-   * Optimistic: local state updates immediately; the PUT is fire-and-forget
-   * because a transient PUT failure is recoverable (the next toggle retries)
-   * and shouldn't block the user.
-   */
-  const handleInvokeLmChange = useCallback((value: boolean): void => {
-    setInvokeLm(value);
-    void api.putSessionConfig(id, { default_invoke_lm: value }).then(
-      (r) => setConfig(r.config),
-      // eslint-disable-next-line no-console
-      (err) => console.warn('[invoke_lm] failed to persist toggle:', err),
-    );
-  }, [id]);
-
   // Once the static bits load, fetch the dynamic plan/results.
   useEffect(() => {
     if (!session) return;
@@ -308,11 +271,7 @@ export function SessionDetailPage(): JSX.Element {
     const tick = async () => {
       const since = cursorRef.current ?? new Date().toISOString();
       try {
-        const delta = await api.getResults(
-          id,
-          invokeLm ? { invoke_lm: true } : undefined,
-          { since },
-        );
+        const delta = await api.getResults(id, undefined, { since });
         if (cancelled) return;
         // Update header counts + summary chips + latest eval from the
         // (small) delta payload, leaving the rows array untouched.
@@ -358,11 +317,7 @@ export function SessionDetailPage(): JSX.Element {
           return;
         }
 
-        const rowsResponse = await api.getResults(
-          id,
-          invokeLm ? { invoke_lm: true } : undefined,
-          { keys: changed },
-        );
+        const rowsResponse = await api.getResults(id, undefined, { keys: changed });
         if (cancelled) return;
         // Merge the changed rows into the existing array, keyed by
         // url_pair_id::viewport_name. New rows (didn't exist before) are
@@ -394,7 +349,7 @@ export function SessionDetailPage(): JSX.Element {
       cancelled = true;
       window.clearInterval(handle);
     };
-  }, [session, shouldPoll, id, invokeLm]);
+  }, [session, shouldPoll, id]);
 
   // Reset the cursor whenever a full refresh happens (initial load or
   // explicit user actions). The next delta poll then picks up changes since
@@ -646,12 +601,12 @@ export function SessionDetailPage(): JSX.Element {
             {session.archived_at && <span className="muted"> (archived)</span>}
           </p>
           <div className="project-header-actions">
-            <button className="btn secondary" onClick={() => void handleInvalidateAll()} disabled={busy}>
-              Recapture all
-            </button>
-            <button className="btn secondary" onClick={() => void handleArchive()} disabled={busy}>
-              {session.archived_at ? 'Unarchive' : 'Archive'}
-            </button>
+            <HeaderOverflowMenu
+              archived={!!session.archived_at}
+              busy={busy}
+              onRecaptureAll={() => void handleInvalidateAll()}
+              onArchiveToggle={() => void handleArchive()}
+            />
             <LmActivityHistogram />
             <LmStatusPill />
           </div>
@@ -667,8 +622,6 @@ export function SessionDetailPage(): JSX.Element {
           <PlanAndEvaluate
             sessionId={session.id}
             results={results}
-            invokeLm={invokeLm}
-            onInvokeLmChange={handleInvokeLmChange}
             onEvaluationComplete={handleEvaluationComplete}
             latestEvaluation={lastEval ?? null}
           />
@@ -696,6 +649,7 @@ export function SessionDetailPage(): JSX.Element {
         mode={mode}
         state={filterState}
         onChange={setFilterState}
+        sessionId={session.id}
       />
 
 
@@ -966,6 +920,84 @@ interface HistoryTabProps {
   comparisonRuns: ComparisonRunRow[];
   expandedEvaluationId: string | null;
   onToggleEvaluation: (id: string) => void;
+}
+
+function HeaderOverflowMenu({
+  archived,
+  busy,
+  onRecaptureAll,
+  onArchiveToggle,
+}: {
+  archived: boolean;
+  busy: boolean;
+  onRecaptureAll: () => void;
+  onArchiveToggle: () => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [open]);
+
+  const choose = (fn: () => void) => () => {
+    setOpen(false);
+    fn();
+  };
+
+  return (
+    <div className="actions-menu" ref={ref}>
+      <button
+        type="button"
+        className="actions-menu__toggle"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        disabled={busy}
+        title="More actions"
+      >
+        ⋯
+      </button>
+      {open && (
+        <ul className="actions-menu__list" role="menu">
+          <li>
+            <button
+              type="button"
+              role="menuitem"
+              className="actions-menu__item"
+              onClick={choose(onRecaptureAll)}
+              disabled={busy}
+            >
+              Recapture all
+            </button>
+          </li>
+          <li>
+            <button
+              type="button"
+              role="menuitem"
+              className="actions-menu__item"
+              onClick={choose(onArchiveToggle)}
+              disabled={busy}
+            >
+              {archived ? 'Unarchive' : 'Archive'}
+            </button>
+          </li>
+        </ul>
+      )}
+    </div>
+  );
 }
 
 function HistoryTab({

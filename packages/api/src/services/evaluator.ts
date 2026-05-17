@@ -208,7 +208,7 @@ export function resolveEvaluationConfig(
   return {
     viewports,
     target_level,
-    invoke_lm: input?.invoke_lm ?? false,
+    invoke_lm: input?.invoke_lm ?? session?.default_invoke_lm ?? false,
     region_match_config: session?.region_match_config ?? { ...DEFAULT_REGION_MATCH_CONFIG },
     capture_options,
     url_pair_ids: input?.url_pair_ids ?? null,

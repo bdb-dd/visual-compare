@@ -630,7 +630,11 @@ describe('readSessionResults surfaces persisted LM verdicts regardless of invoke
     await settle(h);
     expect(h.analyzeCalls).toHaveLength(0);
 
-    const cfg = encodeURIComponent(JSON.stringify({ target_level: 'strict' }));
+    // Explicitly pass invoke_lm: false in the query. The /results route now
+    // defaults invoke_lm from session.default_invoke_lm (true on new
+    // sessions), so without this override the planner would consider the
+    // (missing) LM verdict required and we'd not see the pixel-only result.
+    const cfg = encodeURIComponent(JSON.stringify({ target_level: 'strict', invoke_lm: false }));
     const results = await request(h.app).get(
       `/api/sessions/${sessionId}/results?config=${cfg}`,
     );

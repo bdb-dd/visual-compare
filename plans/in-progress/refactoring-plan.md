@@ -24,10 +24,23 @@ start from this plan as-is.
   function or extend it.
 
 
-## Phase 1 — Quick UI wins (1–2 days, fully parallelizable)
+## Phase 1 — Quick UI wins (1–2 days, fully parallelizable) — **done**
 
 No design needed. Pure component / config changes. Ship as one PR or
 several small ones.
+
+Shipped on the `refactor` branch and verified visually. Notes worth
+carrying forward:
+
+- **1.A**: only new sessions get `default_invoke_lm = true` (the DB
+  column DEFAULT stays 0; the createSession INSERT now sets it
+  explicitly). Existing sessions retain their persisted value.
+- **1.G**: detail pane has `overflow: hidden`, so a true viewport-wide
+  slider would clip. Practical fix was dropping the 720px max-width so
+  the slider fills the pane.
+- The unused `.cluster-detail__members` CSS (left over from a
+  pre-Phase-γ surface) was not touched — it's dead but harmless and out
+  of scope for Phase 1.
 
 ### 1.A — LM second pass: default on, move into Config (S)
 

@@ -330,6 +330,15 @@ export function ClusterDetailPanel({
 
       {displayed ? (
         <section className="cluster-detail__sample">
+          {members.length > 1 && (
+            <Filmstrip
+              members={members}
+              activeId={displayed.difference_id}
+              onSelect={onMemberFocus}
+              stripRef={filmstripRef}
+            />
+          )}
+
           <div className="cluster-detail__sample-meta">
             <div>
               <strong>{isRepDisplayed ? 'Representative:' : `Member ${displayedIndex + 1} of ${members.length}:`}</strong>{' '}
@@ -394,15 +403,6 @@ export function ClusterDetailPanel({
               ? <ImageTriple member={displayed} bbox={displayedBbox} />
               : <ImageSlider member={displayed} bbox={displayedBbox} />}
           </div>
-
-          {members.length > 1 && (
-            <Filmstrip
-              members={members}
-              activeId={displayed.difference_id}
-              onSelect={onMemberFocus}
-              stripRef={filmstripRef}
-            />
-          )}
         </section>
       ) : (
         <p>No representative diff available for this cluster.</p>

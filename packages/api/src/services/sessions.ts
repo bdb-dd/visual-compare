@@ -37,8 +37,11 @@ export function createSession(db: Db, input: CreateSessionInput): CreateSessionO
   const sessionId = randomUUID();
   const now = new Date().toISOString();
 
+  // New sessions default `default_invoke_lm` to 1 (LM second-pass on).
+  // The DB column DEFAULT is still 0 for backwards compatibility with
+  // existing rows; explicit `1` here overrides for newly created sessions.
   const insertSession = db.prepare(
-    'INSERT INTO sessions (id, name, csv_filename, created_at) VALUES (?, ?, ?, ?)',
+    'INSERT INTO sessions (id, name, csv_filename, created_at, default_invoke_lm) VALUES (?, ?, ?, ?, 1)',
   );
   const insertPair = db.prepare(
     `INSERT INTO url_pairs
@@ -184,7 +187,7 @@ export const sessionConfigSchema = z
     default_equivalence_level: equivalenceLevelSchema.default(DEFAULT_EQUIVALENCE_LEVEL),
     region_match_config: regionMatchConfigSchema.default({ ...DEFAULT_REGION_MATCH_CONFIG }),
     filter_query: filterQuerySchema.default({}),
-    default_invoke_lm: z.boolean().default(false),
+    default_invoke_lm: z.boolean().default(true),
   })
   .strict();
 
@@ -205,7 +208,7 @@ const EMPTY_CONFIG: SessionConfig = {
   default_equivalence_level: DEFAULT_EQUIVALENCE_LEVEL,
   region_match_config: { ...DEFAULT_REGION_MATCH_CONFIG },
   filter_query: {},
-  default_invoke_lm: false,
+  default_invoke_lm: true,
 };
 
 function parseJsonField<T>(value: string | null | undefined, fallback: T): T {
