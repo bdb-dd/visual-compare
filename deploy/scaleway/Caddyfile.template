@@ -17,15 +17,25 @@ ${DOMAIN} {
         reverse_proxy 127.0.0.1:3001
     }
 
-    # Everything else requires basic auth.
-    handle {
-        basic_auth {
-            ${BASIC_AUTH_USER} ${BASIC_AUTH_HASH}
-        }
+    # basic_auth at the top level applies to every request regardless of
+    # which `handle` matches — Caddy's directive ordering runs auth before
+    # picking a handle. Scope it explicitly to "not /healthz" so the probe
+    # stays public. (An earlier version nested basic_auth inside the SPA
+    # fallback handle, which worked but duplicated the directive across
+    # the @api and fallback paths.)
+    @auth not path /healthz
+    basic_auth @auth {
+        ${BASIC_AUTH_USER} ${BASIC_AUTH_HASH}
+    }
 
-        # API + artifact endpoints proxy to the Node process.
-        @api path /api/* /images/*
-        reverse_proxy @api 127.0.0.1:3001 {
+    # API + artifact endpoints proxy to the Node process. MUST be a
+    # separate `handle` block — if we use a guarded `reverse_proxy @api`
+    # alongside `try_files`, Caddy's rewrite phase runs first and
+    # rewrites /api/* to /index.html before the matcher evaluates,
+    # making the SPA fallback swallow API requests.
+    @api path /api/* /images/*
+    handle @api {
+        reverse_proxy 127.0.0.1:3001 {
             # The LM preflight + analyze paths can take 60–180 s on a cold
             # GPU. Bump proxy timeouts well past the default 30 s so the
             # client doesn't see a 504 mid-warmup.
@@ -34,8 +44,11 @@ ${DOMAIN} {
                 write_timeout 300s
             }
         }
+    }
 
-        # Static SPA build served from /opt/visual-compare/web.
+    # Static SPA build served from /opt/visual-compare/web — fallback for
+    # anything not matched above.
+    handle {
         root * /opt/visual-compare/web
         try_files {path} /index.html
         file_server
