@@ -47,6 +47,12 @@ export interface AnomaliesTabProps {
   filter: FilterState;
   /** Phase γ+ focus callback — opens the anomaly in the detail pane. */
   onClusterFocus?: (clusterId: string) => void;
+  /**
+   * Called when keyboard nav (Shift+Arrow) moves focus to a sibling
+   * anomaly. Pushes history so back/forward walks the journey. Falls
+   * back to `onClusterFocus` when omitted.
+   */
+  onClusterStep?: (clusterId: string) => void;
   /** Cluster id currently highlighted by the parent. */
   focusedClusterId?: string | null;
 }
@@ -55,6 +61,7 @@ export function AnomaliesTab({
   sessionId,
   filter,
   onClusterFocus,
+  onClusterStep,
   focusedClusterId,
 }: AnomaliesTabProps): JSX.Element {
   const [data, setData] = useState<ClusterListDto | null>(null);
@@ -98,6 +105,39 @@ export function AnomaliesTab({
     }
     return out;
   }, [anomalies]);
+
+  // Shift+ArrowDown / Shift+ArrowUp step to the next/prev anomaly. Plain
+  // arrows are reserved for row navigation elsewhere. No wrap-around.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!e.shiftKey) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (target.isContentEditable) return;
+      }
+      if (anomalies.length === 0) return;
+      const currentIndex = focusedClusterId
+        ? anomalies.findIndex((c) => c.id === focusedClusterId)
+        : -1;
+      const delta = e.key === 'ArrowDown' ? 1 : -1;
+      let nextIndex: number;
+      if (currentIndex < 0) {
+        nextIndex = delta > 0 ? 0 : anomalies.length - 1;
+      } else {
+        nextIndex = Math.min(anomalies.length - 1, Math.max(0, currentIndex + delta));
+        if (nextIndex === currentIndex) return;
+      }
+      e.preventDefault();
+      const nextId = anomalies[nextIndex]!.id;
+      (onClusterStep ?? onClusterFocus)?.(nextId);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [anomalies, focusedClusterId, onClusterStep, onClusterFocus]);
 
   return (
     <>

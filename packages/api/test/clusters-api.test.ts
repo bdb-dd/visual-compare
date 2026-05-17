@@ -261,15 +261,31 @@ describe('POST /api/sessions/:id/clusters/:cluster_id/reject', () => {
     expect(remaining.c).toBe(0);
   });
 
-  it('returns 409 when rejecting an open cluster (never accepted)', async () => {
+  it('rejects an open cluster directly (no rules to clean up)', async () => {
     const sessionId = seed(h.db);
     const list = await request(h.app).get(`/api/sessions/${sessionId}/clusters`);
     const clusterId = list.body.clusters[0].id;
     const res = await request(h.app)
       .post(`/api/sessions/${sessionId}/clusters/${clusterId}/reject`)
+      .send({ notes: 'cosmetic only' });
+    expect(res.status).toBe(200);
+    expect(res.body.cluster.review_state).toBe('rejected');
+    expect(res.body.acceptances_revoked).toBe(0);
+    expect(res.body.rules_deleted).toBe(0);
+  });
+
+  it('returns 409 when rejecting an already-rejected cluster', async () => {
+    const sessionId = seed(h.db);
+    const list = await request(h.app).get(`/api/sessions/${sessionId}/clusters`);
+    const clusterId = list.body.clusters[0].id;
+    await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/${clusterId}/reject`)
+      .send({});
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/${clusterId}/reject`)
       .send({});
     expect(res.status).toBe(409);
-    expect(res.body.error).toBe('not_accepted');
+    expect(res.body.error).toBe('already_rejected');
   });
 });
 

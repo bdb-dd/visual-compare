@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type JSX } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { RecapturePairButton } from './RecapturePairButton.js';
 import {
@@ -45,6 +45,21 @@ const CATEGORIES: Category[] = [
   { key: 'footer_aside', label: 'Footer & Aside',      roles: ['footer', 'aside'] },
 ];
 
+/**
+ * Display order for the category tab strip. `anomalies` and `untagged`
+ * tail the regular roles. Tab labels are slightly shorter than the
+ * section headings to keep the strip from wrapping on narrower viewports.
+ */
+const CATEGORY_TABS: { key: CategoryKey; label: string; sectionTitle: string; note?: string }[] = [
+  { key: 'header_nav',   label: 'Header & Nav',     sectionTitle: 'Header & Navigation' },
+  { key: 'main',         label: 'Main',             sectionTitle: 'Main content' },
+  { key: 'banners',      label: 'Banners',          sectionTitle: 'Banners & Overlays' },
+  { key: 'footer_aside', label: 'Footer & Aside',   sectionTitle: 'Footer & Aside' },
+  { key: 'anomalies',    label: 'Anomalies',        sectionTitle: 'Anomalies (singleton clusters)' },
+  { key: 'untagged',     label: 'Untagged',         sectionTitle: 'Untagged (v0 fallback)',
+    note: 'These come from the v0 geometric signature — imagick rows and v2-era LM responses that pre-date the v3 prompt. Will reduce after re-evaluation under v3.' },
+];
+
 function categoryFor(cluster: ClusterSummaryDto): CategoryKey {
   if (cluster.pair_count === 1) return 'anomalies';
   if (!cluster.region_role) return 'untagged';
@@ -72,6 +87,13 @@ export interface ClustersTabProps {
    * to open the cluster in the detail pane instead of navigating away.
    */
   onClusterFocus?: (clusterId: string) => void;
+  /**
+   * Called when keyboard nav (Shift+Arrow) moves focus to a sibling
+   * cluster. Distinct from `onClusterFocus` so the parent can push a
+   * history entry per step — back/forward then walk the keyboard
+   * journey. Falls back to `onClusterFocus` when omitted.
+   */
+  onClusterStep?: (clusterId: string) => void;
   /** Cluster id currently highlighted by the parent (Phase γ+ focus state). */
   focusedClusterId?: string | null;
   /**
@@ -90,6 +112,7 @@ export function ClustersTab({
   sessionId,
   filter,
   onClusterFocus,
+  onClusterStep,
   focusedClusterId,
   focusedClusterDetail,
   focusedMemberId,
@@ -155,6 +178,66 @@ export function ClustersTab({
     return { clusters: filteredClusters.length, pairs: totalPairs, members: totalMembers };
   }, [data, filteredClusters]);
 
+  // Category tab selection lives in the URL (`cat=`) so refresh / share
+  // links keep the user on the same category. When the requested category
+  // is empty (or the param is missing), fall back to the first non-empty
+  // tab — picking an empty tab as the initial view is bad UX.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedCat = searchParams.get('cat') as CategoryKey | null;
+  const activeCat: CategoryKey = useMemo(() => {
+    if (requestedCat && (CATEGORY_TABS.find((t) => t.key === requestedCat))) {
+      return requestedCat;
+    }
+    const firstNonEmpty = CATEGORY_TABS.find((t) => grouped[t.key].length > 0);
+    return firstNonEmpty?.key ?? 'header_nav';
+  }, [requestedCat, grouped]);
+
+  const setActiveCat = (key: CategoryKey): void => {
+    const next = new URLSearchParams(searchParams);
+    next.set('cat', key);
+    setSearchParams(next, { replace: false });
+  };
+
+  const activeTabDef = CATEGORY_TABS.find((t) => t.key === activeCat) ?? CATEGORY_TABS[0]!;
+  const activeClusters = grouped[activeCat];
+
+  // Shift+ArrowDown / Shift+ArrowUp step to the next/prev cluster within
+  // the active category tab. Plain arrows already step rows
+  // (SessionResultsList) — the Shift modifier avoids the clash. No
+  // wrap-around: stops at the ends. Each step prefers `onClusterStep`
+  // (push history) over `onClusterFocus` (replace) so the back button
+  // walks the keyboard journey.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!e.shiftKey) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (target.isContentEditable) return;
+      }
+      if (activeClusters.length === 0) return;
+      const currentIndex = focusedClusterId
+        ? activeClusters.findIndex((c) => c.id === focusedClusterId)
+        : -1;
+      const delta = e.key === 'ArrowDown' ? 1 : -1;
+      let nextIndex: number;
+      if (currentIndex < 0) {
+        nextIndex = delta > 0 ? 0 : activeClusters.length - 1;
+      } else {
+        nextIndex = Math.min(activeClusters.length - 1, Math.max(0, currentIndex + delta));
+        if (nextIndex === currentIndex) return;
+      }
+      e.preventDefault();
+      const nextId = activeClusters[nextIndex]!.id;
+      (onClusterStep ?? onClusterFocus)?.(nextId);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [activeClusters, focusedClusterId, onClusterStep, onClusterFocus]);
+
   return (
     <>
       <div className="clusters-tab__summary-bar">
@@ -187,28 +270,35 @@ export function ClustersTab({
       )}
 
       {data && filteredClusters.length > 0 && (
-        <div className="clusters-page__groups">
-          {CATEGORIES.map((c) => (
-            grouped[c.key].length > 0 && (
-              <CategoryGroup
-                key={c.key}
-                title={c.label}
-                clusters={grouped[c.key]}
-                sessionId={sessionId}
-                onBulkAccepted={() => void load()}
-                onClusterFocus={onClusterFocus}
-                focusedClusterId={focusedClusterId ?? null}
-                focusedClusterDetail={focusedClusterDetail ?? null}
-                focusedMemberId={focusedMemberId ?? null}
-                onMemberFocus={onMemberFocus}
-              />
-            )
-          ))}
-          {grouped.anomalies.length > 0 && (
+        <>
+          <div className="mode-tabs cluster-category-tabs" role="tablist" aria-label="Cluster category">
+            {CATEGORY_TABS.map((t) => {
+              const count = grouped[t.key].length;
+              const isActive = activeCat === t.key;
+              const disabled = count === 0;
+              return (
+                <button
+                  key={t.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  disabled={disabled}
+                  className={`mode-tab${isActive ? ' mode-tab--active' : ''}`}
+                  onClick={() => !disabled && setActiveCat(t.key)}
+                  title={disabled ? `No clusters in ${t.label}` : t.label}
+                >
+                  {t.label} <span className="cluster-category-tabs__count">({count})</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="clusters-page__groups">
             <CategoryGroup
-              title="Anomalies (singleton clusters)"
-              clusters={grouped.anomalies}
+              key={activeTabDef.key}
+              title={activeTabDef.sectionTitle}
+              clusters={grouped[activeTabDef.key]}
               sessionId={sessionId}
+              note={activeTabDef.note}
               onBulkAccepted={() => void load()}
               onClusterFocus={onClusterFocus}
               focusedClusterId={focusedClusterId ?? null}
@@ -216,21 +306,8 @@ export function ClustersTab({
               focusedMemberId={focusedMemberId ?? null}
               onMemberFocus={onMemberFocus}
             />
-          )}
-          {grouped.untagged.length > 0 && (
-            <CategoryGroup
-              title="Untagged (v0 fallback)"
-              clusters={grouped.untagged}
-              sessionId={sessionId}
-              note="These come from the v0 geometric signature — imagick rows and v2-era LM responses that pre-date the v3 prompt. Will reduce after re-evaluation under v3."
-              onClusterFocus={onClusterFocus}
-              focusedClusterId={focusedClusterId ?? null}
-              focusedClusterDetail={focusedClusterDetail ?? null}
-              focusedMemberId={focusedMemberId ?? null}
-              onMemberFocus={onMemberFocus}
-            />
-          )}
-        </div>
+          </div>
+        </>
       )}
     </>
   );
@@ -436,9 +513,17 @@ function InlineMemberList({
   focusedMemberId: string | null;
   onMemberFocus?: (id: string | null) => void;
 }): JSX.Element {
-  const members: ClusterMemberDto[] = detail.members;
   const repId = detail.representative?.difference_id ?? null;
   const displayedId = focusedMemberId ?? repId;
+  // Sort the representative to the top so it's always the first row.
+  // The original order otherwise mirrors the cluster's signature
+  // ordering, which is the right secondary key.
+  const members: ClusterMemberDto[] = useMemo(() => {
+    if (!repId) return detail.members;
+    const rep = detail.members.find((m) => m.difference_id === repId);
+    if (!rep) return detail.members;
+    return [rep, ...detail.members.filter((m) => m.difference_id !== repId)];
+  }, [detail.members, repId]);
 
   const exportSideUrls = (side: 'a' | 'b') => {
     const urls = members.map((m) => (side === 'a' ? m.url_a : m.url_b));
@@ -486,17 +571,22 @@ function InlineMemberList({
       <ul className="member-list">
         {members.map((m) => {
           const focused = displayedId === m.difference_id;
+          const isRep = m.difference_id === repId;
+          const rowClass = `member-row${focused ? ' member-row--focused' : ''}${isRep ? ' member-row--representative' : ''}`;
           return (
             <li
               key={m.difference_id}
               data-member-id={m.difference_id}
-              className={`member-row${focused ? ' member-row--focused' : ''}`}
+              className={rowClass}
               onClick={() => onMemberFocus?.(m.difference_id)}
               role="button"
               tabIndex={-1}
               aria-pressed={focused}
-              title="Click to preview this pair (or use j/k to step)"
+              title={isRep
+                ? 'Representative member — first shown when this cluster opens'
+                : 'Click to preview this pair (or use j/k to step)'}
             >
+              {isRep && <span className="member-row__rep-badge" aria-label="representative">★</span>}
               <span className="member-row__url">{m.url_a}</span>
               <span className="member-row__vp">{m.viewport_name}</span>
               <span

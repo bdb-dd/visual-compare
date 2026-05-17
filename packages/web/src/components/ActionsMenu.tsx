@@ -234,6 +234,8 @@ function computeItems(props: ActionsMenuProps): MenuItem[] {
 
   // focused.kind === 'cluster'
   const isAccepted = props.clusterReviewState === 'accepted';
+  const isRejected = props.clusterReviewState === 'rejected';
+  const isSplit = props.clusterReviewState === 'split';
   return [
     {
       key: 'accept',
@@ -241,15 +243,19 @@ function computeItems(props: ActionsMenuProps): MenuItem[] {
       onClick: isAccepted ? undefined : props.onClusterAccept,
       disabledReason: isAccepted
         ? 'Already accepted — reject first to re-accept'
-        : (props.onClusterAccept ? undefined : 'No handler'),
+        : isSplit
+          ? 'Split clusters cannot be accepted'
+          : (props.onClusterAccept ? undefined : 'No handler'),
     },
     {
       key: 'reject',
       label: 'Reject cluster',
-      onClick: isAccepted ? props.onClusterReject : undefined,
-      disabledReason: isAccepted
-        ? (props.onClusterReject ? undefined : 'No handler')
-        : 'Only accepted clusters can be rejected',
+      onClick: isRejected || isSplit ? undefined : props.onClusterReject,
+      disabledReason: isRejected
+        ? 'Already rejected'
+        : isSplit
+          ? 'Split clusters cannot be rejected'
+          : (props.onClusterReject ? undefined : 'No handler'),
     },
     {
       key: 'split',
