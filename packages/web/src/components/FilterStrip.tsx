@@ -64,6 +64,7 @@ const OUTCOME_CHIPS: ChipDef<Outcome>[] = [
   { value: 'a-missing', label: 'A missing' },
   { value: 'b-missing', label: 'B missing' },
   { value: 'both-missing', label: 'Both missing' },
+  { value: 'capture-failed', label: 'Capture failed' },
 ];
 
 /** Status chip applicability per mode. Disabled-with-reason for false. */
@@ -105,7 +106,12 @@ export function FilterStrip({ mode, state, onChange, counts }: FilterStripProps)
     onChange({ ...state, changes: next });
   };
 
-  const setOutcome = (outcome: Outcome) => onChange({ ...state, outcome });
+  const toggleOutcome = (o: Outcome) => {
+    const next = state.outcomes.includes(o)
+      ? state.outcomes.filter((x) => x !== o)
+      : [...state.outcomes, o].sort();
+    onChange({ ...state, outcomes: next });
+  };
 
   return (
     <div className="filter-strip" role="toolbar" aria-label="Filter results">
@@ -177,8 +183,8 @@ export function FilterStrip({ mode, state, onChange, counts }: FilterStripProps)
           {OUTCOME_CHIPS.map((c) => (
             <Chip
               key={c.value}
-              active={state.outcome === c.value}
-              onClick={() => setOutcome(c.value)}
+              active={state.outcomes.includes(c.value)}
+              onClick={() => toggleOutcome(c.value)}
               count={counts?.[`outcome:${c.value}`]}
             >
               {c.label}
