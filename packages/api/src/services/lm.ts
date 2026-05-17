@@ -442,6 +442,12 @@ export interface CreateLmClientOptions {
    * power the GPU down. Must never throw — errors are swallowed.
    */
   onLmUsage?: () => void | Promise<void>;
+  /**
+   * Called at the start of every analyze; the returned function is
+   * called when analyze settles (success or failure). Used by the
+   * LmActivityTracker to render a concurrency histogram for the UI.
+   */
+  beginLmCall?: () => () => void;
 }
 
 /**
@@ -492,7 +498,15 @@ export function createLmClient(
         // ignore
       }
     }
-    const outcome = await runAnalyze({ config, ...args }, client);
+    // Concurrency tracking for the activity-histogram endpoint. Wrapped in
+    // try/finally below so the release fires even on thrown errors.
+    const releaseTracker = options.beginLmCall?.();
+    let outcome: AnalyzeOutcome;
+    try {
+      outcome = await runAnalyze({ config, ...args }, client);
+    } finally {
+      releaseTracker?.();
+    }
     if (isAnalyzeError(outcome)) {
       // A failed call usually means LM is misbehaving — drop the cache so the
       // next preflight does a real check.

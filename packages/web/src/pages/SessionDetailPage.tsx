@@ -13,6 +13,7 @@ import {
   type FilterState,
 } from '../api/filterState.js';
 import { LmStatusPill } from '../components/LmStatusPill.js';
+import { LmActivityHistogram } from '../components/LmActivityHistogram.js';
 import { PlanAndEvaluate } from '../components/PlanAndEvaluate.js';
 import { SessionConfigPanel } from '../components/SessionConfigPanel.js';
 import { SessionResultsList } from '../components/SessionResultsList.js';
@@ -651,6 +652,7 @@ export function SessionDetailPage(): JSX.Element {
             <button className="btn secondary" onClick={() => void handleArchive()} disabled={busy}>
               {session.archived_at ? 'Unarchive' : 'Archive'}
             </button>
+            <LmActivityHistogram />
             <LmStatusPill />
           </div>
         </div>
