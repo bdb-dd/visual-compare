@@ -377,3 +377,80 @@ describe('GET /api/sessions/:id/clusters/:cluster_id', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('POST /api/sessions/:id/clusters/:cluster_id/split', () => {
+  let h: Harness;
+  beforeEach(async () => { h = await makeHarness(); });
+  afterEach(async () => { await h.cleanup(); });
+
+  it('extracts one member into a brand-new cluster; source keeps its remaining member', async () => {
+    const sessionId = seed(h.db);
+    // sigA cluster has d1 (cmp1/p1) and d2 (cmp2/p2). Split d2 off.
+    const list = await request(h.app).get(`/api/sessions/${sessionId}/clusters`);
+    const sigACluster = list.body.clusters.find(
+      (c: { signature: string }) => c.signature === 'sigA',
+    );
+    expect(sigACluster.member_count).toBe(2);
+
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/${sigACluster.id}/split`)
+      .send({ member_difference_ids: ['d2'] });
+    expect(res.status).toBe(200);
+    expect(res.body.source_cluster.id).toBe(sigACluster.id);
+    expect(res.body.source_cluster.member_count).toBe(1);
+    expect(res.body.new_cluster.member_count).toBe(1);
+    expect(res.body.new_cluster.signature).toMatch(/^sigA:split:/);
+    // Taxonomy carries over (the differences themselves are unchanged
+    // except for the synthetic signature suffix).
+    expect(res.body.new_cluster.region_role).toBe('nav_primary');
+    expect(res.body.new_cluster.change_type).toBe('element_added');
+    expect(res.body.new_cluster.review_state).toBe('open');
+  });
+
+  it('returns 409 when the selection covers every member of the cluster', async () => {
+    const sessionId = seed(h.db);
+    const list = await request(h.app).get(`/api/sessions/${sessionId}/clusters`);
+    const sigACluster = list.body.clusters.find(
+      (c: { signature: string }) => c.signature === 'sigA',
+    );
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/${sigACluster.id}/split`)
+      .send({ member_difference_ids: ['d1', 'd2'] });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('all_selected');
+  });
+
+  it('returns 409 when a selected member id is not part of the cluster', async () => {
+    const sessionId = seed(h.db);
+    const list = await request(h.app).get(`/api/sessions/${sessionId}/clusters`);
+    const sigACluster = list.body.clusters.find(
+      (c: { signature: string }) => c.signature === 'sigA',
+    );
+    // d3 belongs to sigB, not sigA.
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/${sigACluster.id}/split`)
+      .send({ member_difference_ids: ['d3'] });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('foreign_member');
+  });
+
+  it('returns 404 for an unknown cluster id', async () => {
+    const sessionId = seed(h.db);
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/no-such/split`)
+      .send({ member_difference_ids: ['d1'] });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 for empty selection', async () => {
+    const sessionId = seed(h.db);
+    const list = await request(h.app).get(`/api/sessions/${sessionId}/clusters`);
+    const sigACluster = list.body.clusters.find(
+      (c: { signature: string }) => c.signature === 'sigA',
+    );
+    const res = await request(h.app)
+      .post(`/api/sessions/${sessionId}/clusters/${sigACluster.id}/split`)
+      .send({ member_difference_ids: [] });
+    expect(res.status).toBe(400);
+  });
+});

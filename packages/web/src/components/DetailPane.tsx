@@ -67,6 +67,14 @@ export interface DetailPaneProps {
    */
   focusedMemberId?: string | null;
   onMemberFocus?: (id: string | null) => void;
+  /**
+   * Session acceptances. The cluster panel cross-references members
+   * (keyed by url_pair_id + viewport_name) to surface partial-acceptance
+   * state and let users accept/clear individual members.
+   */
+  acceptances?: AcceptanceRow[];
+  /** Called after a per-member accept/clear so the parent can refresh. */
+  onMemberAcceptanceChanged?: () => void;
 }
 
 export function DetailPane({
@@ -87,6 +95,8 @@ export function DetailPane({
   clusterRefreshTrigger,
   focusedMemberId,
   onMemberFocus,
+  acceptances,
+  onMemberAcceptanceChanged,
 }: DetailPaneProps): JSX.Element {
   return (
     <section className="detail-pane">
@@ -145,6 +155,8 @@ export function DetailPane({
             refreshTrigger={clusterRefreshTrigger}
             focusedMemberId={focusedMemberId ?? null}
             onMemberFocus={onMemberFocus ?? noop}
+            acceptances={acceptances ?? []}
+            onMemberAcceptanceChanged={onMemberAcceptanceChanged}
           />
         )}
       </div>
