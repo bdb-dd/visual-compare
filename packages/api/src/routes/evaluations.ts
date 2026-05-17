@@ -90,20 +90,26 @@ function computeProgress(
     return { phase: 'capture', current: captureJob.progress_current, total: captureJob.progress_total };
   }
 
-  const comparisonJob = row.comparison_run_id
+  // Comparison progress is computed from the `comparisons` table directly
+  // rather than from `comparison_runs.job_id`. The streaming orchestrator
+  // can enqueue multiple comparison jobs into a single run as captures land,
+  // so the linked `job_id` only covers the first batch. Counting rows by
+  // status gives an accurate picture regardless of batch count.
+  const comparisonAggregate = row.comparison_run_id
     ? db
-        .prepare<[string], JobProgressRow>(
-          `SELECT j.status, j.progress_current, j.progress_total
-           FROM comparison_runs cr JOIN jobs j ON j.id = cr.job_id
-           WHERE cr.id = ?`,
+        .prepare<[string], { total: number; done: number }>(
+          `SELECT
+             COUNT(*) AS total,
+             SUM(CASE WHEN status IN ('complete','error') THEN 1 ELSE 0 END) AS done
+           FROM comparisons WHERE comparison_run_id = ?`,
         )
         .get(row.comparison_run_id) ?? null
     : null;
-  if (comparisonJob && comparisonJob.status === 'running') {
+  if (comparisonAggregate && comparisonAggregate.total > 0) {
     return {
       phase: 'comparison',
-      current: comparisonJob.progress_current,
-      total: comparisonJob.progress_total,
+      current: comparisonAggregate.done ?? 0,
+      total: comparisonAggregate.total,
     };
   }
 

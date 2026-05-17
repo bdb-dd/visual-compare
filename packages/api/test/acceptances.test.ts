@@ -157,6 +157,7 @@ async function makeHarness(initial?: Partial<ImagickStubControl>): Promise<Harne
     worker: captureWorker,
     imagick,
     lm,
+    pollIntervalMs: 10,
   });
   const app = createApp({ db, queue, artifactStore, captureWorker, imagick, lm, evaluator });
   return {

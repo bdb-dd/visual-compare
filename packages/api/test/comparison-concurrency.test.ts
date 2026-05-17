@@ -277,7 +277,7 @@ describe('comparison run concurrency', () => {
     expect(h.imagick.resolveCount).toBe(3);
   });
 
-  it('rejects concurrency outside [1, 10]', async () => {
+  it('rejects concurrency outside [1, 16]', async () => {
     const sessionId = await uploadSession(h.app, 1);
     const captureRunId = await startCaptures(h, sessionId);
 
@@ -286,7 +286,7 @@ describe('comparison run concurrency', () => {
       .send({
         session_id: sessionId,
         capture_run_id: captureRunId,
-        options: { targetLevel: 'tolerant', concurrency: 11 },
+        options: { targetLevel: 'tolerant', concurrency: 17 },
       });
     expect(tooHigh.status).toBe(400);
 

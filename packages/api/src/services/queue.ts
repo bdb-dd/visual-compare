@@ -7,6 +7,19 @@ export interface CreateJobInput {
   progress_total: number;
 }
 
+/**
+ * Chain key used to gate sequential vs parallel execution. Jobs share a
+ * chain key iff they should serialize against each other. Capture jobs
+ * (CPU/network-bound on the API VM) and comparison jobs (LM-bound on the
+ * GPU) live on different chains so they can run concurrently — the
+ * evaluator's streaming orchestrator depends on this.
+ *
+ * Two comparison jobs still serialize against each other within the
+ * `comparison` chain — that's fine because each comparison job already
+ * runs its pairs concurrently up to `options.concurrency` internally.
+ */
+type ChainKey = JobType;
+
 export interface JobContext {
   jobId: string;
   /** Increment progress_current. Safe to call from inside the handler. */
@@ -20,14 +33,19 @@ export interface JobContext {
 export type JobHandler = (ctx: JobContext) => Promise<void> | void;
 
 /**
- * Tiny in-process job queue. Each enqueued job runs sequentially in a single
- * promise chain. The capture pipeline does its own bounded Playwright
- * concurrency *inside* its handler — one queue slot is one capture or
- * comparison run, not one screenshot.
+ * Tiny in-process job queue. Jobs of the same `type` run sequentially on a
+ * shared promise chain; different types run concurrently on independent
+ * chains. This lets the evaluator stream comparisons in parallel with an
+ * ongoing capture run (capture and comparison loads land on different
+ * machines anyway — API VM vs the on-demand GPU).
+ *
+ * The capture pipeline does its own bounded Playwright concurrency *inside*
+ * its handler — one queue slot is one capture run or comparison run, not
+ * one screenshot.
  */
 export class JobQueue {
   #db: Db;
-  #chain: Promise<void> = Promise.resolve();
+  #chains: Map<ChainKey, Promise<void>> = new Map();
   #stopped = false;
   #waitForJob = new Map<string, Promise<void>>();
 
@@ -51,18 +69,25 @@ export class JobQueue {
   /**
    * Enqueue a handler. Returns immediately (HTTP route should already have
    * created the job and returned 202). The handler is invoked later on the
-   * internal chain.
+   * per-type chain — so a `comparison` handler may run concurrently with a
+   * `capture` handler, but two `comparison` handlers serialize.
    */
   enqueue(jobId: string, handler: JobHandler): void {
     if (this.#stopped) {
       throw new Error('Queue is stopped');
     }
-    const next = this.#chain.then(() => this.#run(jobId, handler));
-    this.#chain = next;
-    // Track the chain segment that resolves once `jobId` finishes. The chain
-    // is sequential, so awaiting `next` is equivalent to "wait until that
-    // job's handler has finished its database writes." Used by the evaluator
-    // to coordinate capture → comparison sequencing without polling.
+    const row = this.#db
+      .prepare<[string], { type: JobType }>('SELECT type FROM jobs WHERE id = ?')
+      .get(jobId);
+    if (!row) {
+      throw new Error(`enqueue: job ${jobId} has no row (createJob first)`);
+    }
+    const chainKey: ChainKey = row.type;
+    const prev = this.#chains.get(chainKey) ?? Promise.resolve();
+    const next = prev.then(() => this.#run(jobId, handler));
+    this.#chains.set(chainKey, next);
+    // Track the chain segment that resolves once `jobId` finishes — await
+    // this when the orchestrator needs to coordinate around a specific job.
     this.#waitForJob.set(jobId, next);
     next.finally(() => this.#waitForJob.delete(jobId));
   }
@@ -74,7 +99,10 @@ export class JobQueue {
 
   /** Wait for all enqueued work to drain. Used by tests. */
   async drain(): Promise<void> {
-    await this.#chain;
+    // Snapshot the chains and await them. New jobs enqueued during drain
+    // chain onto the per-type promise we already captured here, so awaiting
+    // the snapshot is enough to wait for everything queued so far.
+    await Promise.all([...this.#chains.values()]);
   }
 
   /** Stop accepting new work. Existing chain is allowed to finish. */
