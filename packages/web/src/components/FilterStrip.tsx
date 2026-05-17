@@ -1,4 +1,4 @@
-import type { JSX } from 'react';
+import { useEffect, useState, type JSX } from 'react';
 import { CHANGE_TYPES, REGION_ROLES } from '@visual-compare/api/constants/taxonomy';
 import type {
   FilterState,
@@ -33,6 +33,12 @@ export interface FilterStripProps {
   onChange: (next: FilterState) => void;
   /** Optional badge counts per chip. Keys like `status:accepted`, `level:tolerant`. */
   counts?: Record<string, number>;
+  /**
+   * Used as the localStorage key suffix so the collapse state is
+   * remembered per session. When omitted, the strip falls back to a
+   * shared key — fine for surfaces that only host one strip.
+   */
+  sessionId?: string;
 }
 
 interface ChipDef<T extends string> {
@@ -82,7 +88,23 @@ function statusApplicable(status: Status, mode: Mode): true | string {
   return true;
 }
 
-export function FilterStrip({ mode, state, onChange, counts }: FilterStripProps): JSX.Element {
+export function FilterStrip({ mode, state, onChange, counts, sessionId }: FilterStripProps): JSX.Element {
+  const storageKey = `vc.filterStrip.open.${sessionId ?? '_'}`;
+  const [open, setOpen] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(storageKey) === '1';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(storageKey, open ? '1' : '0');
+    } catch {
+      /* ignore quota / privacy errors */
+    }
+  }, [open, storageKey]);
+
   const setStatus = (status: Status) => onChange({ ...state, status });
 
   const toggleLevel = (lvl: Level) => {
@@ -113,9 +135,20 @@ export function FilterStrip({ mode, state, onChange, counts }: FilterStripProps)
     onChange({ ...state, outcomes: next });
   };
 
+  const summary = summarize(state, mode);
+
   return (
-    <div className="filter-strip" role="toolbar" aria-label="Filter results">
-      <Zone label="Status">
+    <details
+      className="filter-strip-details"
+      open={open}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+    >
+      <summary className="filter-strip-details__summary">
+        <span className="filter-strip-details__label">Filters</span>
+        <span className="filter-strip-details__active">{summary}</span>
+      </summary>
+      <div className="filter-strip" role="toolbar" aria-label="Filter results">
+        <Zone label="Status">
         {STATUS_CHIPS.map((c) => {
           const applicable = statusApplicable(c.value, mode);
           const disabled = applicable !== true;
@@ -192,8 +225,31 @@ export function FilterStrip({ mode, state, onChange, counts }: FilterStripProps)
           ))}
         </Zone>
       )}
-    </div>
+      </div>
+    </details>
   );
+}
+
+/**
+ * One-line description of the active filter state for the collapsed
+ * <details> summary. Skips zones that don't apply to the current mode
+ * and zones whose multi-select is empty.
+ */
+function summarize(state: FilterState, mode: Mode): string {
+  const parts: string[] = [`Status: ${state.status.replace('_', ' ')}`];
+  if (state.levels.length > 0 && (mode === 'rows' || mode === 'anomalies')) {
+    parts.push(`Level: ${state.levels.join(', ')}`);
+  }
+  if (state.regions.length > 0 && mode === 'clusters') {
+    parts.push(`Region: ${state.regions.join(', ')}`);
+  }
+  if (state.changes.length > 0 && mode === 'clusters') {
+    parts.push(`Change: ${state.changes.join(', ')}`);
+  }
+  if (state.outcomes.length > 0 && (mode === 'rows' || mode === 'anomalies')) {
+    parts.push(`Outcome: ${state.outcomes.join(', ')}`);
+  }
+  return parts.join(' · ');
 }
 
 function Zone({ label, children }: { label: string; children: React.ReactNode }): JSX.Element {

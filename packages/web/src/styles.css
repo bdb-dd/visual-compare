@@ -758,16 +758,56 @@ ul.diff-list li {
 /* Phase δ: shared filter strip below the mode tabs. Four zones —
    shared Status, mode-specific extras (Level, Region+Change, Outcome).
    Each zone has its own label and chip row. */
+.filter-strip-details {
+  background: #0e1014;
+  border: 1px solid #23262d;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.filter-strip-details > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: #aab1bd;
+}
+.filter-strip-details > summary::-webkit-details-marker { display: none; }
+.filter-strip-details > summary::before {
+  content: '▸';
+  display: inline-block;
+  color: #6c7280;
+  width: 10px;
+  transition: transform 100ms ease;
+  flex: 0 0 auto;
+}
+.filter-strip-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+.filter-strip-details__label {
+  font-weight: 600;
+  color: #e5e7eb;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+  flex: 0 0 auto;
+}
+.filter-strip-details__active {
+  color: #aab1bd;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .filter-strip {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
   gap: 8px 16px;
-  margin-bottom: 12px;
-  padding: 8px 10px;
-  background: #0e1014;
-  border: 1px solid #23262d;
-  border-radius: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid #23262d;
 }
 .filter-strip__zone {
   display: flex;
@@ -1869,6 +1909,9 @@ kbd {
   margin: 6px 0 0 12px;
 }
 .cluster-row__members-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -1879,6 +1922,27 @@ kbd {
 .cluster-row__members-count {
   font-weight: 400;
   color: #6c7280;
+}
+.cluster-row__members-export {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 4px;
+}
+.cluster-row__members-export button {
+  background: #15171c;
+  border: 1px solid #23262d;
+  color: #aab1bd;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  text-transform: none;
+}
+.cluster-row__members-export button:hover {
+  background: #1b1e24;
+  border-color: #353945;
+  color: #e6e8eb;
 }
 
 /* ----- Cluster detail ----- */
@@ -2079,8 +2143,10 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 .cluster-detail__lm-summary {
-  margin: 6px 0;
+  margin: 8px 0;
   color: #e5e7eb;
+  font-size: 16px;
+  line-height: 1.5;
 }
 .cluster-detail__metrics {
   display: flex;
@@ -2150,7 +2216,6 @@ kbd {
 
 .cluster-detail__images--slider {
   display: block;
-  max-width: 720px;
 }
 
 .image-slider {
@@ -2300,7 +2365,7 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 50vh;
+  max-height: max(200px, 50vh);
   overflow-y: auto;
   border: 1px solid #23262d;
   border-radius: 6px;

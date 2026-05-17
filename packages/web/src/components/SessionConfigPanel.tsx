@@ -65,6 +65,7 @@ export function SessionConfigPanel({
     const opts = config.default_capture_options as { concurrency?: number };
     return opts.concurrency !== undefined ? String(opts.concurrency) : '';
   });
+  const [invokeLm, setInvokeLm] = useState<boolean>(config.default_invoke_lm);
 
   // Host-dependent ceiling on the concurrency input. Fetched once via
   // /api/meta/system-info, which mirrors `os.availableParallelism()` so the
@@ -121,6 +122,7 @@ export function SessionConfigPanel({
       default_capture_options: captureOpts,
       default_equivalence_level: targetLevel,
       filter_query: filterQuery,
+      default_invoke_lm: invokeLm,
     };
   };
 
@@ -154,6 +156,7 @@ export function SessionConfigPanel({
     setSettleDelayMs(opts.settleDelayMs !== undefined ? String(opts.settleDelayMs) : '');
     setWaitForSelector(opts.waitForSelector ?? '');
     setConcurrency(opts.concurrency !== undefined ? String(opts.concurrency) : '');
+    setInvokeLm(config.default_invoke_lm);
   }, [config, defaults.viewportName, defaults.level]);
 
   // Autosave: debounce any divergence from the last saved snapshot. The
@@ -181,7 +184,7 @@ export function SessionConfigPanel({
     // buildPayload reads each piece of local state directly; listing them as
     // deps captures every user edit. onSaved is treated as stable by callers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewportNames, targetLevel, language, category, pathPrefix, hideSelectors, settleDelayMs, waitForSelector, concurrency, sessionId]);
+  }, [viewportNames, targetLevel, language, category, pathPrefix, hideSelectors, settleDelayMs, waitForSelector, concurrency, invokeLm, sessionId]);
 
   const toggle = <T,>(arr: T[], value: T): T[] =>
     arr.includes(value) ? arr.filter((x) => x !== value) : [...arr, value];
@@ -225,6 +228,21 @@ export function SessionConfigPanel({
             </label>
           ))}
         </div>
+      </section>
+
+      <section>
+        <h4>LM second pass</h4>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={invokeLm}
+            onChange={(e) => setInvokeLm(e.target.checked)}
+          />
+          <span>
+            Invoke LM Studio as a second pass on comparisons that miss the
+            target level. Applies to every evaluation in this session.
+          </span>
+        </label>
       </section>
 
       <section>

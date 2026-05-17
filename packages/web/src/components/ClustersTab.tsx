@@ -439,16 +439,48 @@ function InlineMemberList({
   const members: ClusterMemberDto[] = detail.members;
   const repId = detail.representative?.difference_id ?? null;
   const displayedId = focusedMemberId ?? repId;
+
+  const exportSideUrls = (side: 'a' | 'b') => {
+    const urls = members.map((m) => (side === 'a' ? m.url_a : m.url_b));
+    const blob = new Blob([urls.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = `cluster-${detail.cluster.id}-${side.toUpperCase()}.txt`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(objectUrl);
+  };
+
   return (
     <section className="cluster-row__members">
       <h4 className="cluster-row__members-title">
-        Members{' '}
-        <span className="cluster-row__members-count">
-          ({members.length}
-          {members.length < detail.cluster.member_count
-            ? ` of ${detail.cluster.member_count}`
-            : ''}
-          )
+        <span>
+          Members{' '}
+          <span className="cluster-row__members-count">
+            ({members.length}
+            {members.length < detail.cluster.member_count
+              ? ` of ${detail.cluster.member_count}`
+              : ''}
+            )
+          </span>
+        </span>
+        <span className="cluster-row__members-export">
+          <button
+            type="button"
+            onClick={() => exportSideUrls('a')}
+            title="Download the A-side URLs for this cluster's members as a text file"
+          >
+            Export A URLs
+          </button>
+          <button
+            type="button"
+            onClick={() => exportSideUrls('b')}
+            title="Download the B-side URLs for this cluster's members as a text file"
+          >
+            Export B URLs
+          </button>
         </span>
       </h4>
       <ul className="member-list">
