@@ -13,8 +13,17 @@ export function SessionsPage(): JSX.Element {
 
   const reload = async () => {
     try {
-      const { sessions } = await api.listSessions();
-      setSessions(sessions);
+      const data = await api.listSessions();
+      // Defensive: in production we've seen the response body occasionally
+      // arrive without the `sessions` key (cause TBD — see Network tab).
+      // The TS type is `{ sessions: SessionDto[] }` so this fallback is a
+      // belt-and-braces guard against a contract violation rather than a
+      // tolerated case.
+      setSessions(Array.isArray(data?.sessions) ? data.sessions : []);
+      if (!Array.isArray(data?.sessions)) {
+        // eslint-disable-next-line no-console
+        console.warn('[SessionsPage] /api/sessions returned unexpected shape:', data);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
