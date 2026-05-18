@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState, type JSX } from 'react';
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
-import { RecapturePairButton } from './RecapturePairButton.js';
 import {
   statusToClusterReviewState,
   type FilterState,
@@ -548,7 +547,44 @@ function InlineMemberList({
     return [rep, ...detail.members.filter((m) => m.difference_id !== repId)];
   }, [detail.members, repId]);
 
+  // Unique viewports present in this cluster, sorted by member count
+  // descending (then name asc as a tiebreaker). One tab per viewport,
+  // each scoping the list to that viewport's members.
+  const viewports = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const m of members) counts.set(m.viewport_name, (counts.get(m.viewport_name) ?? 0) + 1);
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([name, count]) => ({ name, count }));
+  }, [members]);
+
+  // Active viewport tab. Default to whichever the representative sits
+  // on (so the first thing the user sees is the rep), or the most
+  // populated viewport when there's no rep. Reset when the cluster
+  // (and thus its viewport set) changes underneath.
+  const [activeViewport, setActiveViewport] = useState<string | null>(null);
+  useEffect(() => {
+    if (viewports.length === 0) {
+      setActiveViewport(null);
+      return;
+    }
+    if (activeViewport && viewports.some((v) => v.name === activeViewport)) return;
+    const rep = detail.representative;
+    const repVp = rep && viewports.some((v) => v.name === rep.viewport_name)
+      ? rep.viewport_name
+      : viewports[0]!.name;
+    setActiveViewport(repVp);
+  }, [viewports, activeViewport, detail.representative]);
+
+  const filteredMembers = useMemo(() => {
+    if (!activeViewport) return members;
+    return members.filter((m) => m.viewport_name === activeViewport);
+  }, [members, activeViewport]);
+
   const exportSideUrls = (side: 'a' | 'b') => {
+    // Export the full member set (across all viewports), not just the
+    // active tab — the file is the canonical list of pairs in this
+    // cluster, independent of the in-UI viewport filter.
     const urls = members.map((m) => (side === 'a' ? m.url_a : m.url_b));
     const blob = new Blob([urls.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
     const objectUrl = URL.createObjectURL(blob);
@@ -561,38 +597,88 @@ function InlineMemberList({
     URL.revokeObjectURL(objectUrl);
   };
 
+  // "…" overflow menu for the Export actions. Same pattern as
+  // HeaderOverflowMenu in SessionDetailPage — small inline component
+  // using the .actions-menu* styles.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [menuOpen]);
+
   return (
     <section className="cluster-row__members">
-      <h4 className="cluster-row__members-title">
-        <span>
-          Members{' '}
-          <span className="cluster-row__members-count">
-            ({members.length}
-            {members.length < detail.cluster.member_count
-              ? ` of ${detail.cluster.member_count}`
-              : ''}
-            )
-          </span>
-        </span>
-        <span className="cluster-row__members-export">
+      <div className="cluster-row__members-bar">
+        <div className="cluster-row__members-tabs" role="tablist" aria-label="Members by viewport">
+          {viewports.map((v) => {
+            const isActive = activeViewport === v.name;
+            return (
+              <button
+                key={v.name}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                className={`cluster-row__members-tab${isActive ? ' cluster-row__members-tab--active' : ''}`}
+                onClick={() => setActiveViewport(v.name)}
+                title={`${v.count} member${v.count === 1 ? '' : 's'} at viewport ${v.name}`}
+              >
+                {v.name}{' '}
+                <span className="cluster-row__members-tab-count">({v.count})</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="actions-menu cluster-row__members-menu" ref={menuRef}>
           <button
             type="button"
-            onClick={() => exportSideUrls('a')}
-            title="Download the A-side URLs for this cluster's members as a text file"
+            className="actions-menu__toggle"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((o) => !o)}
+            title="More member actions"
           >
-            Export A URLs
+            ⋯
           </button>
-          <button
-            type="button"
-            onClick={() => exportSideUrls('b')}
-            title="Download the B-side URLs for this cluster's members as a text file"
-          >
-            Export B URLs
-          </button>
-        </span>
-      </h4>
+          {menuOpen && (
+            <ul className="actions-menu__list" role="menu">
+              <li>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="actions-menu__item"
+                  onClick={() => { setMenuOpen(false); exportSideUrls('a'); }}
+                >
+                  Export A URLs
+                </button>
+              </li>
+              <li>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="actions-menu__item"
+                  onClick={() => { setMenuOpen(false); exportSideUrls('b'); }}
+                >
+                  Export B URLs
+                </button>
+              </li>
+            </ul>
+          )}
+        </div>
+      </div>
       <ul className="member-list">
-        {members.map((m) => {
+        {filteredMembers.map((m) => {
           const focused = displayedId === m.difference_id;
           const isRep = m.difference_id === repId;
           const isAccepted = acceptedKeys.has(`${m.url_pair_id}::${m.viewport_name}`);
@@ -606,35 +692,21 @@ function InlineMemberList({
               role="button"
               tabIndex={-1}
               aria-pressed={focused}
-              title={isRep
+              title={(isRep
                 ? `Representative member${isAccepted ? ' (accepted)' : ''}`
                 : isAccepted
                   ? 'Accepted member · click to preview this pair'
-                  : 'Click to preview this pair (or use j/k to step)'}
+                  : 'Click to preview this pair (or use j/k to step)') + ` · ${m.url_a}`}
             >
               {isRep && <span className="member-row__rep-badge" aria-label="representative">★</span>}
               {isAccepted && <span className="member-row__accepted" aria-label="accepted">✓</span>}
               <span className="member-row__url">{m.url_a}</span>
-              <span className="member-row__vp">{m.viewport_name}</span>
               <span
-                className="member-row__nested"
-                onClick={(e) => e.stopPropagation()}
+                className="member-row__changed"
+                title={m.changed_pct != null ? 'Pixel-changed percentage from the imagick pass' : 'No pixel diff recorded for this member'}
               >
-                <RecapturePairButton
-                  sessionId={sessionId}
-                  pairId={m.url_pair_id}
-                  compact
-                  className="member-row__recapture"
-                />
+                {m.changed_pct != null ? `${m.changed_pct.toFixed(2)}%` : '—'}
               </span>
-              <Link
-                to={`/sessions/${sessionId}/comparisons/${m.comparison_id}`}
-                className="member-row__detail"
-                title="Open full comparison detail"
-                onClick={(e) => e.stopPropagation()}
-              >
-                Open →
-              </Link>
             </li>
           );
         })}

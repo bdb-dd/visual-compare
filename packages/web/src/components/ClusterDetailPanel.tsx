@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type RefOb
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ImageWithBoxes } from './ImageWithBoxes.js';
+import { RecapturePairButton } from './RecapturePairButton.js';
 import type {
   AcceptanceRow,
   BoundingBoxPercent,
@@ -610,6 +611,11 @@ export function ClusterDetailPanel({
                   Accept this member…
                 </button>
               )}
+              <RecapturePairButton
+                sessionId={sessionId}
+                pairId={displayed.url_pair_id}
+                compact
+              />
             </div>
             {displayed.lm_summary && (
               <p className="cluster-detail__lm-summary">
