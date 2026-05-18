@@ -277,12 +277,314 @@ th { color: #aab1bd; font-weight: 600; }
   background: #2a1a4a;
   color: #a78bf4;
 }
+.error-log__pill--mixed {
+  background: #2a2e36;
+  color: #d4e1ff;
+}
 .error-log__url {
   color: #aab1bd;
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Secondary filters: time period + viewport + URL substring. */
+.error-log__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  margin-bottom: 10px;
+}
+.error-log__filter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: #aab1bd;
+}
+.error-log__filter--grow { flex: 1; min-width: 220px; }
+.error-log__filter span {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  color: #6c7280;
+}
+.error-log__filter select,
+.error-log__filter input {
+  background: #0e1014;
+  border: 1px solid #23262d;
+  color: #e5e7eb;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  min-width: 140px;
+}
+.error-log__filter input { width: 100%; }
+.error-log__filter select:focus,
+.error-log__filter input:focus {
+  outline: none;
+  border-color: #2a6bff;
+}
+
+/* "Group by" chip selector: toggle which dimensions are folded into
+   each bucket. Sits between filters and the summary so it reads as a
+   shaping control rather than another filter. */
+.error-log__groupby {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.error-log__groupby-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  color: #6c7280;
+  margin-right: 4px;
+}
+.error-log__groupby-spacer { flex: 1; }
+.error-log__chip {
+  background: transparent;
+  border: 1px solid #23262d;
+  color: #aab1bd;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.error-log__chip:hover { color: #e5e7eb; border-color: #2f323a; }
+.error-log__chip--active {
+  background: #1f3a8a;
+  border-color: #1f3a8a;
+  color: #d4e1ff;
+}
+.error-log__cell-sub {
+  font-size: 10px;
+  margin-left: 4px;
+}
+.error-log__detail-occurrence-sub {
+  font-size: 11px;
+}
+
+/* "message" column shown in the flat table when Error grouping is off. */
+.error-log__message-cell {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  color: #e5e7eb;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Flat-table wrapper used when Error grouping is off — no outer
+   <details>, so we restore the same card chrome the group wrapper
+   provides. */
+.error-log__flat {
+  background: #15171c;
+  border: 1px solid #23262d;
+  border-radius: 6px;
+}
+
+/* Detail pane "Error messages" breakdown when a bucket spans
+   multiple messages (only possible with Error grouping off). */
+.error-log__detail-message-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.error-log__detail-message-list summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+.error-log__detail-message-list summary:hover { background: #1a1d24; }
+.error-log__detail-message-list summary::-webkit-details-marker { color: #6c7280; }
+.error-log__detail-message-count {
+  color: #ef6b6b;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 40px;
+}
+.error-log__detail-message-preview {
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  color: #e5e7eb;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.error-log__detail-message-list pre {
+  margin: 6px 0 0;
+  background: #0e1014;
+  border: 1px solid #23262d;
+  border-radius: 6px;
+  padding: 8px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  color: #f4a261;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* List ↔ detail split. The list takes full width until a row is
+   selected, then the detail pane slides in alongside it. */
+.error-log__body {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  align-items: start;
+}
+.error-log__body--split {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+}
+.error-log__list { min-width: 0; }
+.error-log__row { cursor: pointer; }
+.error-log__row:hover td { background: #1a1d24; }
+.error-log__row--active td { background: #1f3a8a33; }
+.error-log__row--active td:first-child {
+  box-shadow: inset 3px 0 0 #2a6bff;
+}
+
+.error-log__detail {
+  background: #15171c;
+  border: 1px solid #23262d;
+  border-radius: 6px;
+  padding: 12px;
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+.error-log__detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.error-log__detail-when {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.error-log__detail-close {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #aab1bd;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.error-log__detail-close:hover { color: #e5e7eb; border-color: #2f323a; }
+.error-log__detail-fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 10px;
+  row-gap: 4px;
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+.error-log__detail-fields dt {
+  color: #6c7280;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding-top: 2px;
+}
+.error-log__detail-fields dd { margin: 0; color: #e5e7eb; word-break: break-word; }
+.error-log__detail-url {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+}
+.error-log__detail-mono {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+}
+.error-log__detail-message h4 {
+  margin: 0 0 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6c7280;
+}
+.error-log__detail-message pre {
+  margin: 0;
+  background: #0e1014;
+  border: 1px solid #23262d;
+  border-radius: 6px;
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  color: #f4a261;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* Rollup column — bucketed inner-table count of "how many identical
+   failures collapsed into this row". Tabular-nums + right-align so
+   stacked counts read as a column of magnitudes. */
+.error-log__col-count { width: 56px; text-align: right; }
+.error-log__bucket-count {
+  text-align: right;
+  color: #ef6b6b;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.error-log__group-buckets {
+  margin-left: 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Detail pane "Recent occurrences" list — timestamps of the bucket's
+   recent hits, capped at OCCURRENCES_PREVIEW with a "+ N older"
+   footer. ol numbering reinforces the newest-first ordering. */
+.error-log__detail-occurrences {
+  margin-bottom: 12px;
+}
+.error-log__detail-occurrences h4 {
+  margin: 0 0 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6c7280;
+}
+.error-log__detail-occurrences ol {
+  margin: 0;
+  padding-left: 22px;
+  font-size: 11px;
+  color: #aab1bd;
+  font-variant-numeric: tabular-nums;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.error-log__detail-occurrences li { padding: 1px 0; }
+.error-log__detail-omitted {
+  margin: 4px 0 0;
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .error-log__body--split {
+    grid-template-columns: 1fr;
+  }
+  .error-log__detail { position: static; max-height: none; }
 }
 
 .error {
@@ -1512,6 +1814,44 @@ kbd {
 }
 .project-detail { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .project-detail > .tab-bar { margin-bottom: 0; }
+
+/* Config mode: narrow left rail of sub-sections + right-side content. */
+.config-body {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+.config-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: 16px;
+}
+.config-nav button {
+  background: transparent;
+  color: #aab1bd;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.config-nav button:hover { color: #e5e7eb; background: #15171c; }
+.config-nav button.active {
+  color: #d4e1ff;
+  background: #1f3a8a;
+  border-color: #1f3a8a;
+}
+.config-content { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+
+@media (max-width: 900px) {
+  .config-body { grid-template-columns: 1fr; }
+  .config-nav { position: static; flex-direction: row; flex-wrap: wrap; }
+}
 
 .config-panel {
   background: #15171c;

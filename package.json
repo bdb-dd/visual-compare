@@ -6,9 +6,14 @@
     "dev": "pnpm -r --parallel dev",
     "dev:api": "pnpm --filter @visual-compare/api dev",
     "dev:web": "pnpm --filter @visual-compare/web dev",
+    "start": "pnpm --filter @visual-compare/api start",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "install:playwright": "pnpm --filter @visual-compare/api exec playwright install chromium"
+    "install:playwright": "pnpm --filter @visual-compare/api exec playwright install chromium",
+    "share-images": "sh scripts/share-images-dir.sh",
+    "import-capture-cache": "sh scripts/import-capture-cache.sh",
+    "provision": "bash deploy/scaleway/scripts/provision.sh",
+    "deploy": "bash deploy/scaleway/scripts/deploy.sh"
   }
 }

@@ -31,6 +31,7 @@ const GROUPS: ShortcutGroup[] = [
       { keys: ['1'], description: 'Switch to Clusters mode' },
       { keys: ['2'], description: 'Switch to Rows mode' },
       { keys: ['3'], description: 'Switch to Anomalies mode' },
+      { keys: ['4'], description: 'Switch to Config mode' },
       { keys: ['?'], description: 'Toggle this cheat-sheet' },
       { keys: ['Esc'], description: 'Close this overlay (or clear row selection in Rows mode)' },
     ],
