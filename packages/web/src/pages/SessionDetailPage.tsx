@@ -35,17 +35,23 @@ import type {
 } from '@visual-compare/api/types';
 import type { EquivalenceLevelDef } from '@visual-compare/api/constants/equivalence';
 
-type SidebarTab = 'review' | 'config';
-type DetailTab = 'comparison' | 'history' | 'pairs' | 'errors';
-type Mode = 'clusters' | 'rows' | 'anomalies';
+type Mode = 'clusters' | 'rows' | 'anomalies' | 'config';
+type ConfigSection = 'config' | 'pairs' | 'history' | 'errors';
 
-const MODE_VALUES: readonly Mode[] = ['clusters', 'rows', 'anomalies'];
+const MODE_VALUES: readonly Mode[] = ['clusters', 'rows', 'anomalies', 'config'];
 
 function parseMode(raw: string | null): Mode {
   return (MODE_VALUES as readonly string[]).includes(raw ?? '')
     ? (raw as Mode)
     : 'clusters'; // funnel default per implementation plan §β
 }
+
+const MODE_LABELS: Record<Mode, string> = {
+  clusters: 'Clusters',
+  rows: 'Rows',
+  anomalies: 'Anomalies',
+  config: 'Config',
+};
 
 export function SessionDetailPage(): JSX.Element {
   const { id = '' } = useParams();
@@ -133,8 +139,7 @@ export function SessionDetailPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [expandedEvaluationId, setExpandedEvaluationId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('review');
-  const [detailTab, setDetailTab] = useState<DetailTab>('comparison');
+  const [configSection, setConfigSection] = useState<ConfigSection>('config');
   /** Phase ζ: cheat-sheet overlay toggle, opened via `?` key. */
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
@@ -239,10 +244,20 @@ export function SessionDetailPage(): JSX.Element {
     }
   }, [id]);
 
+  /**
+   * Tracks whether listEvaluations has completed at least once on this
+   * page load. The decide-landing effect below waits on this so it can
+   * distinguish "no evaluations yet" from "we haven't fetched them yet".
+   */
+  const evaluationsLoadedRef = useRef(false);
+  /** Guards the one-shot landing decision so it doesn't bounce the user later. */
+  const initialLandingRef = useRef(false);
+
   const refreshEvaluations = useCallback(async () => {
     try {
       const e = await api.listEvaluations(id);
       setEvaluations(e.evaluations);
+      evaluationsLoadedRef.current = true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -299,6 +314,27 @@ export function SessionDetailPage(): JSX.Element {
     void refreshEvaluations();
     void refreshHistory();
   }, [session, refreshResults, refreshAcceptances, refreshEvaluations, refreshHistory]);
+
+  // Reset the landing refs whenever the session id changes so the next
+  // mount of a different session re-runs the decision.
+  useEffect(() => {
+    evaluationsLoadedRef.current = false;
+    initialLandingRef.current = false;
+  }, [id]);
+
+  // One-shot: if the session has no evaluations yet and the URL doesn't
+  // pin a mode, land on Config so the user is dropped into setup rather
+  // than an empty Clusters/Rows view. Waits for the initial listEvaluations
+  // to resolve so an empty `evaluations` state can't be misread as
+  // "no evals" before the fetch has run.
+  useEffect(() => {
+    if (initialLandingRef.current) return;
+    if (!evaluationsLoadedRef.current) return;
+    initialLandingRef.current = true;
+    if (evaluations.length === 0 && searchParams.get('mode') === null) {
+      setMode('config');
+    }
+  }, [evaluations, searchParams, setMode]);
 
   // Live refresh while work is outstanding. Uses the delta protocol on
   // /results: each tick fetches a tiny payload (plan + summary +
@@ -412,7 +448,7 @@ export function SessionDetailPage(): JSX.Element {
   }, [results?.session_id]);
 
   // Phase ζ: page-level keyboard shortcuts.
-  // - 1/2/3 switch mode (works regardless of focus).
+  // - 1/2/3/4 switch mode (works regardless of focus).
   // - c in Rows mode jumps to the selected row's primary cluster.
   // - ? toggles the shortcuts cheat-sheet overlay.
   // - Escape closes the overlay when open.
@@ -444,6 +480,7 @@ export function SessionDetailPage(): JSX.Element {
       if (e.key === '1') { e.preventDefault(); setMode('clusters'); return; }
       if (e.key === '2') { e.preventDefault(); setMode('rows'); return; }
       if (e.key === '3') { e.preventDefault(); setMode('anomalies'); return; }
+      if (e.key === '4') { e.preventDefault(); setMode('config'); return; }
       if (e.key === 'c' && !e.shiftKey) {
         // Row → cluster jump. Only meaningful in Rows mode with a
         // selected row that has a cluster.
@@ -472,8 +509,6 @@ export function SessionDetailPage(): JSX.Element {
 
   const handleAcceptShortcut = (row: SessionResultRow | null) => {
     if (!row?.matched_at_level || !row.capture_a_sha || !row.capture_b_sha) return;
-    setSidebarTab('review');
-    setDetailTab('comparison');
     setAcceptDialogTrigger((v) => v + 1);
   };
 
@@ -696,17 +731,19 @@ export function SessionDetailPage(): JSX.Element {
             className={`mode-tab${mode === m ? ' mode-tab--active' : ''}`}
             onClick={() => setMode(m)}
           >
-            {m === 'clusters' ? 'Clusters' : m === 'rows' ? 'Rows' : 'Anomalies'}
+            {MODE_LABELS[m]}
           </button>
         ))}
       </div>
 
-      <FilterStrip
-        mode={mode}
-        state={filterState}
-        onChange={setFilterState}
-        sessionId={session.id}
-      />
+      {mode !== 'config' && (
+        <FilterStrip
+          mode={mode}
+          state={filterState}
+          onChange={setFilterState}
+          sessionId={session.id}
+        />
+      )}
 
 
       {mode === 'clusters' && (
@@ -813,30 +850,8 @@ export function SessionDetailPage(): JSX.Element {
       )}
 
       {mode === 'rows' && (
-      <div className="project-body">
-        <aside className="project-sidebar">
-          <div className="tab-bar" role="tablist" aria-label="Sidebar view">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={sidebarTab === 'review'}
-              className={`tab ${sidebarTab === 'review' ? 'active' : ''}`}
-              onClick={() => setSidebarTab('review')}
-            >
-              Review {results ? <span className="muted">({results.results.length})</span> : null}
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={sidebarTab === 'config'}
-              className={`tab ${sidebarTab === 'config' ? 'active' : ''}`}
-              onClick={() => setSidebarTab('config')}
-            >
-              Config
-            </button>
-          </div>
-
-          {sidebarTab === 'review' ? (
+        <div className="project-body">
+          <aside className="project-sidebar">
             <ReviewSidebar
               sessionId={session.id}
               onRecaptured={() => void refreshResults()}
@@ -848,66 +863,15 @@ export function SessionDetailPage(): JSX.Element {
               onSelect={(key, row) => {
                 setSelectedRowKey(key);
                 setSelectedRow(row);
-                if (key !== null) setDetailTab('comparison');
               }}
               onAcceptShortcut={handleAcceptShortcut}
               onQuickAcceptShortcut={(r) => void handleQuickAcceptShortcut(r)}
               onClearShortcut={(r) => void handleClearShortcut(r)}
             />
-          ) : (
-            <SessionConfigPanel
-              sessionId={session.id}
-              config={config}
-              viewports={viewports}
-              levels={levels}
-              defaults={{ viewportName: defaultViewportName, level: defaultLevel }}
-              onSaved={handleConfigSaved}
-            />
-          )}
-        </aside>
+          </aside>
 
-        <section className="project-detail">
-          <div className="tab-bar" role="tablist" aria-label="Detail view">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={detailTab === 'comparison'}
-              className={`tab ${detailTab === 'comparison' ? 'active' : ''}`}
-              onClick={() => setDetailTab('comparison')}
-            >
-              Comparison
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={detailTab === 'history'}
-              className={`tab ${detailTab === 'history' ? 'active' : ''}`}
-              onClick={() => setDetailTab('history')}
-            >
-              History {evaluations.length > 0 ? <span className="muted">({evaluations.length})</span> : null}
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={detailTab === 'pairs'}
-              className={`tab ${detailTab === 'pairs' ? 'active' : ''}`}
-              onClick={() => setDetailTab('pairs')}
-            >
-              URL pairs <span className="muted">({pairs.length})</span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={detailTab === 'errors'}
-              className={`tab ${detailTab === 'errors' ? 'active' : ''}`}
-              onClick={() => setDetailTab('errors')}
-            >
-              Errors
-            </button>
-          </div>
-
-          {detailTab === 'comparison' && (
-            selectedRow && !selectedRow.comparison_id ? (
+          <section className="project-detail">
+            {selectedRow && !selectedRow.comparison_id ? (
               <PendingRowDetail row={selectedRow} />
             ) : (
               <DetailPane
@@ -965,35 +929,87 @@ export function SessionDetailPage(): JSX.Element {
                   ) : null
                 }
               />
-            )
-          )}
+            )}
+          </section>
+        </div>
+      )}
 
-          {detailTab === 'history' && (
-            <HistoryTab
-              evaluations={evaluations}
-              captureRuns={captureRuns}
-              comparisonRuns={comparisonRuns}
-              expandedEvaluationId={expandedEvaluationId}
-              onToggleEvaluation={(id) =>
-                setExpandedEvaluationId((cur) => (cur === id ? null : id))
-              }
-            />
-          )}
+      {mode === 'config' && (
+        <div className="config-body">
+          <nav className="config-nav" role="tablist" aria-label="Config section">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={configSection === 'config'}
+              className={configSection === 'config' ? 'active' : ''}
+              onClick={() => setConfigSection('config')}
+            >
+              Config
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={configSection === 'pairs'}
+              className={configSection === 'pairs' ? 'active' : ''}
+              onClick={() => setConfigSection('pairs')}
+            >
+              URL pairs <span className="muted">({pairs.length})</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={configSection === 'history'}
+              className={configSection === 'history' ? 'active' : ''}
+              onClick={() => setConfigSection('history')}
+            >
+              History {evaluations.length > 0 ? <span className="muted">({evaluations.length})</span> : null}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={configSection === 'errors'}
+              className={configSection === 'errors' ? 'active' : ''}
+              onClick={() => setConfigSection('errors')}
+            >
+              Errors
+            </button>
+          </nav>
 
-          {detailTab === 'pairs' && (
-            <UrlPairsEditor
-              sessionId={session.id}
-              pairs={pairs}
-              onChange={() => {
-                void refreshPairs();
-                void refreshResults();
-              }}
-            />
-          )}
-
-          {detailTab === 'errors' && <ErrorLogTab sessionId={session.id} />}
-        </section>
-      </div>
+          <section className="config-content">
+            {configSection === 'config' && (
+              <SessionConfigPanel
+                sessionId={session.id}
+                config={config}
+                viewports={viewports}
+                levels={levels}
+                defaults={{ viewportName: defaultViewportName, level: defaultLevel }}
+                onSaved={handleConfigSaved}
+              />
+            )}
+            {configSection === 'pairs' && (
+              <UrlPairsEditor
+                sessionId={session.id}
+                pairs={pairs}
+                onChange={() => {
+                  void refreshPairs();
+                  void refreshResults();
+                }}
+              />
+            )}
+            {configSection === 'history' && (
+              <HistoryTab
+                evaluations={evaluations}
+                captureRuns={captureRuns}
+                comparisonRuns={comparisonRuns}
+                expandedEvaluationId={expandedEvaluationId}
+                onToggleEvaluation={(id) =>
+                  setExpandedEvaluationId((cur) => (cur === id ? null : id))
+                }
+              />
+            )}
+            {configSection === 'errors' && <ErrorLogTab sessionId={session.id} />}
+          </section>
+        </div>
       )}
 
       {showShortcuts && <ShortcutsOverlay onClose={() => setShowShortcuts(false)} />}
