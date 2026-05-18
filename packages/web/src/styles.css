@@ -2088,41 +2088,48 @@ kbd {
 .cluster-row__members {
   margin: 6px 0 0 12px;
 }
-.cluster-row__members-title {
+/* Tab strip + overflow menu sit on one row. Tabs left, "⋯" right
+   (margin-left: auto on .actions-menu inside the bar). */
+.cluster-row__members-bar {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: #aab1bd;
   margin: 0 0 4px;
-  font-weight: 600;
 }
-.cluster-row__members-count {
-  font-weight: 400;
-  color: #6c7280;
-}
-.cluster-row__members-export {
-  margin-left: auto;
+.cluster-row__members-tabs {
   display: inline-flex;
-  gap: 4px;
-}
-.cluster-row__members-export button {
-  background: #15171c;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  background: #0e1014;
   border: 1px solid #23262d;
-  color: #aab1bd;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 10px;
-  letter-spacing: 0.03em;
-  cursor: pointer;
-  text-transform: none;
+  border-radius: 6px;
 }
-.cluster-row__members-export button:hover {
-  background: #1b1e24;
-  border-color: #353945;
-  color: #e6e8eb;
+.cluster-row__members-tab {
+  background: transparent;
+  color: #aab1bd;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  cursor: pointer;
+}
+.cluster-row__members-tab:hover { color: #e6e8eb; }
+.cluster-row__members-tab--active {
+  background: #1f3a8a;
+  border-color: #1f3a8a;
+  color: #d4e1ff;
+}
+.cluster-row__members-tab-count {
+  color: #6c7280;
+  font-variant-numeric: tabular-nums;
+}
+.cluster-row__members-tab--active .cluster-row__members-tab-count {
+  color: #b9d0ff;
+}
+.cluster-row__members-menu {
+  margin-left: auto;
 }
 
 /* ----- Cluster detail ----- */
@@ -2710,7 +2717,7 @@ kbd {
 .member-row {
   position: relative;
   display: grid;
-  grid-template-columns: 1fr 80px auto auto;
+  grid-template-columns: 1fr 70px;
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
@@ -2743,21 +2750,23 @@ kbd {
   color: #0a0b0e;
   font-weight: 700;
 }
-.member-row__nested { display: inline-flex; }
 .member-row__url {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* URLs are most distinguishable at their *end* (path tails differ;
+     hosts repeat). RTL direction flips the ellipsis to the start of
+     the visible text while LTR characters still render in reading
+     order. Tested with typical https URLs — the truncation reads
+     cleanly as "…end-of-the-path". */
+  direction: rtl;
+  text-align: left;
 }
-.member-row__vp {
+.member-row__changed {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
   color: #aab1bd;
-}
-.member-row__detail {
-  color: #b9d0ff;
-  text-decoration: none;
+  font-variant-numeric: tabular-nums;
   text-align: right;
-  font-size: 12px;
 }
-.member-row__detail:hover { text-decoration: underline; }
+.member-row--focused .member-row__changed { color: #d4e1ff; }
