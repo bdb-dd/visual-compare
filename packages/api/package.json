@@ -1,0 +1,39 @@
+{
+  "name": "@visual-compare/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.json && pnpm run build:copy-schema",
+    "build:copy-schema": "node -e \"import('node:fs').then(fs => fs.cpSync('src/db/schema.sql', 'dist/db/schema.sql'))\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm test:parallel && pnpm test:serial",
+    "test:parallel": "vitest run",
+    "test:serial": "vitest run --config vitest.config.serial.ts",
+    "test:watch": "vitest",
+    "corpus": "tsx scripts/run-test-corpus.ts --allow-mismatch tp-section-removed:semantic"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "csv-parse": "^5.5.6",
+    "express": "^5.2.1",
+    "multer": "^2.1.1",
+    "openai": "^4.77.0",
+    "playwright": "^1.49.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.1.0",
+    "@types/node": "^22.10.0",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

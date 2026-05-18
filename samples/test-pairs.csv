@@ -1,0 +1,6 @@
+url_a,url_b,label
+https://example.com/,https://example.com/,"Identical (pixel-perfect)"
+https://example.com/,https://example.org/,"IANA reserved domains (should look identical)"
+https://example.com/,https://httpbin.org/html,"Tiny page vs Moby Dick excerpt (clearly different)"
+https://en.wikipedia.org/wiki/Cat,https://en.wikipedia.org/wiki/Dog,"Same template, different content"
+https://www.iana.org/,https://www.iana.org/about,"Same domain, different path"

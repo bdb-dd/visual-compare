@@ -1,0 +1,7 @@
+[
+  { "id": 0, "area": 480000, "geometry": "800x600+0+0", "color": "srgba(255,255,255,1)" },
+  { "id": 1, "area": 1, "geometry": "1x1+10+10", "color": "srgba(0,0,0,1)" },
+  { "id": 2, "area": 1, "geometry": "1x1+200+200", "color": "srgba(0,0,0,1)" },
+  { "id": 3, "area": 1, "geometry": "1x1+700+50", "color": "srgba(0,0,0,1)" },
+  { "id": 4, "area": 5000, "geometry": "100x50+300+250", "color": "srgba(255,0,0,1)" }
+]

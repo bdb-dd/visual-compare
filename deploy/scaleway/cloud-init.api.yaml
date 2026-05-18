@@ -1,0 +1,211 @@
+#cloud-config
+# Cloud-init for the API VM.
+#
+# This bootstraps the system to the point where `deploy.sh` from a
+# developer's laptop can push code, install deps, and start the service.
+# It does NOT clone the repo — code arrives via rsync at deploy time.
+#
+# Placeholders enclosed in `__SOMETHING__` are substituted by
+# scripts/provision.sh before this file is handed to Scaleway.
+
+package_update: true
+package_upgrade: false
+
+packages:
+  # NOTE: Ubuntu's `imagemagick` package is v6 — provides `convert` but NOT
+  # the `magick` unified CLI we depend on. We still install it for the
+  # MagickWand headers (which `node-canvas` and similar pull in transitively)
+  # but the runtime binary comes from the static IM7 download in runcmd.
+  - imagemagick
+  - libmagickwand-dev
+  - build-essential
+  - curl
+  - ca-certificates
+  - gnupg
+  - apt-transport-https
+  - debian-keyring
+  - debian-archive-keyring
+  - rsync
+  - jq
+  - xfsprogs
+  # Playwright system libs (Chromium runtime deps on Ubuntu 24.04).
+  - libnss3
+  - libnspr4
+  - libatk1.0-0t64
+  - libatk-bridge2.0-0t64
+  - libcups2t64
+  - libdrm2
+  - libxkbcommon0
+  - libxcomposite1
+  - libxdamage1
+  - libxfixes3
+  - libxrandr2
+  - libgbm1
+  - libpango-1.0-0
+  - libcairo2
+  - libasound2t64
+
+users:
+  - name: visual-compare
+    system: true
+    shell: /usr/sbin/nologin
+    # /home/visual-compare must exist + be writable so pnpm / corepack /
+    # Playwright can populate ~/.cache/. Cloud-init's `system: true`
+    # default is `create_home: false`; flip it on.
+    create_home: true
+  - name: deploy
+    groups: sudo
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - __DEPLOY_SSH_KEY__
+
+write_files:
+  # Secrets + runtime config for the API. Pre-populated at provision time;
+  # operator can edit + `systemctl restart visual-compare-api` later.
+  #
+  # `defer: true` postpones this write_files entry to the final stage,
+  # AFTER cc_users_groups runs — otherwise chown to root:visual-compare
+  # fails because the user doesn't exist yet (write-files runs in init).
+  - path: /etc/visual-compare/env
+    permissions: '0640'
+    owner: root:visual-compare
+    defer: true
+    content: |
+      PORT=3001
+      LM_BACKEND=scaleway
+      LM_STUDIO_BASE_URL=__LM_STUDIO_BASE_URL__
+      LM_STUDIO_MODEL=__LM_STUDIO_MODEL__
+      LM_STUDIO_API_KEY=lm-studio
+      LM_STUDIO_MAX_TOKENS=4096
+      LM_IDLE_SHUTDOWN_MINUTES=60
+      # Path the reaper consults to decide idle time. Must match the
+      # Environment= line in visual-compare-api.service so the API and
+      # the cron job agree. Kept in env (not just systemd) because the
+      # reaper runs from cron and only sources this file.
+      LM_LAST_USE_PATH=/mnt/data/lm-last-use
+      SCW_GPU_ZONE=__SCW_GPU_ZONE__
+      SCW_GPU_INSTANCE_ID=__SCW_GPU_INSTANCE_ID__
+      SCW_SECRET_KEY=__SCW_SECRET_KEY__
+
+  # Caddy site config. The placeholders here are env-substituted at deploy
+  # time by render-caddyfile.sh — see Caddyfile.template in the repo.
+  - path: /etc/caddy/Caddyfile
+    permissions: '0644'
+    owner: root:root
+    content: |
+      # Placeholder — replaced by render-caddyfile.sh on first deploy.
+      :80 {
+        respond "visual-compare: awaiting first deploy" 503
+      }
+
+  - path: /etc/systemd/system/visual-compare-api.service
+    permissions: '0644'
+    encoding: b64
+    content: __SYSTEMD_API_UNIT_B64__
+
+  - path: /etc/cron.d/lm-idle-reaper
+    permissions: '0644'
+    encoding: b64
+    content: __CRON_REAPER_B64__
+
+runcmd:
+  # ---- Block volume: format if blank, mount at /mnt/data ----
+  # Scaleway block volumes show up as /dev/sdb on legacy or /dev/nvme1n1 on
+  # newer instance types. Probe for both. If the disk is unformatted (no
+  # filesystem signature) we create XFS — picked for SQLite-friendly large-
+  # file performance and online-resize support.
+  - |
+    set -e
+    DEV=""
+    for candidate in /dev/sdb /dev/nvme1n1; do
+      if [ -b "$candidate" ]; then DEV="$candidate"; break; fi
+    done
+    if [ -z "$DEV" ]; then
+      echo "no block volume found at /dev/sdb or /dev/nvme1n1" >&2
+      exit 1
+    fi
+    if ! blkid "$DEV" >/dev/null 2>&1; then
+      mkfs.xfs -L vc-data "$DEV"
+    fi
+    mkdir -p /mnt/data
+    echo "LABEL=vc-data /mnt/data xfs defaults,noatime,nofail 0 2" >> /etc/fstab
+    mount -a
+    mkdir -p /mnt/data/images
+    chown -R visual-compare:visual-compare /mnt/data
+    chmod 750 /mnt/data
+
+  # ---- ImageMagick 7 (extracted AppImage + wrapper) ----
+  # Ubuntu's apt `imagemagick` is v6 and lacks the `magick` unified CLI we
+  # use in services/imagick.ts. The official Linux download is an AppImage:
+  #
+  #   1. Raw AppImage at /usr/local/bin/magick FAILS under the systemd
+  #      service because `NoNewPrivileges=yes` blocks setuid on
+  #      /usr/bin/fusermount that the AppImage needs to self-mount.
+  #   2. Symlinking AppRun also FAILS under Node's spawn() — the script's
+  #      `readlink -f "$0"` doesn't always resolve to a usable HERE.
+  #   3. Setting LD_LIBRARY_PATH globally in the systemd unit also FAILS —
+  #      the IM bundle's libs (glib, libgobject…) reach spawned Chromium
+  #      and clash with its own ABI ("symbol lookup error: g_dir_unref").
+  #
+  # So: extract once, then install a tiny wrapper at /usr/local/bin/magick
+  # that scopes LD_LIBRARY_PATH / MAGICK_* env to the magick process only.
+  - mkdir -p /opt/imagemagick7
+  - curl -fsSL -o /tmp/magick.appimage https://download.imagemagick.org/archive/binaries/magick
+  - chmod +x /tmp/magick.appimage
+  - cd /opt/imagemagick7 && /tmp/magick.appimage --appimage-extract > /dev/null
+  - chmod -R a+rX /opt/imagemagick7
+  - rm -f /tmp/magick.appimage
+  - |
+    cat > /usr/local/bin/magick <<'EOF'
+    #!/bin/bash
+    export LD_LIBRARY_PATH=/opt/imagemagick7/squashfs-root/usr/lib:/opt/imagemagick7/squashfs-root/usr/lib/ImageMagick-7.1.2/modules-Q16HDRI/coders
+    export MAGICK_HOME=/opt/imagemagick7/squashfs-root/usr
+    export MAGICK_CONFIGURE_PATH=/opt/imagemagick7/squashfs-root/usr/share/ImageMagick-7:/opt/imagemagick7/squashfs-root/usr/etc/ImageMagick-7
+    exec /opt/imagemagick7/squashfs-root/usr/bin/magick "$@"
+    EOF
+  - chmod 0755 /usr/local/bin/magick
+
+  # ---- Node 22 via NodeSource ----
+  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+
+  # ---- pnpm via corepack (matches packageManager in package.json) ----
+  - corepack enable
+  - corepack prepare pnpm@10.33.3 --activate
+
+  # ---- Caddy ----
+  # `--force-confold` tells dpkg to keep our placeholder /etc/caddy/Caddyfile
+  # instead of stopping at the interactive conffile prompt (the Caddy package
+  # ships its own default Caddyfile, and write_files already wrote ours).
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
+  - apt-get update -y
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confold" caddy
+  # Caddy runs as the `caddy` user (per the package's systemd unit) so its
+  # log dir must be writable by that user, not root — `systemctl reload`
+  # would otherwise fail with "open /var/log/caddy/access.log: permission denied".
+  - mkdir -p /var/log/caddy
+  - chown caddy:caddy /var/log/caddy
+
+  # ---- Service user home dir ----
+  # `create_home: true` on `users:` is supposed to make this, but on Noble +
+  # POP2 it doesn't actually run for `system: true` users — we observed an
+  # empty /home and corepack/pnpm failing on the first deploy. Create it
+  # explicitly so the rest of the script (and pnpm/Playwright caches) work.
+  - install -d -o visual-compare -g visual-compare -m 0755 /home/visual-compare /home/visual-compare/.cache
+
+  # ---- Code dir + log file ----
+  - mkdir -p /opt/visual-compare/packages/api /opt/visual-compare/packages/web
+  - chown -R visual-compare:visual-compare /opt/visual-compare
+  # The reaper logs as the visual-compare user; pre-create with the right ownership.
+  - touch /var/log/lm-idle-reaper.log
+  - chown visual-compare:visual-compare /var/log/lm-idle-reaper.log
+
+  # ---- Enable services. They'll fail-restart until deploy.sh lands the
+  # built code; that's fine — systemd will pick them up automatically. ----
+  - systemctl daemon-reload
+  - systemctl enable visual-compare-api.service
+  - systemctl enable caddy
+
+final_message: "API VM ready after $UPTIME seconds — run deploy.sh next."

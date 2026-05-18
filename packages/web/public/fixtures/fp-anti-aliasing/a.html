@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Acme — fp-anti-aliasing</title>
+  <link rel="stylesheet" href="/fixtures/_assets/style.css" />
+  <style>
+    /* Lots of curves and angled type to maximize anti-aliasing surface area. */
+    .aa-block {
+      padding: 48px 32px;
+      background: linear-gradient(135deg, #f1f5f9, #e2e8f0);
+      text-align: center;
+    }
+    .aa-block h2 {
+      font-size: 56px;
+      font-weight: 800;
+      transform: rotate(-2deg);
+      margin: 0 0 24px;
+      font-style: italic;
+    }
+    .aa-block .ring {
+      width: 200px;
+      height: 200px;
+      margin: 0 auto;
+      border-radius: 50%;
+      border: 8px solid #0f172a;
+      background: radial-gradient(circle at 30% 30%, #fff, #cbd5e1);
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <h1>Acme</h1>
+    <nav><a href="#">Shop</a><a href="#">About</a><a href="#">Contact</a></nav>
+  </header>
+  <section class="aa-block">
+    <h2>Beautifully crafted</h2>
+    <div class="ring"></div>
+  </section>
+  <footer class="footer">© Acme 2025</footer>
+</body>
+</html>

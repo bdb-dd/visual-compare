@@ -1,0 +1,14 @@
+{
+  "description": "Cookie banner with different text on A vs B, hidden via hideSelectors during capture",
+  "expected": {
+    "pixel-perfect": true,
+    "strict": true,
+    "tolerant": true,
+    "loose": true,
+    "semantic": true
+  },
+  "capture_options": {
+    "hideSelectors": [".cookie-banner"]
+  },
+  "notes": "Verifies pre-capture selector hiding. Without hideSelectors this pair would fail strict on the banner-text delta."
+}

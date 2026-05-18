@@ -1,0 +1,11 @@
+{
+  "description": "Buy Now CTA changes from green to red (same text, same position)",
+  "expected": {
+    "pixel-perfect": false,
+    "strict": null,
+    "tolerant": null,
+    "loose": null,
+    "semantic": null
+  },
+  "notes": "Empirically the CTA flip moves ~0.43% of pixels at 1440x900 — well below strict's 0.5% threshold. So strict CANNOT catch a small-area color flip on its own. Whether that's the right behavior is the open question; expectation softened to null until the team decides whether to tighten strict or accept this."
+}

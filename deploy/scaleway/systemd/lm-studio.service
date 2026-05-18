@@ -1,0 +1,68 @@
+[Unit]
+Description=LM Studio (OpenAI-compatible vision model server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# `lms server start` daemonizes and exits; there is no foreground mode.
+# A Type=simple unit would be marked "exited" the moment ExecStart returns
+# and systemd would tear down the daemon by cgroup. Use oneshot+RemainAfterExit
+# instead: we run the start/load steps in sequence, the unit stays "active",
+# and a clean systemctl stop runs ExecStop=`lms server stop`.
+Type=oneshot
+RemainAfterExit=yes
+User=lm-studio
+Group=lm-studio
+WorkingDirectory=/home/lm-studio
+
+# Set by cloud-init from the provisioning env. LM_STUDIO_MODEL must match
+# the API VM's env so its preflight model check passes.
+EnvironmentFile=/etc/lm-studio/env
+
+# 1. Start the server daemon bound to all interfaces so the API VM can reach
+#    it. The `--bind` flag is the correct one (not `--host`); default is
+#    127.0.0.1.
+ExecStart=/usr/local/bin/lms server start --port 1234 --bind 0.0.0.0 --cors
+
+# 2. Wait for /v1/models to answer before issuing the load. The daemon
+#    returns from `start` before its HTTP listener is fully up; without
+#    this gate the next step occasionally hits a "connection refused".
+ExecStart=/bin/sh -c 'for i in $(seq 1 30); do /usr/bin/curl -fsS http://127.0.0.1:1234/v1/models >/dev/null 2>&1 && exit 0; sleep 1; done; echo "lm-studio: server did not become reachable on 127.0.0.1:1234 within 30s" >&2; exit 1'
+
+# 3. Load the configured model with full GPU offload. `--identifier` makes
+#    the OpenAI-API model id match LM_STUDIO_MODEL exactly, so the API VM's
+#    preflight check (which compares against the configured model) succeeds.
+#
+#    `--context-length 32768` is sized to fit our actual prompt shape:
+#    two full-resolution 1440×900 vision images + the visual-compare
+#    system prompt + the JSON-schema output cap. With `--parallel 2` the
+#    context is split across slots → ~16K tokens per slot, comfortable
+#    for two images. Earlier `--parallel 4` with the default 8K context
+#    gave each slot ~2K tokens and every request 400'd with "Context size
+#    exceeded", tripping the API's per-run circuit breaker.
+#
+#    VRAM budget on the L40S (48 GB): 26B-A4B Q4_K_M weights ≈ 18 GB,
+#    KV cache for 32K × 2 slots ≈ 8–12 GB, leaving ~15 GB headroom.
+#    Pushing `--parallel` higher at this context length risks OOM; pushing
+#    `--context-length` higher buys nothing for our prompt shape.
+#
+#    `--yes` auto-resolves the ambiguous-key prompt for scripted use.
+ExecStart=/usr/local/bin/lms load ${LM_STUDIO_MODEL} --gpu max --parallel 2 --context-length 32768 --identifier ${LM_STUDIO_MODEL} --yes
+
+# Graceful stop: unload happens implicitly when the server is stopped.
+ExecStop=/usr/local/bin/lms server stop
+
+# Cold-loading a 20 GB GGUF can take a couple of minutes on first boot.
+TimeoutStartSec=10min
+
+# Failures shouldn't tight-loop — give an operator time to inspect.
+Restart=on-failure
+RestartSec=30s
+
+# L40S host has ~96 GB RAM; the loader temporarily mmaps the full GGUF
+# before offloading layers to VRAM. Cap below host total to leave room
+# for the OS + cache.
+MemoryMax=80G
+
+[Install]
+WantedBy=multi-user.target

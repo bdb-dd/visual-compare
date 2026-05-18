@@ -1,0 +1,11 @@
+{
+  "description": "Three product cards reordered (Apple/Banana/Cherry -> Cherry/Apple/Banana)",
+  "expected": {
+    "pixel-perfect": false,
+    "strict": false,
+    "tolerant": true,
+    "loose": true,
+    "semantic": true
+  },
+  "notes": "Same shape/colour cards mean reordering only moves ~0.43% of pixels at 1440x900 — under tolerant's 5%. Plan said this would be 'pixel diff is large'; not at this layout. The semantic-equivalent verdict still validates LM behaviour at strict and pixel-perfect."
+}

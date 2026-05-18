@@ -1,0 +1,11 @@
+{
+  "description": "Three value-prop cards reordered; same content, different positions",
+  "expected": {
+    "pixel-perfect": false,
+    "strict": false,
+    "tolerant": true,
+    "loose": true,
+    "semantic": true
+  },
+  "notes": "The plan predicted 'pixel: very different'. In practice the cards are the same shape/colour so reordering them only moves ~0.56% of pixels — well under tolerant's 5%. Pixel rule and LM agree the pages are equivalent at tolerant and looser. Pair still demonstrates the strict/pixel-perfect signal."
+}

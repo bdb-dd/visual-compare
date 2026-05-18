@@ -1,0 +1,11 @@
+{
+  "description": "Byte-identical HTML on both sides",
+  "expected": {
+    "pixel-perfect": true,
+    "strict": true,
+    "tolerant": true,
+    "loose": true,
+    "semantic": true
+  },
+  "notes": "Baseline sanity check — pixel-perfect MUST pass. Any failure here means rendering is non-deterministic at our settle delay."
+}

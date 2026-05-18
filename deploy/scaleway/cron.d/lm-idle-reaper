@@ -1,0 +1,8 @@
+# Cron entry for the LM idle reaper. Installed at /etc/cron.d/lm-idle-reaper
+# by cloud-init. Runs every 5 minutes as the visual-compare user so the
+# reaper has read access to /mnt/data/lm-last-use and inherits the same env.
+#
+# Output goes to /var/log/lm-idle-reaper.log (the redirect handles both
+# stdout and stderr; cron MAILTO is intentionally empty).
+MAILTO=""
+*/5 * * * * visual-compare set -a; . /etc/visual-compare/env; cd /opt/visual-compare/packages/api && ./node_modules/.bin/tsx scripts/lm-idle-reaper.ts >> /var/log/lm-idle-reaper.log 2>&1
