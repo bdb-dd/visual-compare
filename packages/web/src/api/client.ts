@@ -27,7 +27,15 @@ import type {
 import type { EquivalenceLevelDef } from '@visual-compare/api/constants/equivalence';
 
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(input, init);
+  const method = (init?.method ?? 'GET').toUpperCase();
+  const finalInit: RequestInit =
+    method === 'GET' || method === 'HEAD'
+      ? init ?? {}
+      : {
+          ...init,
+          headers: { ...(init?.headers as Record<string, string> | undefined), 'X-Requested-With': 'visual-compare' },
+        };
+  const res = await fetch(input, finalInit);
   const contentType = res.headers.get('content-type') ?? '';
   const body = contentType.includes('application/json') ? await res.json() : await res.text();
   if (!res.ok) {
