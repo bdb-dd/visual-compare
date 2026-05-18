@@ -1,4 +1,6 @@
 import express, { type Express } from 'express';
+import { csrfGuard } from './middleware/csrf.js';
+import { createRateLimit } from './middleware/rate-limit.js';
 import { sessionsRouter } from './routes/sessions.js';
 import { captureRunsRouter } from './routes/capture-runs.js';
 import { capturesRouter } from './routes/captures.js';
@@ -33,10 +35,23 @@ export interface AppDeps {
   workerActivity?: WorkerActivityTracker;
   /** Optional pre-built evaluator. Tests can pass one in to inspect drainAll(). */
   evaluator?: Evaluator;
+  /**
+   * Enable the per-IP token-bucket rate limiter on /api/*. Off by default so
+   * tests aren't throttled. Production should pass `{ refillPerSecond, burst }`.
+   * When enabled, Express's `trust proxy` is set to `loopback` so `req.ip`
+   * reflects Caddy's `X-Forwarded-For` rather than 127.0.0.1.
+   */
+  rateLimit?: { refillPerSecond: number; burst: number };
 }
 
 export function createApp(deps: AppDeps): Express {
   const app = express();
+  app.disable('x-powered-by');
+  if (deps.rateLimit) {
+    app.set('trust proxy', 'loopback');
+    app.use('/api', createRateLimit(deps.rateLimit));
+  }
+  app.use('/api', csrfGuard);
   app.use(express.json({ limit: '1mb' }));
 
   const evaluator =

@@ -103,7 +103,22 @@ console.log(
   `[lm] base=${lmConfig.baseURL} model=${lmConfig.model} prompt=${lmConfig.promptVersion} backend=${lmServer.backend} (${lmServer.description})`,
 );
 
-const app = createApp({ db, queue, artifactStore, captureWorker, lm, lmActivity, workerActivity });
+const RATE_LIMIT_REFILL_PER_SECOND = Number(process.env.RATE_LIMIT_REFILL_PER_SECOND ?? 5);
+const RATE_LIMIT_BURST = Number(process.env.RATE_LIMIT_BURST ?? 30);
+
+const app = createApp({
+  db,
+  queue,
+  artifactStore,
+  captureWorker,
+  lm,
+  lmActivity,
+  workerActivity,
+  rateLimit:
+    RATE_LIMIT_REFILL_PER_SECOND > 0
+      ? { refillPerSecond: RATE_LIMIT_REFILL_PER_SECOND, burst: RATE_LIMIT_BURST }
+      : undefined,
+});
 
 // Liveness probe for the reverse proxy / Scaleway healthcheck. Intentionally
 // cheap — no DB or LM round-trip; readiness is implied by the process being up.
