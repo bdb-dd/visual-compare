@@ -20,6 +20,7 @@ import type {
 } from '../types.js';
 import { DEFAULT_VIEWPORTS } from '../constants/viewports.js';
 import { captureOptsHashFor } from './capture-opts-hash.js';
+import { assertSafeCaptureUrl } from './url-guard.js';
 
 const viewportSchema = z.object({
   name: z.string().min(1),
@@ -112,6 +113,7 @@ export function createPlaywrightCaptureWorker(): CaptureWorker {
 
   const capture = async (args: CaptureWorkerArgs): Promise<CaptureWorkerResult> => {
     const startedAt = Date.now();
+    await assertSafeCaptureUrl(args.url);
     const browser = await getBrowser();
     const { url, viewport, options } = args;
     const context = await browser.newContext({
