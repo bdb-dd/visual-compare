@@ -1065,6 +1065,15 @@ ul.diff-list li {
   line-height: 1.45;
 }
 
+.detail-tabs-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.detail-tabs-row .detail-tabs { margin-bottom: -9px; }
+
 .detail-tabs {
   display: flex;
   gap: 2px;
@@ -2903,7 +2912,8 @@ kbd {
   font-size: 12px;
 }
 
-.cluster-detail__view-toggle {
+.cluster-detail__view-toggle,
+.view-toggle {
   display: inline-flex;
   gap: 0;
   margin: 0 0 8px;
@@ -2911,6 +2921,14 @@ kbd {
   border-radius: 6px;
   overflow: hidden;
   background: #15171c;
+}
+
+.cluster-detail__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 .view-toggle__btn {
   background: transparent;
@@ -3000,6 +3018,49 @@ kbd {
 }
 .image-slider__label--a { left: 8px; }
 .image-slider__label--b { right: 8px; }
+
+/* ---------------------------------------------------------------------- */
+/* Fit-height image mode. Default for ComparisonDetail and ClusterDetail.  */
+/*                                                                        */
+/* Each image scales to a fixed pixel height; the bbox-positioning        */
+/* container is inline-block so it shrink-wraps to the image's actual     */
+/* dimensions (keeping % overlays aligned). Panes get overflow:auto so    */
+/* wider-than-pane images can scroll horizontally inside their pane.      */
+/* ---------------------------------------------------------------------- */
+.detail-frame.fit-height,
+.cluster-detail__images.fit-height {
+  --vc-fit-height: calc(100vh - 280px);
+}
+.detail-frame.fit-height .panel { overflow: auto; }
+.cluster-detail__images.fit-height figure {
+  overflow: auto;
+  align-items: flex-start;
+  min-width: 0;
+}
+.cluster-detail__images.fit-height.cluster-detail__images--slider {
+  overflow: auto;
+}
+.detail-frame.fit-height .image-with-boxes,
+.cluster-detail__images.fit-height .image-with-boxes {
+  display: inline-block;
+  width: auto;
+  height: var(--vc-fit-height);
+}
+.detail-frame.fit-height .image-with-boxes img,
+.cluster-detail__images.fit-height .image-with-boxes img {
+  width: auto;
+  height: 100%;
+  max-width: none;
+}
+.cluster-detail__images.fit-height .image-slider:not(.image-slider--missing) {
+  display: inline-block;
+  width: auto;
+  height: var(--vc-fit-height);
+}
+.cluster-detail__images.fit-height .image-slider:not(.image-slider--missing) .image-slider__base {
+  width: auto;
+  height: 100%;
+}
 
 .cluster-detail__filmstrip {
   margin-top: 12px;

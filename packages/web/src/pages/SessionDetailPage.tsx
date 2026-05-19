@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type JSX } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ActionsMenu } from '../components/ActionsMenu.js';
@@ -588,6 +588,46 @@ export function SessionDetailPage(): JSX.Element {
     }
   };
 
+  // Pairs whose most recent capture errored on at least one side. Drives
+  // the "Recapture failed" header action so the user can retry just the
+  // broken captures instead of flushing the whole session cache.
+  const failedPairIds = useMemo(() => {
+    if (!results) return [];
+    const ids = new Set<string>();
+    for (const r of results.results) {
+      if (
+        r.capture_a_status.status === 'error' ||
+        r.capture_b_status.status === 'error'
+      ) {
+        ids.add(r.url_pair_id);
+      }
+    }
+    return Array.from(ids);
+  }, [results]);
+
+  const handleInvalidateFailed = async () => {
+    if (!session) return;
+    if (failedPairIds.length === 0) return;
+    if (
+      !confirm(
+        `Drop cached captures for ${failedPairIds.length} pair${
+          failedPairIds.length === 1 ? '' : 's'
+        } whose last capture failed?`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.invalidateCaptures(session.id, { pair_ids: failedPairIds });
+      await refreshResults();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // Cluster Recapture: kicks off the eval, then once it finishes we
   // recompute the cluster index (the new differences may have shifted
   // members between clusters, populated new ones, or emptied existing
@@ -694,7 +734,9 @@ export function SessionDetailPage(): JSX.Element {
             <HeaderOverflowMenu
               archived={!!session.archived_at}
               busy={busy}
+              failedCount={failedPairIds.length}
               onRecaptureAll={() => void handleInvalidateAll()}
+              onRecaptureFailed={() => void handleInvalidateFailed()}
               onArchiveToggle={() => void handleArchive()}
             />
             <WorkerActivityHistogram />
@@ -1033,12 +1075,16 @@ interface HistoryTabProps {
 function HeaderOverflowMenu({
   archived,
   busy,
+  failedCount,
   onRecaptureAll,
+  onRecaptureFailed,
   onArchiveToggle,
 }: {
   archived: boolean;
   busy: boolean;
+  failedCount: number;
   onRecaptureAll: () => void;
+  onRecaptureFailed: () => void;
   onArchiveToggle: () => void;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
@@ -1089,6 +1135,24 @@ function HeaderOverflowMenu({
               disabled={busy}
             >
               Recapture all
+            </button>
+          </li>
+          <li>
+            <button
+              type="button"
+              role="menuitem"
+              className="actions-menu__item"
+              onClick={choose(onRecaptureFailed)}
+              disabled={busy || failedCount === 0}
+              title={
+                failedCount === 0
+                  ? 'No pairs with failed captures'
+                  : `Drop cached captures for ${failedCount} pair${
+                      failedCount === 1 ? '' : 's'
+                    } whose last capture errored`
+              }
+            >
+              Recapture failed{failedCount > 0 ? ` (${failedCount})` : ''}
             </button>
           </li>
           <li>

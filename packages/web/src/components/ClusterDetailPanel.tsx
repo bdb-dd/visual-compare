@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type RefOb
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ImageWithBoxes } from './ImageWithBoxes.js';
+import { FitModeToggle, useFitMode } from './FitModeToggle.js';
+import { useSyncedScroll, type SyncedScroll } from './useSyncedScroll.js';
 import { RecapturePairButton } from './RecapturePairButton.js';
 import type {
   AcceptanceRow,
@@ -110,6 +112,11 @@ export function ClusterDetailPanel({
   const [dialog, setDialog] = useState<'accept' | 'reject' | 'split' | 'accept-member' | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [banner, setBanner] = useState<ActionBanner | null>(null);
+  const [fitMode, setFitMode] = useFitMode();
+  // count=3 covers triple mode; ab mode uses only the first 2 refs. The
+  // figure for the unused 3rd slot in ab mode simply unmounts and clears
+  // its ref, so the sync handler skips it.
+  const figureSync = useSyncedScroll(3);
   // View mode is URL-backed so refresh / share / back-forward keep the
   // selection. Replace-history on change (it's an in-place toggle, not a
   // navigation — flooding history with view-mode flips would be wrong).
@@ -635,42 +642,45 @@ export function ClusterDetailPanel({
             <p className="cluster-detail__description">{displayedDescription}</p>
           </div>
 
-          <div className="cluster-detail__view-toggle" role="tablist" aria-label="Image view mode">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={viewMode === 'triple'}
-              className={`view-toggle__btn${viewMode === 'triple' ? ' view-toggle__btn--active' : ''}`}
-              onClick={() => setViewMode('triple')}
-              title="Side-by-side A / B / diff"
-            >
-              A | B | diff
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={viewMode === 'ab'}
-              className={`view-toggle__btn${viewMode === 'ab' ? ' view-toggle__btn--active' : ''}`}
-              onClick={() => setViewMode('ab')}
-              title="Side-by-side A and B without the diff overlay"
-            >
-              A | B
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={viewMode === 'slider'}
-              className={`view-toggle__btn${viewMode === 'slider' ? ' view-toggle__btn--active' : ''}`}
-              onClick={() => setViewMode('slider')}
-              title="Drag the handle to wipe between A and B"
-            >
-              A/B slider
-            </button>
+          <div className="cluster-detail__toolbar">
+            <div className="cluster-detail__view-toggle" role="tablist" aria-label="Image view mode">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === 'triple'}
+                className={`view-toggle__btn${viewMode === 'triple' ? ' view-toggle__btn--active' : ''}`}
+                onClick={() => setViewMode('triple')}
+                title="Side-by-side A / B / diff"
+              >
+                A | B | diff
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === 'ab'}
+                className={`view-toggle__btn${viewMode === 'ab' ? ' view-toggle__btn--active' : ''}`}
+                onClick={() => setViewMode('ab')}
+                title="Side-by-side A and B without the diff overlay"
+              >
+                A | B
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === 'slider'}
+                className={`view-toggle__btn${viewMode === 'slider' ? ' view-toggle__btn--active' : ''}`}
+                onClick={() => setViewMode('slider')}
+                title="Drag the handle to wipe between A and B"
+              >
+                A/B slider
+              </button>
+            </div>
+            <FitModeToggle mode={fitMode} onChange={setFitMode} />
           </div>
 
-          <div className={`cluster-detail__images cluster-detail__images--${viewMode}`}>
-            {viewMode === 'triple' && <ImageTriple member={displayed} bbox={displayedBbox} />}
-            {viewMode === 'ab' && <ImageAB member={displayed} bbox={displayedBbox} />}
+          <div className={`cluster-detail__images cluster-detail__images--${viewMode} fit-${fitMode}`}>
+            {viewMode === 'triple' && <ImageTriple member={displayed} bbox={displayedBbox} sync={figureSync} />}
+            {viewMode === 'ab' && <ImageAB member={displayed} bbox={displayedBbox} sync={figureSync} />}
             {viewMode === 'slider' && <ImageSlider member={displayed} bbox={displayedBbox} />}
           </div>
         </section>
@@ -741,9 +751,11 @@ function Filmstrip({
 function ImageTriple({
   member,
   bbox,
+  sync,
 }: {
   member: ClusterMemberDto;
   bbox: { x: number; y: number; width: number; height: number } | null;
+  sync: SyncedScroll;
 }): JSX.Element {
   const aUrl = imageUrl(member.capture_a_sha);
   const bUrl = imageUrl(member.capture_b_sha);
@@ -751,15 +763,15 @@ function ImageTriple({
   const boxes = bbox ? [bbox] : [];
   return (
     <>
-      <figure>
+      <figure ref={sync.refs[0]} onScroll={sync.onScroll}>
         <figcaption>A</figcaption>
         {aUrl ? <ImageWithBoxes src={aUrl} alt="capture A" boxes={boxes} /> : <span className="missing-img">no image</span>}
       </figure>
-      <figure>
+      <figure ref={sync.refs[1]} onScroll={sync.onScroll}>
         <figcaption>B</figcaption>
         {bUrl ? <ImageWithBoxes src={bUrl} alt="capture B" boxes={boxes} /> : <span className="missing-img">no image</span>}
       </figure>
-      <figure>
+      <figure ref={sync.refs[2]} onScroll={sync.onScroll}>
         <figcaption>diff</figcaption>
         {diffUrl ? <ImageWithBoxes src={diffUrl} alt="pixel diff" boxes={boxes} /> : <span className="missing-img">no diff</span>}
       </figure>
@@ -775,20 +787,22 @@ function ImageTriple({
 function ImageAB({
   member,
   bbox,
+  sync,
 }: {
   member: ClusterMemberDto;
   bbox: { x: number; y: number; width: number; height: number } | null;
+  sync: SyncedScroll;
 }): JSX.Element {
   const aUrl = imageUrl(member.capture_a_sha);
   const bUrl = imageUrl(member.capture_b_sha);
   const boxes = bbox ? [bbox] : [];
   return (
     <>
-      <figure>
+      <figure ref={sync.refs[0]} onScroll={sync.onScroll}>
         <figcaption>A</figcaption>
         {aUrl ? <ImageWithBoxes src={aUrl} alt="capture A" boxes={boxes} /> : <span className="missing-img">no image</span>}
       </figure>
-      <figure>
+      <figure ref={sync.refs[1]} onScroll={sync.onScroll}>
         <figcaption>B</figcaption>
         {bUrl ? <ImageWithBoxes src={bUrl} alt="capture B" boxes={boxes} /> : <span className="missing-img">no image</span>}
       </figure>

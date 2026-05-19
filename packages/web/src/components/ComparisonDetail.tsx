@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
+import { useEffect, useMemo, useRef, useState, type JSX, type UIEvent } from 'react';
 import { api } from '../api/client.js';
 import { ImageWithBoxes } from './ImageWithBoxes.js';
+import { FitModeToggle, useFitMode } from './FitModeToggle.js';
+import { useSyncedScroll } from './useSyncedScroll.js';
 import { RecapturePairButton } from './RecapturePairButton.js';
 import { StatusPill } from './StatusPill.js';
 import { isAtLeastAsStrict } from '@visual-compare/api/constants/equivalence';
@@ -73,6 +75,8 @@ export function ComparisonDetail({
   const [error, setError] = useState<string | null>(null);
   const [showBoxes, setShowBoxes] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('diff');
+  const [fitMode, setFitMode] = useFitMode();
+  const splitSync = useSyncedScroll(2);
   const [refreshTick, setRefreshTick] = useState(0);
   const [recapturing, setRecapturing] = useState(false);
 
@@ -247,22 +251,25 @@ export function ComparisonDetail({
         />
       )}
 
-      <div className="detail-tabs" role="tablist">
-        {VIEW_MODES.map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            role="tab"
-            aria-selected={viewMode === m.id}
-            className={`tab ${viewMode === m.id ? 'active' : ''}`}
-            onClick={() => setViewMode(m.id)}
-          >
-            {m.label}
-          </button>
-        ))}
+      <div className="detail-tabs-row">
+        <div className="detail-tabs" role="tablist">
+          {VIEW_MODES.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              role="tab"
+              aria-selected={viewMode === m.id}
+              className={`tab ${viewMode === m.id ? 'active' : ''}`}
+              onClick={() => setViewMode(m.id)}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <FitModeToggle mode={fitMode} onChange={setFitMode} />
       </div>
 
-      <div className={`detail-frame mode-${viewMode}`}>
+      <div className={`detail-frame mode-${viewMode} fit-${fitMode}`}>
         {viewMode === 'diff' && (
           <Pane label="Diff" src={c.im_diff_url} alt="diff" boxes={boxes} />
         )}
@@ -274,8 +281,22 @@ export function ComparisonDetail({
         )}
         {viewMode === 'split' && (
           <>
-            <Pane label="A" src={capture_a.screenshot_url} alt="A" boxes={boxes} />
-            <Pane label="B" src={capture_b.screenshot_url} alt="B" boxes={boxes} />
+            <Pane
+              label="A"
+              src={capture_a.screenshot_url}
+              alt="A"
+              boxes={boxes}
+              paneRef={splitSync.refs[0]}
+              onScroll={splitSync.onScroll}
+            />
+            <Pane
+              label="B"
+              src={capture_b.screenshot_url}
+              alt="B"
+              boxes={boxes}
+              paneRef={splitSync.refs[1]}
+              onScroll={splitSync.onScroll}
+            />
           </>
         )}
       </div>
@@ -309,14 +330,18 @@ function Pane({
   src,
   alt,
   boxes,
+  paneRef,
+  onScroll,
 }: {
   label: string;
   src: string | null;
   alt: string;
   boxes: BoundingBoxPercent[];
+  paneRef?: (el: HTMLElement | null) => void;
+  onScroll?: (e: UIEvent<HTMLElement>) => void;
 }): JSX.Element {
   return (
-    <div className="panel">
+    <div className="panel" ref={paneRef} onScroll={onScroll}>
       <header>{label}</header>
       {src ? (
         <ImageWithBoxes src={src} alt={alt} boxes={boxes} />
