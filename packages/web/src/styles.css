@@ -1193,6 +1193,14 @@ ul.diff-list li {
 }
 .cluster-category-tabs {
   font-size: 13px;
+  /* Seven category tabs (Header/Main/Banners/Footer/Anomalies/Missing & Failed/Untagged)
+     won't always fit on one row at narrower viewports — wrap to a second
+     line rather than overflow. row-gap matches the pill padding so the
+     wrapped row sits visually separate without crowding. */
+  flex-wrap: wrap;
+  row-gap: 4px;
+  width: auto;
+  max-width: 100%;
 }
 .cluster-category-tabs__count {
   color: #6c7280;
@@ -2434,6 +2442,21 @@ kbd {
 }
 .cluster-row__sigv--v0 { color: #aab1bd; }
 .cluster-row__sigv--v1 { color: #b3f5c5; background: #14532d; }
+
+/* Viewport badge replaces the sigv pill on synthetic outcome clusters —
+   it's what differentiates otherwise-identical "Capture failed" rows
+   (mobile vs desktop). Same pill geometry as sigv, distinct hue (cool
+   blue) so it doesn't read as a v1 sigv at a glance. */
+.cluster-row__viewport {
+  background: #1e293b;
+  color: #cbd5e1;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
 
 .cluster-row__pairs {
   margin-left: auto;

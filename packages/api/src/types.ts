@@ -360,6 +360,14 @@ export interface AcceptanceRuleRow {
 // ---------------------------------------------------------------------------
 
 export interface ClusterSummaryDto extends DifferenceClusterRow {
+  /**
+   * Outcome bucket the cluster represents. Materialised clusters always
+   * carry 'both_present' (the comparison pipeline short-circuits before
+   * writing differences when either side is missing or capture failed).
+   * Synthetic clusters surfaced for the Outcome filter use the matching
+   * outcome value — see `routes/clusters.ts:synthesizeOutcomeClusters`.
+   */
+  pair_outcome: PairOutcome | 'capture_failed';
   /** Sample diff for rendering the cluster card. */
   sample: {
     description: string;

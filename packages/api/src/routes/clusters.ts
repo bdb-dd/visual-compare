@@ -17,6 +17,10 @@ import {
   revokeCategory,
   rejectCluster,
 } from '../services/acceptance-rules.js';
+import { getSessionConfig } from '../services/sessions.js';
+import { captureOptsHashFor } from '../services/capture-opts-hash.js';
+import { captureRunOptionsSchema, type CaptureRunOptionsParsed } from '../services/capture.js';
+import type { SessionConfig } from '../types.js';
 import type {
   ClusterDetailDto,
   ClusterListDto,
@@ -25,6 +29,7 @@ import type {
   ClusterReviewState,
   ClusterSummaryDto,
   DifferenceClusterRow,
+  PairOutcome,
 } from '../types.js';
 
 /**
@@ -69,11 +74,21 @@ export function clustersRouter(db: Db): Router {
     const distribution = stateDistribution(db, sessionId);
     const total = Object.values(distribution).reduce((acc, n) => acc + n, 0);
 
+    // Synthetic outcome-bucket clusters surface missing-page + capture-
+    // failed comparisons as cluster-like entries so the Outcome filter has
+    // something to bite on in clusters mode. These are derived per
+    // request, never persisted in `difference_clusters`. They're treated
+    // as `review_state = 'open'` for now (no acceptance flow yet), so
+    // the `accepted` / `rejected` review-state filters skip them.
+    const synthetic = filter && filter !== 'open'
+      ? []
+      : synthesizeOutcomeClusters(db, sessionId);
+
     const dto: ClusterListDto = {
       session_id: sessionId,
       total,
       by_review_state: distribution,
-      clusters: clusters.map((c) => withSample(db, c)),
+      clusters: [...clusters.map((c) => withSample(db, c)), ...synthetic],
     };
     res.json(dto);
   });
@@ -84,6 +99,18 @@ export function clustersRouter(db: Db): Router {
     const clusterId = (req.params as { cluster_id?: string }).cluster_id;
     if (!sessionId || !clusterId) {
       res.status(400).json({ error: 'invalid_request' });
+      return;
+    }
+    // Synthetic outcome-bucket clusters never hit difference_clusters —
+    // their id is parseable (`outcome:<viewport>:<bucket>`) and they're
+    // rebuilt from comparisons on the fly.
+    if (clusterId.startsWith('outcome:')) {
+      const synth = buildOutcomeClusterDetail(db, sessionId, clusterId);
+      if (!synth) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      res.json(synth);
       return;
     }
     const cluster = getCluster(db, sessionId, clusterId);
@@ -142,6 +169,13 @@ export function clustersRouter(db: Db): Router {
       res.status(400).json({ error: 'invalid_request' });
       return;
     }
+    if (clusterId.startsWith('outcome:')) {
+      res.status(409).json({
+        error: 'synthetic_cluster',
+        message: 'Outcome buckets are read-only — accept individual rows from the Rows view.',
+      });
+      return;
+    }
     const body = acceptBodySchema.safeParse(req.body ?? {});
     if (!body.success) {
       res.status(400).json({ error: 'invalid_body', detail: body.error.flatten() });
@@ -177,6 +211,13 @@ export function clustersRouter(db: Db): Router {
     const clusterId = (req.params as { cluster_id?: string }).cluster_id;
     if (!sessionId || !clusterId) {
       res.status(400).json({ error: 'invalid_request' });
+      return;
+    }
+    if (clusterId.startsWith('outcome:')) {
+      res.status(409).json({
+        error: 'synthetic_cluster',
+        message: 'Outcome buckets are read-only — handle individual rows from the Rows view.',
+      });
       return;
     }
     const body = rejectBodySchema.safeParse(req.body ?? {});
@@ -217,6 +258,13 @@ export function clustersRouter(db: Db): Router {
     const clusterId = (req.params as { cluster_id?: string }).cluster_id;
     if (!sessionId || !clusterId) {
       res.status(400).json({ error: 'invalid_request' });
+      return;
+    }
+    if (clusterId.startsWith('outcome:')) {
+      res.status(409).json({
+        error: 'synthetic_cluster',
+        message: 'Outcome buckets cannot be split.',
+      });
       return;
     }
     const body = splitBodySchema.safeParse(req.body ?? {});
@@ -375,7 +423,7 @@ function representativeFor(db: Db, cluster: DifferenceClusterRow): ClusterRepres
 
 function withSample(db: Db, cluster: DifferenceClusterRow): ClusterSummaryDto {
   if (!cluster.representative_difference_id) {
-    return { ...cluster, sample: null };
+    return { ...cluster, pair_outcome: 'both_present', sample: null };
   }
   const row = db
     .prepare<[string], {
@@ -396,7 +444,7 @@ function withSample(db: Db, cluster: DifferenceClusterRow): ClusterSummaryDto {
         WHERE d.id = ?`,
     )
     .get(cluster.representative_difference_id);
-  return { ...cluster, sample: row ?? null };
+  return { ...cluster, pair_outcome: 'both_present', sample: row ?? null };
 }
 
 function stateDistribution(db: Db, sessionId: string): Record<ClusterReviewState, number> {
@@ -443,4 +491,319 @@ function parseBbox(json: string | null): { x: number; y: number; width: number; 
     }
   } catch { /* fall through */ }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic outcome-bucket clusters.
+//
+// Comparisons short-circuit before writing `differences` rows when either
+// side is flagged as missing (capture.is_missing=1 → pair_outcome != both_present),
+// and capture failures never produce a comparison at all. That leaves the
+// Clusters view blind to those rows — even though the Rows view counts
+// them under its Outcome filter. We synthesize one cluster-like entry per
+// (viewport, bucket) so the same Outcome filter chips work in clusters
+// mode. These are read-only — accept/reject is row-level, handled from
+// the Rows view.
+// ---------------------------------------------------------------------------
+
+type OutcomeBucket = Exclude<PairOutcome, 'both_present'> | 'capture_failed';
+
+const OUTCOME_BUCKET_LABEL: Record<OutcomeBucket, string> = {
+  a_missing: 'Missing on A',
+  b_missing: 'Missing on B',
+  both_missing: 'Missing on both',
+  capture_failed: 'Capture failed',
+};
+
+/**
+ * Resolve the session's capture options against the schema defaults so
+ * `captureOptsHashFor` (which expects a fully-shaped `CaptureRunOptionsParsed`)
+ * has all required fields. Mirrors `resolveEvaluationConfig`'s merge.
+ */
+function resolveSessionCaptureOptions(config: SessionConfig): CaptureRunOptionsParsed {
+  return captureRunOptionsSchema.parse({
+    ...(config.default_capture_options ?? {}),
+    viewports: config.default_viewports ?? [],
+  });
+}
+
+function synthesizeOutcomeClusters(db: Db, sessionId: string): ClusterSummaryDto[] {
+  // Mirror the Rows view: pair_outcome is derived from the *latest
+  // capture per (url, viewport)*, not from comparisons. Comparisons may
+  // be stale (showing 'both_present' from before a recapture changed
+  // is_missing) or absent entirely (capture failed → no comparison row
+  // ever created). Reading captures directly keeps the synthetic
+  // clusters in sync with what Rows shows.
+  //
+  // The capture_opts_hash on capture_cache scopes the lookup to the
+  // session's current capture options — same scoping the evaluator uses
+  // in `readSessionResults`.
+  const sessionConfig = getSessionConfig(db, sessionId);
+  if (!sessionConfig) return [];
+  const viewports = sessionConfig.default_viewports ?? [];
+  if (viewports.length === 0) return [];
+  const captureOptions = resolveSessionCaptureOptions(sessionConfig);
+
+  // capture_cache(url, viewport, opts_hash) → is_missing for the live
+  // capture under the session's current opts. NULL is_missing = legacy
+  // row predating the column → treat as not missing (parity with the
+  // evaluator).
+  const cacheStmt = db.prepare<
+    [string, string, string],
+    { is_missing: number | null }
+  >(
+    `SELECT c.is_missing
+       FROM capture_cache cc
+       LEFT JOIN captures c ON c.id = cc.capture_id
+      WHERE cc.url = ? AND cc.viewport_name = ? AND cc.capture_opts_hash = ?`,
+  );
+
+  // No cache hit for the current opts means the most-recent attempt
+  // either errored, is in progress, or never ran. We mirror the Rows
+  // view's `captureStatusFor` — fall back to the latest captures row
+  // for that (session, url, viewport) and treat status='error' as
+  // capture_failed; everything else falls outside any synthetic bucket.
+  const recentCaptureStmt = db.prepare<
+    [string, string, string],
+    { status: string }
+  >(
+    `SELECT c.status
+       FROM captures c
+       JOIN capture_runs cr ON cr.id = c.capture_run_id
+      WHERE cr.session_id = ? AND c.url = ? AND c.viewport_name = ?
+      ORDER BY c.created_at DESC
+      LIMIT 1`,
+  );
+
+  const pairs = db
+    .prepare<[string], { id: string; url_a: string; url_b: string }>(
+      `SELECT id, url_a, url_b FROM url_pairs WHERE session_id = ?`,
+    )
+    .all(sessionId);
+
+  type SideState = { missing: boolean; errored: boolean };
+  const sideStateFor = (url: string, viewport: string, optsHash: string): SideState => {
+    const cached = cacheStmt.get(url, viewport, optsHash);
+    if (cached) {
+      return { missing: cached.is_missing === 1, errored: false };
+    }
+    const recent = recentCaptureStmt.get(sessionId, url, viewport);
+    return { missing: false, errored: recent?.status === 'error' };
+  };
+
+  const buckets = new Map<string, { viewport: string; bucket: OutcomeBucket; pairs: Set<string> }>();
+  for (const vp of viewports) {
+    const optsHash = captureOptsHashFor(vp, captureOptions);
+    for (const p of pairs) {
+      const a = sideStateFor(p.url_a, vp.name, optsHash);
+      const b = sideStateFor(p.url_b, vp.name, optsHash);
+      let bucket: OutcomeBucket | null = null;
+      if (a.errored || b.errored) bucket = 'capture_failed';
+      else if (a.missing && b.missing) bucket = 'both_missing';
+      else if (a.missing) bucket = 'a_missing';
+      else if (b.missing) bucket = 'b_missing';
+      if (!bucket) continue;
+      const key = `${vp.name}::${bucket}`;
+      let b2 = buckets.get(key);
+      if (!b2) {
+        b2 = { viewport: vp.name, bucket, pairs: new Set() };
+        buckets.set(key, b2);
+      }
+      b2.pairs.add(p.id);
+    }
+  }
+
+  const now = new Date().toISOString();
+  const out: ClusterSummaryDto[] = [];
+  for (const b of buckets.values()) {
+    const count = b.pairs.size;
+    out.push({
+      id: outcomeClusterId(b.viewport, b.bucket),
+      session_id: sessionId,
+      signature: `outcome:${b.bucket}`,
+      signature_version: 'outcome',
+      viewport_name: b.viewport,
+      region_role: null,
+      change_type: null,
+      element_label: OUTCOME_BUCKET_LABEL[b.bucket],
+      representative_difference_id: null,
+      member_count: count,
+      pair_count: count,
+      review_state: 'open',
+      review_notes: null,
+      reviewed_at: null,
+      created_at: now,
+      updated_at: now,
+      pair_outcome: b.bucket,
+      sample: null,
+    });
+  }
+  // Sort by count desc, then viewport, then bucket — bigger leverage first.
+  out.sort((a, b) =>
+    b.pair_count - a.pair_count
+      || (a.viewport_name ?? '').localeCompare(b.viewport_name ?? '')
+      || (a.element_label ?? '').localeCompare(b.element_label ?? ''),
+  );
+  return out;
+}
+
+function outcomeClusterId(viewport: string, bucket: OutcomeBucket): string {
+  return `outcome:${viewport}:${bucket}`;
+}
+
+function parseOutcomeClusterId(id: string): { viewport: string; bucket: OutcomeBucket } | null {
+  const parts = id.split(':');
+  if (parts.length !== 3 || parts[0] !== 'outcome') return null;
+  const [, viewport, bucket] = parts;
+  if (!viewport || !bucket) return null;
+  if (
+    bucket !== 'a_missing' &&
+    bucket !== 'b_missing' &&
+    bucket !== 'both_missing' &&
+    bucket !== 'capture_failed'
+  ) {
+    return null;
+  }
+  return { viewport, bucket };
+}
+
+function buildOutcomeClusterDetail(
+  db: Db,
+  sessionId: string,
+  clusterId: string,
+): ClusterDetailDto | null {
+  const parsed = parseOutcomeClusterId(clusterId);
+  if (!parsed) return null;
+
+  // Same capture-derived logic as synthesizeOutcomeClusters — see the
+  // comment there for why we read from capture_cache + captures rather
+  // than from comparisons.
+  const sessionConfig = getSessionConfig(db, sessionId);
+  if (!sessionConfig) return null;
+  const vp = (sessionConfig.default_viewports ?? []).find((v) => v.name === parsed.viewport);
+  if (!vp) return null;
+  const captureOptions = resolveSessionCaptureOptions(sessionConfig);
+  const optsHash = captureOptsHashFor(vp, captureOptions);
+
+  // capture_cache returns the screenshot sha + is_missing flag; captures
+  // table is the fallback for the errored-capture case so we can still
+  // show "what was attempted" in the detail panel.
+  const cacheStmt = db.prepare<
+    [string, string, string],
+    { screenshot_sha256: string; is_missing: number | null }
+  >(
+    `SELECT cc.screenshot_sha256, c.is_missing
+       FROM capture_cache cc
+       LEFT JOIN captures c ON c.id = cc.capture_id
+      WHERE cc.url = ? AND cc.viewport_name = ? AND cc.capture_opts_hash = ?`,
+  );
+  const recentCaptureStmt = db.prepare<
+    [string, string, string],
+    { status: string; screenshot_sha256: string | null }
+  >(
+    `SELECT c.status, c.screenshot_sha256
+       FROM captures c
+       JOIN capture_runs cr ON cr.id = c.capture_run_id
+      WHERE cr.session_id = ? AND c.url = ? AND c.viewport_name = ?
+      ORDER BY c.created_at DESC
+      LIMIT 1`,
+  );
+  // Comparison id is convenient for the per-member "open this row in
+  // ComparisonDetail" link — best-effort, since comparisons may not
+  // exist for capture-failed pairs.
+  const comparisonStmt = db.prepare<
+    [string, string],
+    { id: string }
+  >(
+    `SELECT id FROM comparisons
+      WHERE url_pair_id = ? AND viewport_name = ?
+      ORDER BY created_at DESC
+      LIMIT 1`,
+  );
+
+  const pairs = db
+    .prepare<[string], { id: string; url_a: string; url_b: string }>(
+      `SELECT id, url_a, url_b FROM url_pairs WHERE session_id = ? ORDER BY url_a`,
+    )
+    .all(sessionId);
+
+  type SideState = { missing: boolean; errored: boolean; sha: string | null };
+  const sideStateFor = (url: string): SideState => {
+    const cached = cacheStmt.get(url, parsed.viewport, optsHash);
+    if (cached) {
+      return {
+        missing: cached.is_missing === 1,
+        errored: false,
+        sha: cached.screenshot_sha256,
+      };
+    }
+    const recent = recentCaptureStmt.get(sessionId, url, parsed.viewport);
+    return {
+      missing: false,
+      errored: recent?.status === 'error',
+      sha: recent?.screenshot_sha256 ?? null,
+    };
+  };
+
+  const members: ClusterMemberDto[] = [];
+  for (const p of pairs) {
+    const a = sideStateFor(p.url_a);
+    const b = sideStateFor(p.url_b);
+    let bucket: OutcomeBucket | null = null;
+    if (a.errored || b.errored) bucket = 'capture_failed';
+    else if (a.missing && b.missing) bucket = 'both_missing';
+    else if (a.missing) bucket = 'a_missing';
+    else if (b.missing) bucket = 'b_missing';
+    if (bucket !== parsed.bucket) continue;
+    const comparison = comparisonStmt.get(p.id, parsed.viewport);
+    // Synthetic difference id — no real differences row exists.
+    // url_pair_id + viewport is enough to keep it unique within the
+    // cluster.
+    const syntheticDifferenceId = `outcome-member:${p.id}:${parsed.viewport}`;
+    members.push({
+      difference_id: syntheticDifferenceId,
+      comparison_id: comparison?.id ?? '',
+      url_pair_id: p.id,
+      viewport_name: parsed.viewport,
+      url_a: p.url_a,
+      url_b: p.url_b,
+      description: OUTCOME_BUCKET_LABEL[parsed.bucket],
+      severity: null,
+      bounding_box: null,
+      capture_a_sha: a.sha,
+      capture_b_sha: b.sha,
+      im_diff_sha: null,
+      ssim: null,
+      changed_pct: null,
+      lm_summary: null,
+      lm_confidence: null,
+    });
+  }
+
+  const count = members.length;
+  if (count === 0) return null;
+  const now = new Date().toISOString();
+  const clusterRow: DifferenceClusterRow = {
+    id: clusterId,
+    session_id: sessionId,
+    signature: `outcome:${parsed.bucket}`,
+    signature_version: 'outcome',
+    viewport_name: parsed.viewport,
+    region_role: null,
+    change_type: null,
+    element_label: OUTCOME_BUCKET_LABEL[parsed.bucket],
+    representative_difference_id: members[0]?.difference_id ?? null,
+    member_count: count,
+    pair_count: count,
+    review_state: 'open',
+    review_notes: null,
+    reviewed_at: null,
+    created_at: now,
+    updated_at: now,
+  };
+  return {
+    cluster: clusterRow,
+    representative: members[0] ?? null,
+    members,
+  };
 }

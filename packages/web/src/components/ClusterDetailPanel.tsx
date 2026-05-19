@@ -413,6 +413,14 @@ export function ClusterDetailPanel({
   const displayedBbox = displayed?.bounding_box ?? null;
   const displayedDescription = displayed?.description ?? '';
   const isRepDisplayed = displayed?.difference_id === representative?.difference_id;
+  // Synthetic outcome-bucket clusters (Missing on A/B, Capture failed) are
+  // read-only here — accept/reject lives at the row level. Visual diff
+  // also doesn't exist for these (the comparison short-circuited), so the
+  // image triple's diff panel just renders "no diff". A/B panels still
+  // work since the captures themselves succeeded for the missing-page
+  // case (one side just rendered as a 404).
+  const isSyntheticOutcome = cluster.signature_version === 'outcome';
+  const syntheticReadOnlyTitle = 'Outcome buckets are read-only — accept/reject these rows from the Rows view.';
 
   return (
     <>
@@ -449,8 +457,14 @@ export function ClusterDetailPanel({
             type="button"
             className="btn"
             onClick={() => setDialog('accept')}
-            disabled={cluster.review_state === 'accepted' || actionBusy}
-            title={cluster.review_state === 'accepted' ? 'Already accepted — reject first to re-accept' : 'Accept this cluster: snapshot every member pair as accepted'}
+            disabled={cluster.review_state === 'accepted' || actionBusy || isSyntheticOutcome}
+            title={
+              isSyntheticOutcome
+                ? syntheticReadOnlyTitle
+                : cluster.review_state === 'accepted'
+                  ? 'Already accepted — reject first to re-accept'
+                  : 'Accept this cluster: snapshot every member pair as accepted'
+            }
           >
             Accept cluster
           </button>
@@ -461,16 +475,19 @@ export function ClusterDetailPanel({
             disabled={
               cluster.review_state === 'rejected' ||
               cluster.review_state === 'split' ||
-              actionBusy
+              actionBusy ||
+              isSyntheticOutcome
             }
             title={
-              cluster.review_state === 'rejected'
-                ? 'Already rejected'
-                : cluster.review_state === 'split'
-                  ? 'Split clusters cannot be rejected'
-                  : cluster.review_state === 'accepted'
-                    ? 'Reject this cluster: delete its rule-owned acceptances and flip state to rejected'
-                    : 'Reject this cluster'
+              isSyntheticOutcome
+                ? syntheticReadOnlyTitle
+                : cluster.review_state === 'rejected'
+                  ? 'Already rejected'
+                  : cluster.review_state === 'split'
+                    ? 'Split clusters cannot be rejected'
+                    : cluster.review_state === 'accepted'
+                      ? 'Reject this cluster: delete its rule-owned acceptances and flip state to rejected'
+                      : 'Reject this cluster'
             }
           >
             Reject
@@ -482,14 +499,17 @@ export function ClusterDetailPanel({
             disabled={
               members.length < 2 ||
               cluster.review_state === 'split' ||
-              actionBusy
+              actionBusy ||
+              isSyntheticOutcome
             }
             title={
-              members.length < 2
-                ? 'Need at least 2 members to split'
-                : cluster.review_state === 'split'
-                  ? 'Already a split cluster'
-                  : 'Extract some members into a new cluster'
+              isSyntheticOutcome
+                ? syntheticReadOnlyTitle
+                : members.length < 2
+                  ? 'Need at least 2 members to split'
+                  : cluster.review_state === 'split'
+                    ? 'Already a split cluster'
+                    : 'Extract some members into a new cluster'
             }
           >
             Split cluster
@@ -608,11 +628,13 @@ export function ClusterDetailPanel({
                   type="button"
                   className="btn btn-compact"
                   onClick={() => setDialog('accept-member')}
-                  disabled={actionBusy || cluster.review_state === 'accepted'}
+                  disabled={actionBusy || cluster.review_state === 'accepted' || isSyntheticOutcome}
                   title={
-                    cluster.review_state === 'accepted'
-                      ? 'Cluster is already accepted — the rule covers this member'
-                      : 'Accept only this member. Doesn’t create a cluster rule or change cluster state.'
+                    isSyntheticOutcome
+                      ? 'Missing / capture-failed pairs have no comparison verdict to accept — fix the underlying capture, then accept from the Rows view.'
+                      : cluster.review_state === 'accepted'
+                        ? 'Cluster is already accepted — the rule covers this member'
+                        : 'Accept only this member. Doesn’t create a cluster rule or change cluster state.'
                   }
                 >
                   Accept this member…

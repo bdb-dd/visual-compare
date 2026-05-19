@@ -4,6 +4,7 @@ import { api } from '../api/client.js';
 import {
   statusToClusterReviewState,
   type FilterState,
+  type Outcome,
 } from '../api/filterState.js';
 import type {
   AcceptanceRow,
@@ -30,7 +31,7 @@ import type {
  * review's semantic intent.
  */
 
-type CategoryKey = 'header_nav' | 'main' | 'banners' | 'footer_aside' | 'anomalies' | 'untagged';
+type CategoryKey = 'header_nav' | 'main' | 'banners' | 'footer_aside' | 'anomalies' | 'untagged' | 'outcomes';
 
 interface Category {
   key: CategoryKey;
@@ -47,8 +48,9 @@ const CATEGORIES: Category[] = [
 
 /**
  * Display order for the category tab strip. `anomalies` and `untagged`
- * tail the regular roles. Tab labels are slightly shorter than the
- * section headings to keep the strip from wrapping on narrower viewports.
+ * tail the regular roles. `outcomes` is a separate bucket for synthetic
+ * missing-page / capture-failed entries (signature_version='outcome'),
+ * surfaced so the Outcome filter has somewhere to land in clusters mode.
  */
 const CATEGORY_TABS: { key: CategoryKey; label: string; sectionTitle: string; note?: string }[] = [
   { key: 'header_nav',   label: 'Header & Nav',     sectionTitle: 'Header & Navigation' },
@@ -56,11 +58,14 @@ const CATEGORY_TABS: { key: CategoryKey; label: string; sectionTitle: string; no
   { key: 'banners',      label: 'Banners',          sectionTitle: 'Banners & Overlays' },
   { key: 'footer_aside', label: 'Footer & Aside',   sectionTitle: 'Footer & Aside' },
   { key: 'anomalies',    label: 'Anomalies',        sectionTitle: 'Anomalies (singleton clusters)' },
+  { key: 'outcomes',     label: 'Missing & Failed', sectionTitle: 'Missing & Capture-failed pairs',
+    note: 'Synthetic buckets for pairs whose comparison was skipped because one side rendered as a 404/soft-404 (Missing on A/B/both) or the capture itself errored. Accept/reject these from the Rows view — they’re read-only here.' },
   { key: 'untagged',     label: 'Untagged',         sectionTitle: 'Untagged (v0 fallback)',
     note: 'These come from the v0 geometric signature — imagick rows and v2-era LM responses that pre-date the v3 prompt. Will reduce after re-evaluation under v3.' },
 ];
 
 function categoryFor(cluster: ClusterSummaryDto): CategoryKey {
+  if (cluster.signature_version === 'outcome') return 'outcomes';
   if (cluster.pair_count === 1) return 'anomalies';
   if (!cluster.region_role) return 'untagged';
   for (const c of CATEGORIES) {
@@ -68,6 +73,18 @@ function categoryFor(cluster: ClusterSummaryDto): CategoryKey {
   }
   return 'untagged';
 }
+
+/**
+ * Maps the FilterState `Outcome` chip values to the API's pair_outcome
+ * values. Used to filter clusters by their representative outcome bucket.
+ */
+const OUTCOME_TO_PAIR_OUTCOME: Record<Outcome, ClusterSummaryDto['pair_outcome']> = {
+  'present': 'both_present',
+  'a-missing': 'a_missing',
+  'b-missing': 'b_missing',
+  'both-missing': 'both_missing',
+  'capture-failed': 'capture_failed',
+};
 
 export interface ClustersTabProps {
   sessionId: string;
@@ -159,24 +176,47 @@ export function ClustersTab({
 
   useEffect(() => { void load(); }, [sessionId, reviewStateParam, refreshTick]);
 
-  // Apply region + change-type in-memory. (Status is server-filtered via
-  // reviewStateParam above.) Cluster lists are small enough that this
-  // doesn't need memoised slicing structures; a plain filter walk is fine.
+  // Apply region + change-type + viewport + outcome in-memory. (Status
+  // is server-filtered via reviewStateParam above.) Cluster lists are
+  // small enough that this doesn't need memoised slicing structures; a
+  // plain filter walk is fine. Viewport filter matches the cluster's
+  // representative viewport_name — clusters rarely span viewports in
+  // practice because signatures encode layout that differs per viewport.
+  //
+  // Outcome filter compares against cluster.pair_outcome — `'both_present'`
+  // for materialised clusters; the bucket value for synthetic outcome
+  // clusters. region/change filters DO NOT apply to synthetic clusters
+  // (they have no region_role / change_type) — applying them would
+  // silently drop the Missing & Failed tab whenever the user narrows
+  // regions, which is confusing. We let them through unconditionally.
   const filteredClusters = useMemo(() => {
     if (!data) return [] as ClusterSummaryDto[];
     let out = data.clusters;
     if (filter.regions.length > 0) {
-      out = out.filter((c) => c.region_role !== null && filter.regions.includes(c.region_role));
+      out = out.filter((c) =>
+        c.signature_version === 'outcome'
+        || (c.region_role !== null && filter.regions.includes(c.region_role)),
+      );
     }
     if (filter.changes.length > 0) {
-      out = out.filter((c) => c.change_type !== null && filter.changes.includes(c.change_type));
+      out = out.filter((c) =>
+        c.signature_version === 'outcome'
+        || (c.change_type !== null && filter.changes.includes(c.change_type)),
+      );
+    }
+    if (filter.viewports.length > 0) {
+      out = out.filter((c) => c.viewport_name !== null && filter.viewports.includes(c.viewport_name));
+    }
+    if (filter.outcomes.length > 0) {
+      const allowed = new Set(filter.outcomes.map((o) => OUTCOME_TO_PAIR_OUTCOME[o]));
+      out = out.filter((c) => allowed.has(c.pair_outcome));
     }
     return out;
-  }, [data, filter.regions, filter.changes]);
+  }, [data, filter.regions, filter.changes, filter.viewports, filter.outcomes]);
 
   const grouped = useMemo(() => {
     const buckets: Record<CategoryKey, ClusterSummaryDto[]> = {
-      header_nav: [], main: [], banners: [], footer_aside: [], anomalies: [], untagged: [],
+      header_nav: [], main: [], banners: [], footer_aside: [], anomalies: [], outcomes: [], untagged: [],
     };
     for (const c of filteredClusters) buckets[categoryFor(c)].push(c);
     return buckets;
@@ -448,9 +488,20 @@ function CategoryGroup({
                 <div className="cluster-row__primary">
                   <span className="cluster-row__label">{c.element_label ?? '(unlabelled)'}</span>
                   <span className="cluster-row__change-type">{c.change_type ?? '—'}</span>
-                  <span className={`cluster-row__sigv cluster-row__sigv--${c.signature_version}`}>
-                    {c.signature_version}
-                  </span>
+                  {/* Synthetic outcome clusters surface viewport in the
+                      badge slot — the "outcome" sigv is uninformative
+                      and identical across the section, while viewport
+                      (mobile vs desktop) is what differentiates
+                      otherwise-identical rows. */}
+                  {c.signature_version === 'outcome' ? (
+                    <span className="cluster-row__viewport">
+                      {c.viewport_name ?? '—'}
+                    </span>
+                  ) : (
+                    <span className={`cluster-row__sigv cluster-row__sigv--${c.signature_version}`}>
+                      {c.signature_version}
+                    </span>
+                  )}
                   <span className={`cluster-row__state cluster-row__state--${c.review_state}`}>
                     {c.review_state}
                   </span>

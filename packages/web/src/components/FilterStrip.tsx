@@ -240,20 +240,18 @@ export function FilterStrip({ mode, state, onChange, counts, viewportOptions, se
         </>
       )}
 
-      {(mode === 'rows' || mode === 'anomalies') && (
-        <Zone label="Outcome">
-          {OUTCOME_CHIPS.map((c) => (
-            <Chip
-              key={c.value}
-              active={state.outcomes.includes(c.value)}
-              onClick={() => toggleOutcome(c.value)}
-              count={counts?.[`outcome:${c.value}`]}
-            >
-              {c.label}
-            </Chip>
-          ))}
-        </Zone>
-      )}
+      <Zone label="Outcome">
+        {OUTCOME_CHIPS.map((c) => (
+          <Chip
+            key={c.value}
+            active={state.outcomes.includes(c.value)}
+            onClick={() => toggleOutcome(c.value)}
+            count={counts?.[`outcome:${c.value}`]}
+          >
+            {c.label}
+          </Chip>
+        ))}
+      </Zone>
       </div>
     </details>
   );
@@ -278,7 +276,7 @@ function summarize(state: FilterState, mode: Mode): string {
   if (state.changes.length > 0 && mode === 'clusters') {
     parts.push(`Change: ${state.changes.join(', ')}`);
   }
-  if (state.outcomes.length > 0 && (mode === 'rows' || mode === 'anomalies')) {
+  if (state.outcomes.length > 0) {
     parts.push(`Outcome: ${state.outcomes.join(', ')}`);
   }
   return parts.join(' · ');
