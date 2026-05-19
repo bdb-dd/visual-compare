@@ -181,6 +181,7 @@ function rowMatchesFilter(
   if (!rowMatchesStatus(r, filter, targetLevel)) return false;
   if (!outcomeMatches(filter.outcomes, r)) return false;
   if (!levelMatches(filter.levels, r.matched_at_level, r.pair_outcome)) return false;
+  if (filter.viewports.length > 0 && !filter.viewports.includes(r.viewport_name)) return false;
   return true;
 }
 

@@ -34,6 +34,13 @@ export interface FilterStripProps {
   /** Optional badge counts per chip. Keys like `status:accepted`, `level:tolerant`. */
   counts?: Record<string, number>;
   /**
+   * Viewport names available for filtering. Typically the session's
+   * `default_viewports`, falling back to the system viewports. The Zone
+   * is hidden when this is empty or has a single option (nothing to
+   * filter against).
+   */
+  viewportOptions?: string[];
+  /**
    * Used as the localStorage key suffix so the collapse state is
    * remembered per session. When omitted, the strip falls back to a
    * shared key — fine for surfaces that only host one strip.
@@ -88,7 +95,7 @@ function statusApplicable(status: Status, mode: Mode): true | string {
   return true;
 }
 
-export function FilterStrip({ mode, state, onChange, counts, sessionId }: FilterStripProps): JSX.Element {
+export function FilterStrip({ mode, state, onChange, counts, viewportOptions, sessionId }: FilterStripProps): JSX.Element {
   const storageKey = `vc.filterStrip.open.${sessionId ?? '_'}`;
   const [open, setOpen] = useState<boolean>(() => {
     try {
@@ -126,6 +133,13 @@ export function FilterStrip({ mode, state, onChange, counts, sessionId }: Filter
       ? state.changes.filter((x) => x !== c)
       : [...state.changes, c].sort();
     onChange({ ...state, changes: next });
+  };
+
+  const toggleViewport = (v: string) => {
+    const next = state.viewports.includes(v)
+      ? state.viewports.filter((x) => x !== v)
+      : [...state.viewports, v].sort();
+    onChange({ ...state, viewports: next });
   };
 
   const toggleOutcome = (o: Outcome) => {
@@ -166,6 +180,21 @@ export function FilterStrip({ mode, state, onChange, counts, sessionId }: Filter
           );
         })}
       </Zone>
+
+      {viewportOptions && viewportOptions.length > 1 && (
+        <Zone label="Viewport">
+          {viewportOptions.map((v) => (
+            <Chip
+              key={v}
+              active={state.viewports.includes(v)}
+              onClick={() => toggleViewport(v)}
+              count={counts?.[`viewport:${v}`]}
+            >
+              {v}
+            </Chip>
+          ))}
+        </Zone>
+      )}
 
       {(mode === 'rows' || mode === 'anomalies') && (
         <Zone label="Level">
@@ -237,6 +266,9 @@ export function FilterStrip({ mode, state, onChange, counts, sessionId }: Filter
  */
 function summarize(state: FilterState, mode: Mode): string {
   const parts: string[] = [`Status: ${state.status.replace('_', ' ')}`];
+  if (state.viewports.length > 0) {
+    parts.push(`Viewport: ${state.viewports.join(', ')}`);
+  }
   if (state.levels.length > 0 && (mode === 'rows' || mode === 'anomalies')) {
     parts.push(`Level: ${state.levels.join(', ')}`);
   }

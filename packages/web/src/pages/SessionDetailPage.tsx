@@ -741,6 +741,11 @@ export function SessionDetailPage(): JSX.Element {
           mode={mode}
           state={filterState}
           onChange={setFilterState}
+          viewportOptions={
+            (config?.default_viewports.length ?? 0) > 0
+              ? config!.default_viewports.map((v) => v.name)
+              : viewports.map((v) => v.name)
+          }
           sessionId={session.id}
         />
       )}

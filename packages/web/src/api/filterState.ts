@@ -12,10 +12,11 @@ import type { ClusterReviewState, MatchedAtLevel, PairOutcome, SessionResultRow 
  *   ?level=tolerant,loose              (comma-separated multi-select)
  *   ?region=nav_primary,...            (comma-separated multi-select)
  *   ?change=text_changed,...           (comma-separated multi-select)
+ *   ?viewport=mobile,desktop           (comma-separated multi-select)
  *   ?outcome=present,capture-failed    (comma-separated multi-select)
  *
  * Default state (= what /sessions/:id renders without query string):
- *   { status: 'needs_review', levels: [], regions: [], changes: [], outcomes: ['present'] }
+ *   { status: 'needs_review', levels: [], regions: [], changes: [], viewports: [], outcomes: ['present'] }
  */
 
 export type Status = 'all' | 'needs_review' | 'accepted' | 'rejected' | 'regressed' | 'expanded';
@@ -34,6 +35,8 @@ export interface FilterState {
   regions: string[];
   /** Empty array = no change_type filter. */
   changes: string[];
+  /** Empty array = no viewport filter. Selected values OR'd. */
+  viewports: string[];
   /** Empty array = no outcome filter (all rows match). Selected values OR'd. */
   outcomes: Outcome[];
 }
@@ -43,6 +46,7 @@ export const DEFAULT_FILTER_STATE: FilterState = {
   levels: [],
   regions: [],
   changes: [],
+  viewports: [],
   outcomes: ['present'],
 };
 
@@ -83,6 +87,7 @@ export function parseFilterState(searchParams: URLSearchParams): FilterState {
     levels: parseSet(searchParams.get('level'), LEVEL_VALUES),
     regions: parseFreeSet(searchParams.get('region')),
     changes: parseFreeSet(searchParams.get('change')),
+    viewports: parseFreeSet(searchParams.get('viewport')),
     outcomes,
   };
 }
@@ -100,6 +105,8 @@ export function applyFilterStateToParams(state: FilterState, sp: URLSearchParams
   else sp.delete('region');
   if (state.changes.length > 0) sp.set('change', state.changes.join(','));
   else sp.delete('change');
+  if (state.viewports.length > 0) sp.set('viewport', state.viewports.join(','));
+  else sp.delete('viewport');
   const defaultOutcomes = DEFAULT_FILTER_STATE.outcomes.join(',');
   const currentOutcomes = state.outcomes.join(',');
   if (currentOutcomes !== defaultOutcomes) {

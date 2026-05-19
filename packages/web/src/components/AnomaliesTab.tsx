@@ -85,16 +85,18 @@ export function AnomaliesTab({
 
   const anomalies = useMemo(() => {
     if (!data) return [] as ClusterSummaryDto[];
-    return [...data.clusters]
-      .filter((c) => c.pair_count === 1)
-      .sort((a, b) => {
-        const sevDiff = severityRank(b.sample?.severity) - severityRank(a.sample?.severity);
-        if (sevDiff !== 0) return sevDiff;
-        const reg = (a.region_role ?? '').localeCompare(b.region_role ?? '');
-        if (reg !== 0) return reg;
-        return (a.change_type ?? '').localeCompare(b.change_type ?? '');
-      });
-  }, [data]);
+    let out = data.clusters.filter((c) => c.pair_count === 1);
+    if (filter.viewports.length > 0) {
+      out = out.filter((c) => c.viewport_name !== null && filter.viewports.includes(c.viewport_name));
+    }
+    return out.sort((a, b) => {
+      const sevDiff = severityRank(b.sample?.severity) - severityRank(a.sample?.severity);
+      if (sevDiff !== 0) return sevDiff;
+      const reg = (a.region_role ?? '').localeCompare(b.region_role ?? '');
+      if (reg !== 0) return reg;
+      return (a.change_type ?? '').localeCompare(b.change_type ?? '');
+    });
+  }, [data, filter.viewports]);
 
   const byState = useMemo(() => {
     const out = { open: 0, accepted: 0, rejected: 0 };
