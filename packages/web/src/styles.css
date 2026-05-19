@@ -1442,8 +1442,12 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 8px 12px;
   border-bottom: 1px solid #23262d;
+  /* Title can grow wide; action pills must keep their hit-area, so let the
+     title shrink rather than push them off-screen. */
+  min-width: 0;
 }
 .detail-pane__kind {
   font-size: 11px;
@@ -1455,7 +1459,45 @@ kbd {
   display: flex;
   gap: 6px;
   align-items: center;
+  flex-shrink: 0;
 }
+
+/* Inline cluster title in the detail-pane chrome — replaces the old
+   eyebrow + h2 + facets stack. Label and change-type read like a heading,
+   the state pill + counts badge sit inline. */
+.cluster-chrome {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.cluster-chrome__title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #e5e7eb;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cluster-chrome__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cluster-chrome__sep { color: #6c7280; font-weight: 400; }
+.cluster-chrome__change-type {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: #aab1bd;
+  background: transparent;
+}
+.cluster-chrome__counts { font-variant-numeric: tabular-nums; }
 .detail-pane__close {
   background: transparent;
   color: #aab1bd;
@@ -1471,7 +1513,9 @@ kbd {
 }
 .detail-pane__close:hover { color: #e5e7eb; border-color: #353945; }
 .detail-pane__body {
-  padding: 12px;
+  /* Tighter top padding — the chrome border above + filmstrip frame
+     below already provide visual separation. */
+  padding: 8px 12px 12px;
   overflow-y: auto;
 }
 .detail-pane__empty {
@@ -2189,25 +2233,41 @@ kbd {
   font-size: 13px;
 }
 .clusters-page__refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: #2a2e36;
   color: #e5e7eb;
   border: 1px solid #353945;
   border-radius: 6px;
-  padding: 6px 12px;
+  padding: 4px 10px;
+  font-size: 12px;
   cursor: pointer;
 }
 .clusters-page__refresh:disabled { opacity: 0.6; cursor: progress; }
+.clusters-page__refresh-spin {
+  display: inline-block;
+  animation: clusters-refresh-spin 0.8s linear infinite;
+}
+@keyframes clusters-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+/* Cluster summary bar actions cluster (Refresh + Bulk-accept ⋯). */
+.clusters-tab__summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 
 /* Phase α: totals + refresh moved out of the page header and into a
    sub-bar inside ClustersTab so the page header can become a shell. */
 .clusters-tab__summary-bar {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   gap: 16px;
   margin: 0 0 4px;
 }
-.clusters-tab__summary-bar .clusters-page__summary { margin: 0; }
 
 .clusters-page__filters {
   display: flex;
@@ -2265,60 +2325,24 @@ kbd {
   margin: -4px 0 8px;
 }
 
-.cluster-group__bulk {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin: 4px 0 10px;
-  padding: 6px 8px;
-  background: #0e1014;
-  border: 1px solid #23262d;
-  border-radius: 6px;
-}
-.cluster-group__bulk-label {
-  font-size: 11px;
-  color: #aab1bd;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.cluster-group__bulk-btn {
-  background: #2a2e36;
-  color: #d4e1ff;
-  border: 1px solid #353945;
-  border-radius: 4px;
-  padding: 4px 10px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.cluster-group__bulk-btn code {
-  background: transparent;
-  color: #d4e1ff;
-  font-size: 11px;
-  margin-right: 4px;
-}
-.cluster-group__bulk-btn:hover:not([disabled]) {
-  background: #353945;
-  border-color: #404552;
-}
-.cluster-group__bulk-btn[disabled] {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
+/* Outline-only state pill — terminal states (accepted/rejected) shouldn't
+   paint a full coloured slab on every row of a tab where most rows share
+   that state. The outline gives a clear at-a-glance signal without
+   bullhorning. */
 .cluster-row__state {
-  background: #2a2e36;
+  background: transparent;
+  border: 1px solid #353945;
   border-radius: 3px;
-  padding: 1px 5px;
+  padding: 0 5px;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #aab1bd;
 }
-.cluster-row__state--accepted { background: #14532d; color: #b3f5c5; }
-.cluster-row__state--rejected { background: #4c2727; color: #ffd0d0; }
-.cluster-row__state--anomaly  { background: #1f3a8a; color: #d4e1ff; }
-.cluster-row__state--split    { background: #4b3a1a; color: #ffe9b3; }
+.cluster-row__state--accepted { color: #b3f5c5; border-color: #2f9461; }
+.cluster-row__state--rejected { color: #ffb3b3; border-color: #8a3030; }
+.cluster-row__state--anomaly  { color: #d4e1ff; border-color: #1f3a8a; }
+.cluster-row__state--split    { color: #ffe9b3; border-color: #6b5524; }
 
 .clusters-page__header-actions {
   display: flex;
@@ -2421,32 +2445,36 @@ kbd {
 .cluster-row__primary {
   display: flex;
   gap: 8px;
-  align-items: baseline;
-  flex-wrap: wrap;
+  align-items: center;
+  flex-wrap: nowrap;
+  min-width: 0;
   font-size: 14px;
 }
-.cluster-row__label { font-weight: 600; }
+/* Pills + count badge keep their full size; the label absorbs any
+   remaining width and ellipsis-truncates when the row is narrow.
+   Without nowrap + min-width:0, a long label wraps the count to a
+   second line — see the original two-line bug. */
+.cluster-row__primary > * {
+  flex-shrink: 0;
+}
+.cluster-row__label {
+  font-weight: 600;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cluster-row__change-type {
   color: #aab1bd;
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 12px;
 }
-.cluster-row__sigv {
-  background: #2a2e36;
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-.cluster-row__sigv--v0 { color: #aab1bd; }
-.cluster-row__sigv--v1 { color: #b3f5c5; background: #14532d; }
-
 /* Viewport badge replaces the sigv pill on synthetic outcome clusters —
    it's what differentiates otherwise-identical "Capture failed" rows
-   (mobile vs desktop). Same pill geometry as sigv, distinct hue (cool
-   blue) so it doesn't read as a v1 sigv at a glance. */
+   (mobile vs desktop). Cool-blue hue so it doesn't read as a state pill
+   at a glance. (sigv chips were dropped — see ClustersTab for the
+   reasoning.) */
 .cluster-row__viewport {
   background: #1e293b;
   color: #cbd5e1;
@@ -2458,17 +2486,28 @@ kbd {
   text-transform: uppercase;
 }
 
-.cluster-row__pairs {
+/* Count badge at the right of a cluster row — replaces both the old
+   "N pairs" text and the InlineMemberList ⋯ menu. Clicking opens an
+   Export A/B URLs popover; clicks stopPropagation so the surrounding
+   row-button doesn't focus the cluster as a side-effect. */
+.cluster-row__count-menu {
   margin-left: auto;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: #aab1bd;
 }
-.cluster-row__sample {
-  margin: 0;
-  color: #aab1bd;
-  font-size: 13px;
-  font-style: italic;
+.cluster-row__count-btn {
+  background: #15171c;
+  color: #cbd5e1;
+  border: 1px solid #2a2e36;
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.cluster-row__count-btn:hover { background: #1a1d23; border-color: #353945; }
+.cluster-row__count-btn[aria-expanded='true'] {
+  background: #1a1d23;
+  border-color: #353945;
 }
 .cluster-row__bar {
   position: relative;
@@ -2488,8 +2527,9 @@ kbd {
 .cluster-row__members {
   margin: 6px 0 0 12px;
 }
-/* Tab strip + overflow menu sit on one row. Tabs left, "⋯" right
-   (margin-left: auto on .actions-menu inside the bar). */
+/* Viewport tab strip — appears only when a cluster spans multiple
+   viewports (single-viewport clusters render no bar at all, since the
+   export ⋯ moved to the cluster row's count button). */
 .cluster-row__members-bar {
   display: flex;
   align-items: center;
@@ -2534,72 +2574,36 @@ kbd {
 
 /* ----- Cluster detail ----- */
 
-.cluster-detail__header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  margin: 12px 0 16px;
-}
-.cluster-detail__title {
-  font-size: 20px;
-  font-weight: 700;
-  margin: 0;
-}
-.cluster-detail__sep { margin: 0 8px; color: #6c7280; }
-.cluster-detail__change-type {
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 16px;
-  color: #aab1bd;
-}
-.cluster-detail__facets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin: 6px 0 0;
-  color: #aab1bd;
-  font-size: 12px;
-}
-.cluster-detail__facets .facet {
+/* Facets render in the detail-pane chrome (state pill + counts +
+   partial-accepted). Selectors used to be scoped under
+   `.cluster-detail__facets`, but the facets moved to the chrome — they
+   now apply globally so any caller can drop a `.facet` pill in a row. */
+.facet {
   background: #15171c;
   border: 1px solid #23262d;
   border-radius: 4px;
   padding: 2px 6px;
+  font-size: 11px;
+  color: #aab1bd;
+  line-height: 1.4;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
-.cluster-detail__facets .facet--state-open { color: #d4e1ff; border-color: #1f3a8a; }
-.cluster-detail__facets .facet--state-accepted { color: #b3f5c5; border-color: #14532d; }
-.cluster-detail__facets .facet--state-rejected { color: #ffb3b3; border-color: #5c1212; }
+.facet--state-open { color: #d4e1ff; border-color: #1f3a8a; }
+.facet--state-accepted { color: #b3f5c5; border-color: #14532d; }
+.facet--state-rejected { color: #ffb3b3; border-color: #5c1212; }
+.facet--state-anomaly { color: #d4e1ff; border-color: #1f3a8a; }
+.facet--state-split { color: #ffe9b3; border-color: #4b3a1a; }
 /* Partial-acceptance count: members the user accepted individually,
    distinct from the full-cluster-accepted state. Uses a softer hue so
    it doesn't read as "this cluster is accepted" on its own. */
-.cluster-detail__facets .facet--partial-accepted {
+.facet--partial-accepted {
   color: #f5d782;
   border-color: #4a3a14;
   background: #1a1610;
   font-variant-numeric: tabular-nums;
-}
-
-/* Cluster-state contextual banner above the per-member actions. Reads
-   the *cluster's* review state and tells the user what that means for
-   the focused member specifically (covered by a rule, overridden by a
-   per-member acceptance, etc.). */
-.cluster-detail__rule-note {
-  margin: 6px 0;
-  font-size: 12px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  border: 1px solid #23262d;
-  background: #15171c;
-}
-.cluster-detail__rule-note--accepted {
-  color: #b3f5c5;
-  border-color: #14532d;
-  background: #0e1c14;
-}
-.cluster-detail__rule-note--rejected {
-  color: #ffb3b3;
-  border-color: #5c1212;
-  background: #1c0e0e;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .dialog__field--checkbox {
@@ -2611,14 +2615,16 @@ kbd {
   margin-top: 3px;
 }
 
-/* Per-member acceptance affordances. The accept/clear pair sits to the
-   right of the URL line in the sample meta so it's immediately reachable
-   when the user is looking at the focused member. */
+/* Per-member acceptance affordances. Sits at the right of the sample
+   line (counter · URL · these), so the eye finds them next to the URL
+   they apply to. flex-shrink:0 protects them from being squeezed by a
+   long URL. */
 .cluster-detail__member-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 4px;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 .cluster-detail__member-state {
   color: #b3f5c5;
@@ -2629,9 +2635,38 @@ kbd {
   border: 1px solid #14532d;
   border-radius: 4px;
 }
+.cluster-detail__member-state--rejected {
+  color: #ffb3b3;
+  background: #1c0e0e;
+  border-color: #5c1212;
+}
+/* Group pill + clear icon so the icon's hover state can ride the pill's
+   hover. Without grouping, moving the pointer between them flickers. */
+.cluster-detail__member-state-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.cluster-detail__member-clear {
+  background: transparent;
+  border: none;
+  color: #6c7280;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+.cluster-detail__member-state-group:hover .cluster-detail__member-clear,
+.cluster-detail__member-clear:focus-visible {
+  opacity: 1;
+}
+.cluster-detail__member-clear:hover { color: #ffb3b3; }
+.cluster-detail__member-clear:disabled { cursor: not-allowed; opacity: 0.3; }
 
-/* Accepted member tag on a filmstrip thumb. The rep badge already
-   occupies the bottom-left (index area); ✓ goes top-right. */
+/* Accepted / rejected member tag on a filmstrip thumb. The rep badge
+   already occupies the bottom-left (index area); ✓/✗ goes top-right. */
 .filmstrip-thumb--accepted {
   border-color: #2f9461;
 }
@@ -2647,6 +2682,21 @@ kbd {
   border-radius: 3px;
   line-height: 14px;
 }
+.filmstrip-thumb--rejected {
+  border-color: #8a3030;
+}
+.filmstrip-thumb__rejected {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: #8a3030;
+  color: #ffe4e4;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 3px;
+  line-height: 14px;
+}
 
 /* Accepted member row in the inline Members list. Subtle green tint
    on the left edge, plus a ✓ pill in the rep-badge column. */
@@ -2655,9 +2705,9 @@ kbd {
   padding-left: 8px;
 }
 .member-row--accepted.member-row--representative {
-  /* Representative + accepted: keep the gold rep border, the ✓ pill
+  /* Representative + accepted: keep the cyan rep border; the ✓ pill
      itself signals acceptance. Avoids fighting borders. */
-  border-left-color: #d4af37;
+  border-left-color: #22d3ee;
 }
 .member-row__accepted {
   position: absolute;
@@ -2673,39 +2723,25 @@ kbd {
   /* When also rep, shift slightly down so the ★ and ✓ don't overlap. */
   top: calc(50% + 9px);
 }
-
-.cluster-detail__actions {
-  display: flex;
-  gap: 8px;
+.member-row--rejected {
+  border-left: 3px solid #8a3030;
+  padding-left: 8px;
 }
-.cluster-detail__actions .btn {
-  padding: 6px 12px;
+.member-row--rejected.member-row--representative {
+  border-left-color: #22d3ee;
 }
-.cluster-detail__actions button[disabled]:not(.btn) {
-  background: #2a2e36;
-  color: #aab1bd;
-  border: 1px solid #353945;
-  border-radius: 6px;
-  padding: 6px 12px;
-  cursor: not-allowed;
-  opacity: 0.6;
+.member-row__rejected {
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #8a3030;
+  font-size: 12px;
+  font-weight: 700;
+  pointer-events: none;
 }
-
-.cluster-detail__banner {
-  margin: 12px 0;
-  padding: 10px 14px;
-  border-radius: 6px;
-  font-size: 13px;
-}
-.cluster-detail__banner--accepted {
-  background: #14532d;
-  color: #b3f5c5;
-  border: 1px solid #1a6b3a;
-}
-.cluster-detail__banner--rejected {
-  background: #4c2727;
-  color: #ffd0d0;
-  border: 1px solid #693535;
+.member-row--representative .member-row__rejected {
+  top: calc(50% + 9px);
 }
 
 .dialog-backdrop {
@@ -2772,8 +2808,8 @@ kbd {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: #d4af37;
-  border: 1px solid #4a3a14;
+  color: #22d3ee;
+  border: 1px solid #155e6b;
   padding: 1px 5px;
   border-radius: 3px;
 }
@@ -2850,12 +2886,15 @@ kbd {
   margin-top: 16px;
 }
 
+/* Sample block sits inside the detail-pane card already — its own
+   border/padding was nesting cards within cards and forcing 24px+ of
+   stacked padding between the chrome and the filmstrip. Strip the inner
+   chrome; the filmstrip can hug the top of the body now. */
 .cluster-detail__sample {
-  background: #0e1014;
-  border: 1px solid #23262d;
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 16px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin-bottom: 12px;
 }
 .cluster-detail__sample-meta {
   margin-bottom: 12px;
@@ -2863,26 +2902,49 @@ kbd {
 }
 .cluster-detail__sample-meta a { color: #b9d0ff; }
 .cluster-detail__focused-note { color: #aab1bd; font-style: italic; }
+/* One-line summary at the top of the sample: counter · URL · per-member
+   actions. Counter and URL ellipsis-truncate; the action group never
+   shrinks so its hit-area survives long URLs. */
+.cluster-detail__sample-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.cluster-detail__member-counter {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: #aab1bd;
+  background: #15171c;
+  border: 1px solid #23262d;
+  border-radius: 4px;
+  padding: 1px 6px;
+  cursor: help;
+}
+.cluster-detail__sample-url {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cluster-detail__back-to-rep {
-  margin-left: 8px;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   border: 1px solid #23262d;
   color: #aab1bd;
-  padding: 1px 6px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 13px;
+  line-height: 1;
   cursor: pointer;
 }
 .cluster-detail__back-to-rep:hover { color: #e5e7eb; border-color: #353945; }
-.cluster-detail__step-hint {
-  margin-left: 8px;
-  padding: 1px 6px;
-  border: 1px solid #23262d;
-  border-radius: 4px;
-  font-size: 11px;
-  color: #6c7280;
-  font-variant-numeric: tabular-nums;
-}
 .cluster-detail__lm-summary {
   margin: 8px 0;
   color: #e5e7eb;
@@ -2939,7 +3001,7 @@ kbd {
 .view-toggle {
   display: inline-flex;
   gap: 0;
-  margin: 0 0 8px;
+  margin: 0;
   border: 1px solid #23262d;
   border-radius: 6px;
   overflow: hidden;
@@ -2949,8 +3011,7 @@ kbd {
 .cluster-detail__toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .view-toggle__btn {
@@ -2964,8 +3025,11 @@ kbd {
 }
 .view-toggle__btn + .view-toggle__btn { border-left: 1px solid #23262d; }
 .view-toggle__btn:hover { background: #1b1e24; color: #e6e8eb; }
-.view-toggle__btn--active { background: #2a6bff; color: white; }
-.view-toggle__btn--active:hover { background: #2a6bff; }
+/* Tone down the active state — the old saturated blue read as a primary
+   CTA and pulled focus from the actual primary actions. A muted slate
+   panel still reads "selected" without competing. */
+.view-toggle__btn--active { background: #1f2733; color: #e6e8eb; }
+.view-toggle__btn--active:hover { background: #1f2733; }
 
 .cluster-detail__images--slider {
   display: block;
@@ -3086,7 +3150,7 @@ kbd {
 }
 
 .cluster-detail__filmstrip {
-  margin-top: 12px;
+  margin-top: 0;
   display: flex;
   gap: 6px;
   overflow-x: auto;
@@ -3181,7 +3245,7 @@ kbd {
 .member-row--focused,
 .member-row--focused:hover { background: #1f3a8a !important; color: #d4e1ff; }
 .member-row--representative {
-  border-left: 3px solid #d4af37;
+  border-left: 3px solid #22d3ee;
   padding-left: 8px;
 }
 .member-row__rep-badge {
@@ -3189,16 +3253,16 @@ kbd {
   left: -10px;
   top: 50%;
   transform: translateY(-50%);
-  color: #d4af37;
+  color: #22d3ee;
   font-size: 14px;
   pointer-events: none;
 }
 .filmstrip-thumb--representative {
-  outline: 2px solid #d4af37;
+  outline: 2px solid #22d3ee;
   outline-offset: 1px;
 }
 .filmstrip-thumb--representative .filmstrip-thumb__index {
-  background: #d4af37;
+  background: #22d3ee;
   color: #0a0b0e;
   font-weight: 700;
 }

@@ -14,20 +14,18 @@ import type {
 } from '@visual-compare/api/types';
 
 /**
- * Cluster detail body — Accept / Reject wired into acceptance_rules
- * fan-out. Extracted from `pages/ClusterDetailPage.tsx` in Phase α so
- * the same content can render in `SessionDetailPage`'s detail pane in
- * Phase γ without leaving the unified surface.
+ * Cluster detail body. Title + Accept/Reject/Split pills live in the
+ * detail-pane chrome (rendered by SessionDetailPage via DetailPane's
+ * titleSlot / actionsSlot). This component renders only the sample
+ * block (filmstrip + toolbar + meta + images) plus the modal dialogs
+ * those actions open via parent-incremented trigger counters.
  *
- * State flow:
+ * State flow (mirrored by chrome buttons):
  *   open      → Accept enabled, Reject enabled
  *   anomaly   → Accept enabled, Reject enabled
  *   accepted  → Accept disabled, Reject enabled (revokes the rule)
  *   rejected  → Accept enabled (re-accept), Reject disabled
  *   split     → Accept disabled, Reject disabled (terminal)
- *
- * The page shell owns the back-link; this panel handles its own
- * loading/error/data states without one.
  */
 
 function imageUrl(sha: string | null | undefined): string | null {
@@ -35,9 +33,16 @@ function imageUrl(sha: string | null | undefined): string | null {
   return `/images/sha256/${sha.slice(0, 2)}/${sha}.png`;
 }
 
-type ActionBanner =
-  | { kind: 'accepted'; pairsCreated: number; pairsPreserved: number }
-  | { kind: 'rejected'; revoked: number };
+/**
+ * Sentinel value written to acceptances.label when the user "rejects" a
+ * member. Lets the UI render a red ✗ pill where it would normally show
+ * the green ✓ accepted pill. The underlying row is still a regular
+ * acceptance — see handleRejectMember for the caveat.
+ */
+const REJECTED_LABEL_MARKER = '[Rejected]';
+function isRejectedAcceptance(a: { label: string | null } | null | undefined): boolean {
+  return !!a && a.label === REJECTED_LABEL_MARKER;
+}
 
 export interface ClusterDetailPanelProps {
   sessionId: string;
@@ -61,6 +66,8 @@ export interface ClusterDetailPanelProps {
   openAcceptDialogTrigger?: number;
   /** Counterpart for the reject dialog. */
   openRejectDialogTrigger?: number;
+  /** Counterpart for the split dialog (chrome button hoisted to parent). */
+  openSplitDialogTrigger?: number;
   /**
    * Counter the parent bumps to ask the panel to re-fetch the cluster.
    * Used post-Recapture once the cluster index has been recomputed so
@@ -100,6 +107,7 @@ export function ClusterDetailPanel({
   onClusterLoaded,
   openAcceptDialogTrigger,
   openRejectDialogTrigger,
+  openSplitDialogTrigger,
   refreshTrigger,
   focusedMemberId,
   onMemberFocus,
@@ -109,9 +117,8 @@ export function ClusterDetailPanel({
 }: ClusterDetailPanelProps): JSX.Element {
   const [data, setData] = useState<ClusterDetailDto | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<'accept' | 'reject' | 'split' | 'accept-member' | null>(null);
+  const [dialog, setDialog] = useState<'accept' | 'reject' | 'split' | 'accept-member' | 'reject-member' | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
-  const [banner, setBanner] = useState<ActionBanner | null>(null);
   const [fitMode, setFitMode] = useFitMode();
   // count=3 covers triple mode; ab mode uses only the first 2 refs. The
   // figure for the unused 3rd slot in ab mode simply unmounts and clears
@@ -146,7 +153,6 @@ export function ClusterDetailPanel({
     let cancelled = false;
     setData(null);
     setError(null);
-    setBanner(null);
     api.getCluster(sessionId, clusterId, { limit: 500 })
       .then((dto) => {
         if (cancelled) return;
@@ -178,6 +184,15 @@ export function ClusterDetailPanel({
       setDialog('reject');
     }
   }, [openRejectDialogTrigger, data]);
+  const lastSplitTriggerRef = useRef(openSplitDialogTrigger);
+  useEffect(() => {
+    if (openSplitDialogTrigger === undefined) return;
+    if (lastSplitTriggerRef.current === openSplitDialogTrigger) return;
+    lastSplitTriggerRef.current = openSplitDialogTrigger;
+    if (data && data.cluster.review_state !== 'split' && data.members.length >= 2) {
+      setDialog('split');
+    }
+  }, [openSplitDialogTrigger, data]);
 
   const handleAccept = async (input: { label: string; notes: string }): Promise<void> => {
     if (!data) return;
@@ -192,7 +207,6 @@ export function ClusterDetailPanel({
       setData(next);
       onClusterLoadedRef.current?.(res.cluster);
       onDataLoadedRef.current?.(next);
-      setBanner({ kind: 'accepted', pairsCreated: res.acceptances_created, pairsPreserved: res.acceptances_preserved });
       setDialog(null);
       onChanged?.();
     } catch (err) {
@@ -214,7 +228,6 @@ export function ClusterDetailPanel({
       setData(next);
       onClusterLoadedRef.current?.(res.cluster);
       onDataLoadedRef.current?.(next);
-      setBanner({ kind: 'rejected', revoked: res.acceptances_revoked });
       setDialog(null);
       onChanged?.();
     } catch (err) {
@@ -270,12 +283,22 @@ export function ClusterDetailPanel({
     return map;
   }, [acceptances]);
 
+  // Two sets: accepted (✓) vs rejected (✗). Rejected members are tagged
+  // acceptances under the hood (see REJECTED_LABEL_MARKER); we partition
+  // here so the filmstrip + facets can distinguish them visually.
   const memberAcceptedSet = useMemo(() => {
     const s = new Set<string>();
     for (const m of members) {
-      if (acceptanceByPairKey.has(`${m.url_pair_id}::${m.viewport_name}`)) {
-        s.add(m.difference_id);
-      }
+      const a = acceptanceByPairKey.get(`${m.url_pair_id}::${m.viewport_name}`);
+      if (a && !isRejectedAcceptance(a)) s.add(m.difference_id);
+    }
+    return s;
+  }, [members, acceptanceByPairKey]);
+  const memberRejectedSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const m of members) {
+      const a = acceptanceByPairKey.get(`${m.url_pair_id}::${m.viewport_name}`);
+      if (a && isRejectedAcceptance(a)) s.add(m.difference_id);
     }
     return s;
   }, [members, acceptanceByPairKey]);
@@ -316,6 +339,51 @@ export function ClusterDetailPanel({
         accepted_capture_b_sha: displayed.capture_b_sha,
         accept_any: input.acceptAny,
         label: input.label || null,
+        notes: input.notes || null,
+      });
+      setDialog(null);
+      onMemberAcceptanceChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  // Reject the focused member. The API has no row-level rejection
+  // primitive — acceptance rows are the only per-pair persistence.
+  // We write one with the `REJECTED_LABEL_MARKER` prefix so the UI can
+  // surface the user's intent ("I looked at this and said no") with a
+  // red pill. Caveat the dialog flags: technically the pair still
+  // satisfies the acceptance check on next evaluation, since we're
+  // riding the same primitive.
+  const handleRejectMember = async (input: { notes: string }): Promise<void> => {
+    if (!displayed) return;
+    setActionBusy(true);
+    setError(null);
+    try {
+      const detail = await api.getComparisonDetail(displayed.comparison_id);
+      const matchedAtLevel = detail.comparison.matched_at_level;
+      if (!matchedAtLevel) {
+        throw new Error('Comparison has no matched level — cannot reject yet');
+      }
+      if (!displayed.capture_a_sha || !displayed.capture_b_sha) {
+        throw new Error('Member is missing one of its capture shas — re-evaluate first');
+      }
+      const regions: BoundingBoxPercent[] = detail.differences
+        .filter((d) => d.source === 'imagick' && d.bounding_box)
+        .map((d) => d.bounding_box!);
+      await api.createAcceptance(sessionId, {
+        url_pair_id: displayed.url_pair_id,
+        viewport_name: displayed.viewport_name,
+        accepted_level: matchedAtLevel,
+        accepted_pixel_pct: detail.comparison.changed_pixel_percentage,
+        accepted_ssim: detail.comparison.ssim,
+        accepted_diff_regions: regions,
+        accepted_capture_a_sha: displayed.capture_a_sha,
+        accepted_capture_b_sha: displayed.capture_b_sha,
+        accept_any: false,
+        label: REJECTED_LABEL_MARKER,
         notes: input.notes || null,
       });
       setDialog(null);
@@ -420,111 +488,9 @@ export function ClusterDetailPanel({
   // work since the captures themselves succeeded for the missing-page
   // case (one side just rendered as a 404).
   const isSyntheticOutcome = cluster.signature_version === 'outcome';
-  const syntheticReadOnlyTitle = 'Outcome buckets are read-only — accept/reject these rows from the Rows view.';
 
   return (
     <>
-      <header className="cluster-detail__header">
-        <div>
-          <h2 className="cluster-detail__title">
-            {cluster.element_label ?? '(unlabelled)'}
-            <span className="cluster-detail__sep">·</span>
-            <span className="cluster-detail__change-type">{cluster.change_type ?? '—'}</span>
-          </h2>
-          <p className="cluster-detail__facets">
-            <span className="facet">region: {cluster.region_role ?? '—'}</span>
-            <span className="facet">viewport: {cluster.viewport_name ?? '—'}</span>
-            <span className="facet">signature: {cluster.signature_version}</span>
-            <span className="facet">members: {cluster.member_count}</span>
-            <span className="facet">pairs: {cluster.pair_count}</span>
-            <span className={`facet facet--state facet--state-${cluster.review_state}`}>
-              {cluster.review_state}
-            </span>
-            {/* Partial-acceptance count: members the user accepted
-                individually, separate from the cluster rule. Hidden
-                when the cluster is fully accepted by a rule (the
-                rule already covers every member) and when no member
-                has been accepted yet. */}
-            {cluster.review_state !== 'accepted' && memberAcceptedSet.size > 0 && (
-              <span className="facet facet--partial-accepted">
-                {memberAcceptedSet.size}/{members.length} accepted
-              </span>
-            )}
-          </p>
-        </div>
-        <div className="cluster-detail__actions">
-          <button
-            type="button"
-            className="btn"
-            onClick={() => setDialog('accept')}
-            disabled={cluster.review_state === 'accepted' || actionBusy || isSyntheticOutcome}
-            title={
-              isSyntheticOutcome
-                ? syntheticReadOnlyTitle
-                : cluster.review_state === 'accepted'
-                  ? 'Already accepted — reject first to re-accept'
-                  : 'Accept this cluster: snapshot every member pair as accepted'
-            }
-          >
-            Accept cluster
-          </button>
-          <button
-            type="button"
-            className="btn secondary"
-            onClick={() => setDialog('reject')}
-            disabled={
-              cluster.review_state === 'rejected' ||
-              cluster.review_state === 'split' ||
-              actionBusy ||
-              isSyntheticOutcome
-            }
-            title={
-              isSyntheticOutcome
-                ? syntheticReadOnlyTitle
-                : cluster.review_state === 'rejected'
-                  ? 'Already rejected'
-                  : cluster.review_state === 'split'
-                    ? 'Split clusters cannot be rejected'
-                    : cluster.review_state === 'accepted'
-                      ? 'Reject this cluster: delete its rule-owned acceptances and flip state to rejected'
-                      : 'Reject this cluster'
-            }
-          >
-            Reject
-          </button>
-          <button
-            type="button"
-            className="btn secondary"
-            onClick={() => setDialog('split')}
-            disabled={
-              members.length < 2 ||
-              cluster.review_state === 'split' ||
-              actionBusy ||
-              isSyntheticOutcome
-            }
-            title={
-              isSyntheticOutcome
-                ? syntheticReadOnlyTitle
-                : members.length < 2
-                  ? 'Need at least 2 members to split'
-                  : cluster.review_state === 'split'
-                    ? 'Already a split cluster'
-                    : 'Extract some members into a new cluster'
-            }
-          >
-            Split cluster
-          </button>
-        </div>
-      </header>
-
-      {banner && (
-        <div className={`cluster-detail__banner cluster-detail__banner--${banner.kind}`}>
-          {banner.kind === 'accepted'
-            ? `✓ Cluster accepted — ${banner.pairsCreated} acceptance${banner.pairsCreated === 1 ? '' : 's'} created${banner.pairsPreserved > 0 ? ` (${banner.pairsPreserved} pre-existing preserved)` : ''}.`
-            : `✓ Cluster rejected — ${banner.revoked} rule-owned acceptance${banner.revoked === 1 ? '' : 's'} revoked.`}
-        </div>
-      )}
-
       {dialog === 'accept' && (
         <AcceptDialog
           cluster={cluster}
@@ -561,6 +527,14 @@ export function ClusterDetailPanel({
           onCancel={() => setDialog(null)}
         />
       )}
+      {dialog === 'reject-member' && displayed && (
+        <MemberRejectDialog
+          member={displayed}
+          busy={actionBusy}
+          onConfirm={handleRejectMember}
+          onCancel={() => setDialog(null)}
+        />
+      )}
 
       {displayed ? (
         <section className="cluster-detail__sample">
@@ -570,99 +544,11 @@ export function ClusterDetailPanel({
               activeId={displayed.difference_id}
               representativeId={representative?.difference_id ?? null}
               acceptedSet={memberAcceptedSet}
+              rejectedSet={memberRejectedSet}
               onSelect={onMemberFocus}
               stripRef={filmstripRef}
             />
           )}
-
-          <div className="cluster-detail__sample-meta">
-            <div>
-              <strong>{isRepDisplayed ? 'Representative member:' : `Member ${displayedIndex + 1} of ${members.length}:`}</strong>{' '}
-              <Link to={`/sessions/${sessionId}/comparisons/${displayed.comparison_id}`}>
-                {displayed.url_a}
-              </Link>
-              {!isRepDisplayed && (
-                <button
-                  type="button"
-                  className="cluster-detail__back-to-rep"
-                  onClick={() => onMemberFocus(null)}
-                  title="Back to the representative pair (Esc)"
-                >
-                  back to representative
-                </button>
-              )}
-              <span className="cluster-detail__step-hint" title="Step through pairs">j/k or ↑/↓</span>
-            </div>
-            {/* Cluster-state banner: contextualises the cluster's overall
-                review state for the currently-focused member. Lets the
-                user see at a glance whether the member is already
-                covered by a rule (cluster accepted) or whether the
-                cluster has been rejected. */}
-            {cluster.review_state === 'accepted' && (
-              <p className="cluster-detail__rule-note cluster-detail__rule-note--accepted">
-                ✓ This cluster is accepted by a rule — this member is covered.
-              </p>
-            )}
-            {cluster.review_state === 'rejected' && (
-              <p className="cluster-detail__rule-note cluster-detail__rule-note--rejected">
-                ✕ This cluster is rejected. A per-member acceptance still
-                overrides for that single pair.
-              </p>
-            )}
-            <div className="cluster-detail__member-actions">
-              {displayedAcceptance ? (
-                <>
-                  <span className="cluster-detail__member-state">✓ accepted</span>
-                  <button
-                    type="button"
-                    className="btn btn-compact secondary"
-                    onClick={() => void handleClearMemberAcceptance()}
-                    disabled={actionBusy}
-                    title="Remove this member's acceptance row. Doesn't touch other members or any cluster rule."
-                  >
-                    Clear member acceptance
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  className="btn btn-compact"
-                  onClick={() => setDialog('accept-member')}
-                  disabled={actionBusy || cluster.review_state === 'accepted' || isSyntheticOutcome}
-                  title={
-                    isSyntheticOutcome
-                      ? 'Missing / capture-failed pairs have no comparison verdict to accept — fix the underlying capture, then accept from the Rows view.'
-                      : cluster.review_state === 'accepted'
-                        ? 'Cluster is already accepted — the rule covers this member'
-                        : 'Accept only this member. Doesn’t create a cluster rule or change cluster state.'
-                  }
-                >
-                  Accept this member…
-                </button>
-              )}
-              <RecapturePairButton
-                sessionId={sessionId}
-                pairId={displayed.url_pair_id}
-                compact
-              />
-            </div>
-            {displayed.lm_summary && (
-              <p className="cluster-detail__lm-summary">
-                <em>{displayed.lm_summary}</em>
-              </p>
-            )}
-            <p className="cluster-detail__metrics">
-              {displayed.lm_confidence != null && (
-                <span>confidence: {displayed.lm_confidence.toFixed(2)}</span>
-              )}
-              {displayed.severity && <span>severity: {displayed.severity}</span>}
-              {displayed.ssim != null && <span>ssim: {displayed.ssim.toFixed(3)}</span>}
-              {displayed.changed_pct != null && (
-                <span>changed: {displayed.changed_pct.toFixed(2)}%</span>
-              )}
-            </p>
-            <p className="cluster-detail__description">{displayedDescription}</p>
-          </div>
 
           <div className="cluster-detail__toolbar">
             <div className="cluster-detail__view-toggle" role="tablist" aria-label="Image view mode">
@@ -700,6 +586,121 @@ export function ClusterDetailPanel({
             <FitModeToggle mode={fitMode} onChange={setFitMode} />
           </div>
 
+          <div className="cluster-detail__sample-meta">
+            {/* Single-line summary: member counter · URL · per-member actions.
+                j/k step-hint and back-to-rep are tooltips/icons, not their own
+                rows. LM summary / metrics / description still stack below
+                (they belong to the focused diff, not the cluster). */}
+            <div className="cluster-detail__sample-line">
+              <span
+                className="cluster-detail__member-counter"
+                title="Step pairs with j/k or ↑/↓"
+              >
+                {isRepDisplayed
+                  ? `★ rep · 1/${members.length}`
+                  : `${displayedIndex + 1}/${members.length}`}
+              </span>
+              {!isRepDisplayed && (
+                <button
+                  type="button"
+                  className="cluster-detail__back-to-rep"
+                  onClick={() => onMemberFocus(null)}
+                  title="Back to the representative pair (Esc)"
+                  aria-label="Back to representative"
+                >
+                  ↶
+                </button>
+              )}
+              <Link
+                to={`/sessions/${sessionId}/comparisons/${displayed.comparison_id}`}
+                className="cluster-detail__sample-url"
+              >
+                {displayed.url_a}
+              </Link>
+              <div className="cluster-detail__member-actions">
+                {displayedAcceptance ? (
+                  <span className="cluster-detail__member-state-group">
+                    {isRejectedAcceptance(displayedAcceptance) ? (
+                      <span className="cluster-detail__member-state cluster-detail__member-state--rejected">
+                        ✗ rejected
+                      </span>
+                    ) : (
+                      <span className="cluster-detail__member-state">✓ accepted</span>
+                    )}
+                    <button
+                      type="button"
+                      className="cluster-detail__member-clear"
+                      onClick={() => void handleClearMemberAcceptance()}
+                      disabled={actionBusy}
+                      title={
+                        isRejectedAcceptance(displayedAcceptance)
+                          ? "Remove this member's rejection."
+                          : "Remove this member's acceptance row. Doesn't touch other members or any cluster rule."
+                      }
+                      aria-label="Clear member state"
+                    >
+                      ⊗
+                    </button>
+                  </span>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="btn btn-compact secondary"
+                      onClick={() => setDialog('accept-member')}
+                      disabled={actionBusy || cluster.review_state === 'accepted' || isSyntheticOutcome}
+                      title={
+                        isSyntheticOutcome
+                          ? 'Missing / capture-failed pairs have no comparison verdict to accept — fix the underlying capture, then accept from the Rows view.'
+                          : cluster.review_state === 'accepted'
+                            ? 'Cluster is already accepted — the rule covers this member'
+                            : 'Accept only this member. Doesn’t create a cluster rule or change cluster state.'
+                      }
+                    >
+                      Accept member…
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-compact secondary"
+                      onClick={() => setDialog('reject-member')}
+                      disabled={actionBusy || isSyntheticOutcome}
+                      title={
+                        isSyntheticOutcome
+                          ? 'Missing / capture-failed pairs are read-only — accept/reject these rows from the Rows view.'
+                          : "Record this member as reviewed-and-rejected. Note: ride-shares the acceptance primitive — see dialog for the caveat."
+                      }
+                    >
+                      Reject…
+                    </button>
+                  </>
+                )}
+                <RecapturePairButton
+                  sessionId={sessionId}
+                  pairId={displayed.url_pair_id}
+                  compact
+                />
+              </div>
+            </div>
+            {displayed.lm_summary && (
+              <p className="cluster-detail__lm-summary">
+                <em>{displayed.lm_summary}</em>
+              </p>
+            )}
+            <p className="cluster-detail__metrics">
+              {displayed.lm_confidence != null && (
+                <span>confidence: {displayed.lm_confidence.toFixed(2)}</span>
+              )}
+              {displayed.severity && <span>severity: {displayed.severity}</span>}
+              {displayed.ssim != null && <span>ssim: {displayed.ssim.toFixed(3)}</span>}
+              {displayed.changed_pct != null && (
+                <span>changed: {displayed.changed_pct.toFixed(2)}%</span>
+              )}
+            </p>
+            {displayedDescription && (
+              <p className="cluster-detail__description">{displayedDescription}</p>
+            )}
+          </div>
+
           <div className={`cluster-detail__images cluster-detail__images--${viewMode} fit-${fitMode}`}>
             {viewMode === 'triple' && <ImageTriple member={displayed} bbox={displayedBbox} sync={figureSync} />}
             {viewMode === 'ab' && <ImageAB member={displayed} bbox={displayedBbox} sync={figureSync} />}
@@ -723,6 +724,7 @@ function Filmstrip({
   activeId,
   representativeId,
   acceptedSet,
+  rejectedSet,
   onSelect,
   stripRef,
 }: {
@@ -730,6 +732,7 @@ function Filmstrip({
   activeId: string;
   representativeId: string | null;
   acceptedSet: Set<string>;
+  rejectedSet: Set<string>;
   onSelect: (id: string) => void;
   stripRef: RefObject<HTMLDivElement>;
 }): JSX.Element {
@@ -742,17 +745,24 @@ function Filmstrip({
         const active = m.difference_id === activeId;
         const isRep = m.difference_id === representativeId;
         const isAccepted = acceptedSet.has(m.difference_id);
+        const isRejected = rejectedSet.has(m.difference_id);
+        const stateSuffix = isAccepted ? ' (accepted)' : isRejected ? ' (rejected)' : '';
+        const stateClass = isAccepted
+          ? ' filmstrip-thumb--accepted'
+          : isRejected
+            ? ' filmstrip-thumb--rejected'
+            : '';
         return (
           <button
             key={m.difference_id}
             type="button"
             data-thumb-id={m.difference_id}
-            className={`filmstrip-thumb${active ? ' filmstrip-thumb--active' : ''}${isRep ? ' filmstrip-thumb--representative' : ''}${isAccepted ? ' filmstrip-thumb--accepted' : ''}`}
+            className={`filmstrip-thumb${active ? ' filmstrip-thumb--active' : ''}${isRep ? ' filmstrip-thumb--representative' : ''}${stateClass}`}
             onClick={() => onSelect(m.difference_id)}
             title={
               isRep
-                ? `Representative · ${m.url_a}${isAccepted ? ' (accepted)' : ''}`
-                : `${i + 1}. ${m.url_a}${isAccepted ? ' (accepted)' : ''}`
+                ? `Representative · ${m.url_a}${stateSuffix}`
+                : `${i + 1}. ${m.url_a}${stateSuffix}`
             }
             aria-pressed={active}
           >
@@ -763,6 +773,7 @@ function Filmstrip({
             )}
             <span className="filmstrip-thumb__index">{isRep ? '★' : i + 1}</span>
             {isAccepted && <span className="filmstrip-thumb__accepted" aria-label="accepted">✓</span>}
+            {isRejected && <span className="filmstrip-thumb__rejected" aria-label="rejected">✗</span>}
           </button>
         );
       })}
@@ -1127,6 +1138,72 @@ function sampleMembers(members: ClusterMemberDto[], n: number): ClusterMemberDto
   // Stable sample of the first n. Random would be possible too but stable
   // matches what the user already saw scrolling the member list.
   return members.slice(0, n);
+}
+
+/**
+ * Per-member reject dialog. Captures a reason in notes and writes an
+ * acceptance row tagged with REJECTED_LABEL_MARKER so the UI can show a
+ * red pill on subsequent loads. Carries an explicit caveat in the intro
+ * because the underlying primitive is the acceptance table: the row
+ * technically still satisfies acceptance on next evaluation — until a
+ * real row-level reject API exists, this is the closest we have to
+ * "I considered this and said no" persistence.
+ */
+function MemberRejectDialog({
+  member,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  member: ClusterMemberDto;
+  busy: boolean;
+  onConfirm: (input: { notes: string }) => void;
+  onCancel: () => void;
+}): JSX.Element {
+  const [notes, setNotes] = useState<string>('');
+  return (
+    <div className="dialog-backdrop" onClick={onCancel}>
+      <div className="dialog" onClick={(e) => e.stopPropagation()}>
+        <h3 className="dialog__title">Reject this member?</h3>
+        <p className="dialog__intro">
+          Records your rejection of <code>{member.url_a}</code> at viewport{' '}
+          <code>{member.viewport_name}</code>. The cluster's review state
+          is untouched.
+        </p>
+        <p className="dialog__intro dialog__intro--caveat">
+          <strong>Caveat:</strong> the API has no row-level reject primitive
+          yet, so this rides on the acceptance table. The pair will still
+          satisfy the acceptance check on the next evaluation — the row
+          captures your <em>intent</em>, not a blocking signal. Clear with
+          the ⊗ icon any time.
+        </p>
+        <label className="dialog__field">
+          <span>Reason (optional)</span>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="why this change is NOT acceptable on this pair"
+            disabled={busy}
+            rows={3}
+            maxLength={2000}
+          />
+        </label>
+        <div className="dialog__actions">
+          <button type="button" className="btn secondary" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => onConfirm({ notes })}
+            disabled={busy}
+          >
+            {busy ? 'Rejecting…' : 'Reject this member'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /**

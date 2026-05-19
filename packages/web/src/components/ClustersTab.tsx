@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import {
   statusToClusterReviewState,
@@ -222,13 +222,6 @@ export function ClustersTab({
     return buckets;
   }, [filteredClusters]);
 
-  const totals = useMemo(() => {
-    if (!data) return null;
-    const totalPairs = filteredClusters.reduce((acc, c) => acc + c.pair_count, 0);
-    const totalMembers = filteredClusters.reduce((acc, c) => acc + c.member_count, 0);
-    return { clusters: filteredClusters.length, pairs: totalPairs, members: totalMembers };
-  }, [data, filteredClusters]);
-
   // Category tab selection lives in the URL (`cat=`) so refresh / share
   // links keep the user on the same category. When the requested category
   // is empty (or the param is missing), fall back to the first non-empty
@@ -251,6 +244,54 @@ export function ClustersTab({
 
   const activeTabDef = CATEGORY_TABS.find((t) => t.key === activeCat) ?? CATEGORY_TABS[0]!;
   const activeClusters = grouped[activeCat];
+
+  // Bulk-accept: lifted out of CategoryGroup so the affordance can live
+  // in the summary bar's ⋯ menu instead of taking a full row inside
+  // each category. Subgroups are derived from the active category's
+  // clusters and keyed by (region_role, change_type). v0 fallback and
+  // synthetic-outcome clusters lack the v1 taxonomy so they can't be
+  // bulk-accepted; we filter them out here.
+  const activeSubgroups = useMemo<BulkAcceptTarget[]>(() => {
+    const buckets = new Map<string, BulkAcceptTarget>();
+    for (const c of activeClusters) {
+      if (!c.region_role || !c.change_type) continue;
+      if (c.signature_version !== 'v1') continue;
+      const k = `${c.region_role}::${c.change_type}`;
+      let b = buckets.get(k);
+      if (!b) {
+        b = {
+          region_role: c.region_role,
+          change_type: c.change_type,
+          signature_version: c.signature_version,
+          clusters: [],
+        };
+        buckets.set(k, b);
+      }
+      b.clusters.push(c);
+    }
+    return [...buckets.values()].sort(
+      (a, b) => b.clusters.length - a.clusters.length || a.change_type.localeCompare(b.change_type),
+    );
+  }, [activeClusters]);
+  const [bulkConfirming, setBulkConfirming] = useState<BulkAcceptTarget | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const handleBulkAccept = async (target: BulkAcceptTarget): Promise<void> => {
+    setBulkBusy(true);
+    setError(null);
+    try {
+      await api.acceptCategory(sessionId, {
+        region_role: target.region_role,
+        change_type: target.change_type,
+        signature_version: target.signature_version,
+      });
+      setBulkConfirming(null);
+      void load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   // Shift+ArrowDown / Shift+ArrowUp step to the next/prev cluster within
   // the active category tab. Plain arrows already step rows
@@ -292,22 +333,23 @@ export function ClustersTab({
   return (
     <>
       <div className="clusters-tab__summary-bar">
-        {totals && (
-          <p className="clusters-page__summary">
-            {totals.clusters} cluster{totals.clusters === 1 ? '' : 's'} ·{' '}
-            {totals.members} diff{totals.members === 1 ? '' : 's'} ·{' '}
-            {totals.pairs} pair-touch{totals.pairs === 1 ? '' : 'es'}
-          </p>
-        )}
-        <button
-          type="button"
-          onClick={() => void load({ recompute: true })}
-          disabled={loading}
-          className="clusters-page__refresh"
-          title="Rebuild the cluster index from the underlying differences"
-        >
-          {loading ? 'Refreshing…' : 'Refresh'}
-        </button>
+        <div className="clusters-tab__summary-actions">
+          <button
+            type="button"
+            onClick={() => void load({ recompute: true })}
+            disabled={loading}
+            className="clusters-page__refresh"
+            title="Rebuild the cluster index from the underlying differences"
+          >
+            <span className={loading ? 'clusters-page__refresh-spin' : ''} aria-hidden="true">⟳</span>
+            <span>{loading ? 'Refreshing…' : 'Refresh'}</span>
+          </button>
+          <BulkAcceptOverflowMenu
+            subgroups={activeSubgroups}
+            disabled={bulkBusy}
+            onPick={setBulkConfirming}
+          />
+        </div>
       </div>
 
       {error && <div className="error">{error}</div>}
@@ -350,7 +392,6 @@ export function ClustersTab({
               clusters={grouped[activeTabDef.key]}
               sessionId={sessionId}
               note={activeTabDef.note}
-              onBulkAccepted={() => void load()}
               onClusterFocus={onClusterFocus}
               focusedClusterId={focusedClusterId ?? null}
               focusedClusterDetail={focusedClusterDetail ?? null}
@@ -361,7 +402,104 @@ export function ClustersTab({
           </div>
         </>
       )}
+      {bulkConfirming && (
+        <CategoryAcceptDialog
+          target={bulkConfirming}
+          busy={bulkBusy}
+          onConfirm={() => void handleBulkAccept(bulkConfirming)}
+          onCancel={() => setBulkConfirming(null)}
+        />
+      )}
     </>
+  );
+}
+
+/**
+ * "Bulk accept ▾" overflow that sits beside Refresh in the summary bar.
+ * Disabled when the active category has no v1-tagged subgroups (so
+ * Untagged / Outcomes show a dimmed button explaining why).
+ */
+function BulkAcceptOverflowMenu({
+  subgroups,
+  disabled,
+  onPick,
+}: {
+  subgroups: BulkAcceptTarget[];
+  disabled: boolean;
+  onPick: (target: BulkAcceptTarget) => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [open]);
+  const noTargets = subgroups.length === 0;
+  return (
+    <div className="actions-menu" ref={ref}>
+      <button
+        type="button"
+        className="actions-menu__toggle"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        disabled={disabled || noTargets}
+        title={
+          noTargets
+            ? 'No v1-tagged subgroups in this category — bulk accept needs a (region, change_type) pair'
+            : 'Bulk accept clusters in this category by (region, change_type)'
+        }
+      >
+        ⋯
+      </button>
+      {open && !noTargets && (
+        <ul className="actions-menu__list" role="menu">
+          {subgroups.map((sg) => {
+            const openCount = sg.clusters.filter(
+              (c) => c.review_state === 'open' || c.review_state === 'rejected',
+            ).length;
+            const openPairs = sg.clusters
+              .filter((c) => c.review_state === 'open' || c.review_state === 'rejected')
+              .reduce((acc, c) => acc + c.pair_count, 0);
+            return (
+              <li key={`${sg.region_role}::${sg.change_type}`}>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="actions-menu__item"
+                  disabled={openCount === 0}
+                  onClick={() => {
+                    setOpen(false);
+                    onPick(sg);
+                  }}
+                  title={
+                    openCount === 0
+                      ? 'All clusters in this subgroup are already accepted'
+                      : `Accept all ${openCount} open ${sg.change_type} clusters (${openPairs} pairs)`
+                  }
+                >
+                  Accept all <code>{sg.change_type}</code>{' '}
+                  <span className="muted">
+                    · {openCount}/{sg.clusters.length}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -377,7 +515,6 @@ function CategoryGroup({
   clusters,
   sessionId,
   note,
-  onBulkAccepted,
   onClusterFocus,
   focusedClusterId,
   focusedClusterDetail,
@@ -389,7 +526,6 @@ function CategoryGroup({
   clusters: ClusterSummaryDto[];
   sessionId: string;
   note?: string;
-  onBulkAccepted?: () => void;
   onClusterFocus?: (clusterId: string) => void;
   focusedClusterId?: string | null;
   focusedClusterDetail?: ClusterDetailDto | null;
@@ -397,145 +533,69 @@ function CategoryGroup({
   onMemberFocus?: (id: string | null) => void;
   acceptances?: AcceptanceRow[];
 }): JSX.Element {
-  const totalPairs = clusters.reduce((acc, c) => acc + c.pair_count, 0);
   const maxPairs = clusters.reduce((acc, c) => Math.max(acc, c.pair_count), 1);
-  const [confirming, setConfirming] = useState<BulkAcceptTarget | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // Group clusters within the category by (region_role, change_type). Only
-  // subgroups with at least one v1-tagged cluster get a bulk-accept button;
-  // v0 fallback clusters lack the tags so the API call would have no target.
-  const subgroups = useMemo(() => {
-    const buckets = new Map<string, BulkAcceptTarget>();
-    for (const c of clusters) {
-      if (!c.region_role || !c.change_type) continue;
-      if (c.signature_version !== 'v1') continue;
-      const k = `${c.signature_version}::${c.region_role}::${c.change_type}`;
-      let b = buckets.get(k);
-      if (!b) {
-        b = {
-          region_role: c.region_role,
-          change_type: c.change_type,
-          signature_version: c.signature_version,
-          clusters: [],
-        };
-        buckets.set(k, b);
-      }
-      b.clusters.push(c);
-    }
-    return [...buckets.values()].sort((a, b) =>
-      b.clusters.length - a.clusters.length || a.change_type.localeCompare(b.change_type),
-    );
-  }, [clusters]);
-
-  const handleBulkAccept = async (target: BulkAcceptTarget): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.acceptCategory(sessionId, {
-        region_role: target.region_role,
-        change_type: target.change_type,
-        signature_version: target.signature_version,
-      });
-      setConfirming(null);
-      onBulkAccepted?.();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
+  // Section h3 lives in the active tab pill (count) + summary bar (totals)
+  // now — both already point at this category. `title` survives only as
+  // the document-level a11y label for the section, which screen readers
+  // can still announce via aria-label. Bulk-accept used to live here
+  // too; it's now in the summary bar's ⋯ menu (see ClustersTab).
   return (
-    <section className="cluster-group">
-      <h3 className="cluster-group__title">
-        {title} <span className="cluster-group__meta">({clusters.length} cluster{clusters.length === 1 ? '' : 's'}, {totalPairs} pair-touch{totalPairs === 1 ? '' : 'es'})</span>
-      </h3>
+    <section className="cluster-group" aria-label={title}>
       {note && <p className="cluster-group__note">{note}</p>}
-      {error && <div className="error">{error}</div>}
-      {subgroups.length > 0 && (
-        <div className="cluster-group__bulk">
-          <span className="cluster-group__bulk-label">Bulk accept:</span>
-          {subgroups.map((sg) => {
-            const openCount = sg.clusters.filter((c) => c.review_state === 'open' || c.review_state === 'rejected').length;
-            const openPairs = sg.clusters
-              .filter((c) => c.review_state === 'open' || c.review_state === 'rejected')
-              .reduce((acc, c) => acc + c.pair_count, 0);
-            const disabled = openCount === 0 || busy;
-            return (
-              <button
-                key={`${sg.region_role}::${sg.change_type}`}
-                type="button"
-                className="cluster-group__bulk-btn"
-                disabled={disabled}
-                onClick={() => setConfirming(sg)}
-                title={openCount === 0 ? 'All clusters in this subgroup are already accepted' : `Accept all ${openCount} open ${sg.change_type} clusters (${openPairs} pairs)`}
-              >
-                <code>{sg.change_type}</code> · {openCount}/{sg.clusters.length}
-              </button>
-            );
-          })}
-        </div>
-      )}
       <ul className="cluster-list">
         {clusters.map((c) => {
           const isFocused = focusedClusterId === c.id;
           const rowClass = `cluster-row${isFocused ? ' cluster-row--focused' : ''}`;
-          const body = (
-            <>
-              <div className="cluster-row__content">
-                <div className="cluster-row__primary">
-                  <span className="cluster-row__label">{c.element_label ?? '(unlabelled)'}</span>
-                  <span className="cluster-row__change-type">{c.change_type ?? '—'}</span>
-                  {/* Synthetic outcome clusters surface viewport in the
-                      badge slot — the "outcome" sigv is uninformative
-                      and identical across the section, while viewport
-                      (mobile vs desktop) is what differentiates
-                      otherwise-identical rows. */}
-                  {c.signature_version === 'outcome' ? (
-                    <span className="cluster-row__viewport">
-                      {c.viewport_name ?? '—'}
-                    </span>
-                  ) : (
-                    <span className={`cluster-row__sigv cluster-row__sigv--${c.signature_version}`}>
-                      {c.signature_version}
-                    </span>
-                  )}
-                  <span className={`cluster-row__state cluster-row__state--${c.review_state}`}>
-                    {c.review_state}
-                  </span>
-                  <span className="cluster-row__pairs">{c.pair_count} pair{c.pair_count === 1 ? '' : 's'}</span>
-                </div>
-                {c.sample?.description && (
-                  <p className="cluster-row__sample">{c.sample.description}</p>
-                )}
-              </div>
-              <div className="cluster-row__bar" aria-hidden="true">
-                <div
-                  className="cluster-row__bar-fill"
-                  style={{ height: `${(c.pair_count / maxPairs) * 100}%` }}
-                />
-              </div>
-            </>
-          );
           const showMembers =
             isFocused && focusedClusterDetail?.cluster.id === c.id;
+          const activate = onClusterFocus ? () => onClusterFocus(c.id) : undefined;
           return (
             <li key={c.id}>
-              {onClusterFocus ? (
-                <button
-                  type="button"
-                  className={rowClass}
-                  onClick={() => onClusterFocus(c.id)}
-                >
-                  {body}
-                </button>
-              ) : (
-                <Link to={`/sessions/${sessionId}/clusters/${c.id}`} className={rowClass}>
-                  {body}
-                </Link>
-              )}
+              <div
+                className={rowClass}
+                role={activate ? 'button' : undefined}
+                tabIndex={activate ? 0 : undefined}
+                onClick={activate}
+                onKeyDown={
+                  activate
+                    ? (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          activate();
+                        }
+                      }
+                    : undefined
+                }
+              >
+                <div className="cluster-row__content">
+                  <div className="cluster-row__primary">
+                    <span className="cluster-row__label">{c.element_label ?? '(unlabelled)'}</span>
+                    <span className="cluster-row__change-type">{c.change_type ?? '—'}</span>
+                    {/* Synthetic outcome clusters surface viewport in the
+                        badge slot — viewport (mobile vs desktop) is what
+                        differentiates otherwise-identical "Capture failed"
+                        rows. v0/v1 sigv chips were dropped in favour of
+                        the count button on the right (which carries the
+                        pair count + export affordance). */}
+                    {c.signature_version === 'outcome' && (
+                      <span className="cluster-row__viewport">
+                        {c.viewport_name ?? '—'}
+                      </span>
+                    )}
+                    <span className={`cluster-row__state cluster-row__state--${c.review_state}`}>
+                      {c.review_state}
+                    </span>
+                    <ClusterCountButton sessionId={sessionId} cluster={c} />
+                  </div>
+                </div>
+                <div className="cluster-row__bar" aria-hidden="true">
+                  <div
+                    className="cluster-row__bar-fill"
+                    style={{ height: `${(c.pair_count / maxPairs) * 100}%` }}
+                  />
+                </div>
+              </div>
               {showMembers && focusedClusterDetail && (
                 <InlineMemberList
                   sessionId={sessionId}
@@ -549,15 +609,116 @@ function CategoryGroup({
           );
         })}
       </ul>
-      {confirming && (
-        <CategoryAcceptDialog
-          target={confirming}
-          busy={busy}
-          onConfirm={() => void handleBulkAccept(confirming)}
-          onCancel={() => setConfirming(null)}
-        />
-      )}
     </section>
+  );
+}
+
+/**
+ * Right-side count badge on a cluster row. Click to drop a tiny menu
+ * with Export A / Export B URL exports — the same actions that used to
+ * live behind the inline-Members list's ⋯ button. Fetches the member
+ * list on demand (the row only has the summary DTO), so unfocused rows
+ * don't pay for member data they may never use.
+ *
+ * Clicks stopPropagation so the surrounding row-button doesn't focus
+ * the cluster as a side-effect of opening the menu.
+ */
+function ClusterCountButton({
+  sessionId,
+  cluster,
+}: {
+  sessionId: string;
+  cluster: ClusterSummaryDto;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [open]);
+  const exportUrls = async (side: 'a' | 'b'): Promise<void> => {
+    setBusy(true);
+    try {
+      const detail = await api.getCluster(sessionId, cluster.id, { limit: 10000 });
+      const urls = detail.members.map((m) => (side === 'a' ? m.url_a : m.url_b));
+      const blob = new Blob([urls.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = `cluster-${cluster.id}-${side.toUpperCase()}.txt`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(objectUrl);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+  return (
+    <div
+      className="actions-menu cluster-row__count-menu"
+      ref={ref}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        className="cluster-row__count-btn"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((o) => !o);
+        }}
+        title={`${cluster.pair_count} pair${cluster.pair_count === 1 ? '' : 's'} — click for export options`}
+      >
+        {cluster.pair_count}
+      </button>
+      {open && (
+        <ul className="actions-menu__list" role="menu">
+          <li>
+            <button
+              type="button"
+              role="menuitem"
+              className="actions-menu__item"
+              disabled={busy}
+              onClick={(e) => {
+                e.stopPropagation();
+                void exportUrls('a');
+              }}
+            >
+              Export A URLs
+            </button>
+          </li>
+          <li>
+            <button
+              type="button"
+              role="menuitem"
+              className="actions-menu__item"
+              disabled={busy}
+              onClick={(e) => {
+                e.stopPropagation();
+                void exportUrls('b');
+              }}
+            >
+              Export B URLs
+            </button>
+          </li>
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -583,10 +744,20 @@ function InlineMemberList({
 }): JSX.Element {
   const repId = detail.representative?.difference_id ?? null;
   const displayedId = focusedMemberId ?? repId;
-  const acceptedKeys = useMemo(() => {
-    const s = new Set<string>();
-    for (const a of acceptances) s.add(`${a.url_pair_id}::${a.viewport_name}`);
-    return s;
+  // Partition into accepted vs rejected keys. The label-marker check
+  // mirrors ClusterDetailPanel's REJECTED_LABEL_MARKER so the inline
+  // member list and the focused-member meta agree on what counts as
+  // accepted vs rejected. (Rejected rows still occupy an acceptance
+  // row, but the user surfaced them as a reasoned-no — see the dialog.)
+  const { acceptedKeys, rejectedKeys } = useMemo(() => {
+    const acc = new Set<string>();
+    const rej = new Set<string>();
+    for (const a of acceptances) {
+      const key = `${a.url_pair_id}::${a.viewport_name}`;
+      if (a.label === '[Rejected]') rej.add(key);
+      else acc.add(key);
+    }
+    return { acceptedKeys: acc, rejectedKeys: rej };
   }, [acceptances]);
   // Sort the representative to the top so it's always the first row.
   // The original order otherwise mirrors the cluster's signature
@@ -632,108 +803,45 @@ function InlineMemberList({
     return members.filter((m) => m.viewport_name === activeViewport);
   }, [members, activeViewport]);
 
-  const exportSideUrls = (side: 'a' | 'b') => {
-    // Export the full member set (across all viewports), not just the
-    // active tab — the file is the canonical list of pairs in this
-    // cluster, independent of the in-UI viewport filter.
-    const urls = members.map((m) => (side === 'a' ? m.url_a : m.url_b));
-    const blob = new Blob([urls.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
-    const objectUrl = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = objectUrl;
-    anchor.download = `cluster-${detail.cluster.id}-${side.toUpperCase()}.txt`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    URL.revokeObjectURL(objectUrl);
-  };
-
-  // "…" overflow menu for the Export actions. Same pattern as
-  // HeaderOverflowMenu in SessionDetailPage — small inline component
-  // using the .actions-menu* styles.
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
-    };
-    const onEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onDocClick);
-    document.addEventListener('keydown', onEsc);
-    return () => {
-      document.removeEventListener('mousedown', onDocClick);
-      document.removeEventListener('keydown', onEsc);
-    };
-  }, [menuOpen]);
-
+  // Suppress the bar entirely when there's only one viewport — the
+  // export ⋯ that used to anchor its right edge has moved up to the
+  // cluster row's count button, so a single-tab tablist would carry no
+  // information at all.
+  const showViewportTabs = viewports.length > 1;
   return (
     <section className="cluster-row__members">
-      <div className="cluster-row__members-bar">
-        <div className="cluster-row__members-tabs" role="tablist" aria-label="Members by viewport">
-          {viewports.map((v) => {
-            const isActive = activeViewport === v.name;
-            return (
-              <button
-                key={v.name}
-                type="button"
-                role="tab"
-                aria-selected={isActive}
-                className={`cluster-row__members-tab${isActive ? ' cluster-row__members-tab--active' : ''}`}
-                onClick={() => setActiveViewport(v.name)}
-                title={`${v.count} member${v.count === 1 ? '' : 's'} at viewport ${v.name}`}
-              >
-                {v.name}{' '}
-                <span className="cluster-row__members-tab-count">({v.count})</span>
-              </button>
-            );
-          })}
-        </div>
-        <div className="actions-menu cluster-row__members-menu" ref={menuRef}>
-          <button
-            type="button"
-            className="actions-menu__toggle"
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            onClick={() => setMenuOpen((o) => !o)}
-            title="More member actions"
-          >
-            ⋯
-          </button>
-          {menuOpen && (
-            <ul className="actions-menu__list" role="menu">
-              <li>
+      {showViewportTabs && (
+        <div className="cluster-row__members-bar">
+          <div className="cluster-row__members-tabs" role="tablist" aria-label="Members by viewport">
+            {viewports.map((v) => {
+              const isActive = activeViewport === v.name;
+              return (
                 <button
+                  key={v.name}
                   type="button"
-                  role="menuitem"
-                  className="actions-menu__item"
-                  onClick={() => { setMenuOpen(false); exportSideUrls('a'); }}
+                  role="tab"
+                  aria-selected={isActive}
+                  className={`cluster-row__members-tab${isActive ? ' cluster-row__members-tab--active' : ''}`}
+                  onClick={() => setActiveViewport(v.name)}
+                  title={`${v.count} member${v.count === 1 ? '' : 's'} at viewport ${v.name}`}
                 >
-                  Export A URLs
+                  {v.name}{' '}
+                  <span className="cluster-row__members-tab-count">({v.count})</span>
                 </button>
-              </li>
-              <li>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="actions-menu__item"
-                  onClick={() => { setMenuOpen(false); exportSideUrls('b'); }}
-                >
-                  Export B URLs
-                </button>
-              </li>
-            </ul>
-          )}
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
       <ul className="member-list">
         {filteredMembers.map((m) => {
           const focused = displayedId === m.difference_id;
           const isRep = m.difference_id === repId;
-          const isAccepted = acceptedKeys.has(`${m.url_pair_id}::${m.viewport_name}`);
-          const rowClass = `member-row${focused ? ' member-row--focused' : ''}${isRep ? ' member-row--representative' : ''}${isAccepted ? ' member-row--accepted' : ''}`;
+          const memberKey = `${m.url_pair_id}::${m.viewport_name}`;
+          const isAccepted = acceptedKeys.has(memberKey);
+          const isRejected = rejectedKeys.has(memberKey);
+          const stateLabel = isAccepted ? 'accepted' : isRejected ? 'rejected' : null;
+          const rowClass = `member-row${focused ? ' member-row--focused' : ''}${isRep ? ' member-row--representative' : ''}${isAccepted ? ' member-row--accepted' : ''}${isRejected ? ' member-row--rejected' : ''}`;
           return (
             <li
               key={m.difference_id}
@@ -744,13 +852,14 @@ function InlineMemberList({
               tabIndex={-1}
               aria-pressed={focused}
               title={(isRep
-                ? `Representative member${isAccepted ? ' (accepted)' : ''}`
-                : isAccepted
-                  ? 'Accepted member · click to preview this pair'
+                ? `Representative member${stateLabel ? ` (${stateLabel})` : ''}`
+                : stateLabel
+                  ? `${stateLabel[0]!.toUpperCase()}${stateLabel.slice(1)} member · click to preview this pair`
                   : 'Click to preview this pair (or use j/k to step)') + ` · ${m.url_a}`}
             >
               {isRep && <span className="member-row__rep-badge" aria-label="representative">★</span>}
               {isAccepted && <span className="member-row__accepted" aria-label="accepted">✓</span>}
+              {isRejected && <span className="member-row__rejected" aria-label="rejected">✗</span>}
               <span className="member-row__url">{m.url_a}</span>
               <span
                 className="member-row__changed"

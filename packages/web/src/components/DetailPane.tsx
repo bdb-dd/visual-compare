@@ -37,6 +37,13 @@ export interface DetailPaneProps {
   focused: Focused | null;
   /** Slot for the actions dropdown — populated in the next task. */
   actionsSlot?: ReactNode;
+  /**
+   * Slot for a rich title on the left of the chrome. When provided,
+   * replaces the static "Cluster" / "Comparison" eyebrow. Cluster mode
+   * uses this to inline the cluster's label, change-type, state pill,
+   * and counts — saving a whole row over the old eyebrow + h2 layout.
+   */
+  titleSlot?: ReactNode;
   /** Optional close button; absent when the parent doesn't want to allow deselect. */
   onClose?: () => void;
 
@@ -58,6 +65,8 @@ export interface DetailPaneProps {
   clusterAcceptDialogTrigger?: number;
   /** Counterpart for cluster reject. */
   clusterRejectDialogTrigger?: number;
+  /** Counterpart for cluster split. */
+  clusterSplitDialogTrigger?: number;
   /** Counter the parent bumps to ask the cluster panel to re-fetch (post-Recapture). */
   clusterRefreshTrigger?: number;
   /**
@@ -81,6 +90,7 @@ export function DetailPane({
   sessionId,
   focused,
   actionsSlot,
+  titleSlot,
   onClose,
   targetLevel,
   acceptance,
@@ -92,6 +102,7 @@ export function DetailPane({
   onClusterDataLoaded,
   clusterAcceptDialogTrigger,
   clusterRejectDialogTrigger,
+  clusterSplitDialogTrigger,
   clusterRefreshTrigger,
   focusedMemberId,
   onMemberFocus,
@@ -101,13 +112,15 @@ export function DetailPane({
   return (
     <section className="detail-pane">
       <header className="detail-pane__chrome">
-        <span className="detail-pane__kind">
-          {focused?.kind === 'cluster'
-            ? 'Cluster'
-            : focused?.kind === 'row'
-              ? 'Comparison'
-              : 'Detail'}
-        </span>
+        {titleSlot ?? (
+          <span className="detail-pane__kind">
+            {focused?.kind === 'cluster'
+              ? 'Cluster'
+              : focused?.kind === 'row'
+                ? 'Comparison'
+                : 'Detail'}
+          </span>
+        )}
         <div className="detail-pane__chrome-actions">
           {actionsSlot}
           {onClose && (
@@ -152,6 +165,7 @@ export function DetailPane({
             onDataLoaded={onClusterDataLoaded}
             openAcceptDialogTrigger={clusterAcceptDialogTrigger}
             openRejectDialogTrigger={clusterRejectDialogTrigger}
+            openSplitDialogTrigger={clusterSplitDialogTrigger}
             refreshTrigger={clusterRefreshTrigger}
             focusedMemberId={focusedMemberId ?? null}
             onMemberFocus={onMemberFocus ?? noop}

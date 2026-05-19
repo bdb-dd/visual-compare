@@ -155,24 +155,22 @@ export function SessionDetailPage(): JSX.Element {
   const [acceptDialogTrigger, setAcceptDialogTrigger] = useState(0);
   const [clusterAcceptTrigger, setClusterAcceptTrigger] = useState(0);
   const [clusterRejectTrigger, setClusterRejectTrigger] = useState(0);
+  const [clusterSplitTrigger, setClusterSplitTrigger] = useState(0);
   const [clusterRefreshTrigger, setClusterRefreshTrigger] = useState(0);
   // Bumped after cluster-shape-changing actions (Split, Recapture) and
   // state changes (Accept/Reject) so ClustersTab re-fetches its list.
   // Keeps the list in sync with the panel without manual refresh.
   const [clusterListRefreshTrigger, setClusterListRefreshTrigger] = useState(0);
   /**
-   * Review state of the cluster currently shown in the detail pane.
-   * Lifted out of ClusterDetailPanel so ActionsMenu can correctly
-   * disable Accept (when already accepted) and Reject (when not yet
-   * accepted). Refreshed via onClusterLoaded from the panel.
-   */
-  const [focusedClusterReviewState, setFocusedClusterReviewState] =
-    useState<import('@visual-compare/api/types').ClusterReviewState | null>(null);
-  /**
    * Cluster detail DTO for the currently focused cluster, lifted out of
-   * ClusterDetailPanel so the inline Members list under the focused row
-   * in ClustersTab can read the same members + representative. Populated
-   * by the panel's onDataLoaded callback.
+   * ClusterDetailPanel so:
+   *  - the inline Members list under the focused row in ClustersTab can
+   *    read the same members + representative;
+   *  - the chrome title (rendered by this page into DetailPane's
+   *    titleSlot) can show the cluster's label / change-type / state pill
+   *    and the chrome action pills can disable themselves based on
+   *    review_state without round-tripping through the panel.
+   * Populated by the panel's onDataLoaded callback.
    */
   const [focusedClusterDetail, setFocusedClusterDetail] = useState<
     import('@visual-compare/api/types').ClusterDetailDto | null
@@ -203,13 +201,11 @@ export function SessionDetailPage(): JSX.Element {
     },
     [focusedClusterId],
   );
-  // Reset the cached review state + cluster detail whenever focus moves
-  // to a different cluster (or clears). The detail panel re-fires
-  // onClusterLoaded / onDataLoaded once the new cluster's data lands.
-  // Member focus is per-cluster (see clusterMemberFocus above) so it
-  // doesn't need to be reset here.
+  // Reset the cached cluster detail whenever focus moves to a different
+  // cluster (or clears). The detail panel re-fires onDataLoaded once the
+  // new cluster's data lands. Member focus is per-cluster (see
+  // clusterMemberFocus above) so it doesn't need to be reset here.
   useEffect(() => {
-    setFocusedClusterReviewState(null);
     setFocusedClusterDetail(null);
   }, [focusedClusterId]);
   /**
@@ -671,6 +667,34 @@ export function SessionDetailPage(): JSX.Element {
     })();
   };
 
+  // Derived chrome bits for the focused cluster. Computed once per detail
+  // load + acceptances change so both the title (state pill + counts +
+  // partial-acceptance badge) and the action pills (disabled-state) read
+  // from the same source. When the detail hasn't loaded yet, leave this
+  // null so DetailPane falls back to its default "Cluster" eyebrow until
+  // we have real data to show.
+  const focusedClusterChrome = useMemo(() => {
+    if (!focusedClusterDetail) return null;
+    const cluster = focusedClusterDetail.cluster;
+    // Only positive acceptances count toward the "X/N accepted" facet —
+    // rejected members (tagged with the REJECTED_LABEL_MARKER sentinel in
+    // ClusterDetailPanel) ride the same primitive but represent the
+    // opposite intent and shouldn't inflate the accepted count.
+    const acceptedKeys = new Set(
+      acceptances
+        .filter((a) => a.label !== '[Rejected]')
+        .map((a) => `${a.url_pair_id}::${a.viewport_name}`),
+    );
+    const partialAccepted = focusedClusterDetail.members.filter((m) =>
+      acceptedKeys.has(`${m.url_pair_id}::${m.viewport_name}`),
+    ).length;
+    return {
+      cluster,
+      partialAccepted,
+      totalMembers: focusedClusterDetail.members.length,
+    };
+  }, [focusedClusterDetail, acceptances]);
+
   if (error && !session) return <main><div className="error">{error}</div></main>;
   if (!session || !config) return <main><p className="muted">Loading…</p></main>;
 
@@ -819,10 +843,10 @@ export function SessionDetailPage(): JSX.Element {
                   void refreshResults();
                   setClusterListRefreshTrigger((v) => v + 1);
                 }}
-                onClusterLoaded={(cluster) => setFocusedClusterReviewState(cluster.review_state)}
                 onClusterDataLoaded={setFocusedClusterDetail}
                 clusterAcceptDialogTrigger={clusterAcceptTrigger}
                 clusterRejectDialogTrigger={clusterRejectTrigger}
+                clusterSplitDialogTrigger={clusterSplitTrigger}
                 clusterRefreshTrigger={clusterRefreshTrigger}
                 focusedMemberId={focusedMemberId}
                 onMemberFocus={setFocusedMemberId}
@@ -831,15 +855,27 @@ export function SessionDetailPage(): JSX.Element {
                   void refreshAcceptances();
                   void refreshResults();
                 }}
+                titleSlot={
+                  focusedClusterChrome ? (
+                    <ClusterChromeTitle
+                      cluster={focusedClusterChrome.cluster}
+                      partialAccepted={focusedClusterChrome.partialAccepted}
+                      totalMembers={focusedClusterChrome.totalMembers}
+                    />
+                  ) : undefined
+                }
                 actionsSlot={
-                  <ActionsMenu
-                    sessionId={session.id}
-                    focused={{ kind: 'cluster', clusterId: focusedClusterId }}
-                    clusterReviewState={focusedClusterReviewState}
-                    onClusterAccept={() => setClusterAcceptTrigger((v) => v + 1)}
-                    onClusterReject={() => setClusterRejectTrigger((v) => v + 1)}
-                    onClusterRecapture={() => handleClusterRecapture(focusedClusterId)}
-                  />
+                  focusedClusterChrome ? (
+                    <ClusterChromeActions
+                      sessionId={session.id}
+                      clusterId={focusedClusterId}
+                      cluster={focusedClusterChrome.cluster}
+                      onAccept={() => setClusterAcceptTrigger((v) => v + 1)}
+                      onReject={() => setClusterRejectTrigger((v) => v + 1)}
+                      onSplit={() => setClusterSplitTrigger((v) => v + 1)}
+                      onRecapture={() => handleClusterRecapture(focusedClusterId)}
+                    />
+                  ) : null
                 }
               />
             </div>
@@ -868,10 +904,10 @@ export function SessionDetailPage(): JSX.Element {
                   void refreshResults();
                   setClusterListRefreshTrigger((v) => v + 1);
                 }}
-                onClusterLoaded={(cluster) => setFocusedClusterReviewState(cluster.review_state)}
                 onClusterDataLoaded={setFocusedClusterDetail}
                 clusterAcceptDialogTrigger={clusterAcceptTrigger}
                 clusterRejectDialogTrigger={clusterRejectTrigger}
+                clusterSplitDialogTrigger={clusterSplitTrigger}
                 clusterRefreshTrigger={clusterRefreshTrigger}
                 focusedMemberId={focusedMemberId}
                 onMemberFocus={setFocusedMemberId}
@@ -880,15 +916,27 @@ export function SessionDetailPage(): JSX.Element {
                   void refreshAcceptances();
                   void refreshResults();
                 }}
+                titleSlot={
+                  focusedClusterChrome ? (
+                    <ClusterChromeTitle
+                      cluster={focusedClusterChrome.cluster}
+                      partialAccepted={focusedClusterChrome.partialAccepted}
+                      totalMembers={focusedClusterChrome.totalMembers}
+                    />
+                  ) : undefined
+                }
                 actionsSlot={
-                  <ActionsMenu
-                    sessionId={session.id}
-                    focused={{ kind: 'cluster', clusterId: focusedClusterId }}
-                    clusterReviewState={focusedClusterReviewState}
-                    onClusterAccept={() => setClusterAcceptTrigger((v) => v + 1)}
-                    onClusterReject={() => setClusterRejectTrigger((v) => v + 1)}
-                    onClusterRecapture={() => handleClusterRecapture(focusedClusterId)}
-                  />
+                  focusedClusterChrome ? (
+                    <ClusterChromeActions
+                      sessionId={session.id}
+                      clusterId={focusedClusterId}
+                      cluster={focusedClusterChrome.cluster}
+                      onAccept={() => setClusterAcceptTrigger((v) => v + 1)}
+                      onReject={() => setClusterRejectTrigger((v) => v + 1)}
+                      onSplit={() => setClusterSplitTrigger((v) => v + 1)}
+                      onRecapture={() => handleClusterRecapture(focusedClusterId)}
+                    />
+                  ) : null
                 }
               />
             </div>
@@ -1070,6 +1118,221 @@ interface HistoryTabProps {
   comparisonRuns: ComparisonRunRow[];
   expandedEvaluationId: string | null;
   onToggleEvaluation: (id: string) => void;
+}
+
+/**
+ * Inline cluster title for the detail-pane chrome. Replaces the old
+ * "CLUSTER" eyebrow + separate h2 layout — label + change_type + state
+ * pill + counts badge all live on the chrome row.
+ */
+function ClusterChromeTitle({
+  cluster,
+  partialAccepted,
+  totalMembers,
+}: {
+  cluster: import('@visual-compare/api/types').DifferenceClusterRow;
+  partialAccepted: number;
+  totalMembers: number;
+}): JSX.Element {
+  const label = cluster.element_label;
+  const changeType = cluster.change_type;
+  const hasTitleText = !!(label || changeType);
+  return (
+    <div className="cluster-chrome">
+      <span className="cluster-chrome__title">
+        {label && <span className="cluster-chrome__label">{label}</span>}
+        {label && changeType && <span className="cluster-chrome__sep">·</span>}
+        {changeType && (
+          <code className="cluster-chrome__change-type">{changeType}</code>
+        )}
+        {!hasTitleText && <span className="cluster-chrome__label">(unlabelled)</span>}
+      </span>
+      <span
+        className={`facet facet--state facet--state-${cluster.review_state}`}
+      >
+        {cluster.review_state}
+      </span>
+      <span
+        className="facet cluster-chrome__counts"
+        title={`${cluster.member_count} member${cluster.member_count === 1 ? '' : 's'} across ${cluster.pair_count} pair${cluster.pair_count === 1 ? '' : 's'}`}
+      >
+        {cluster.member_count}/{cluster.pair_count}
+      </span>
+      {cluster.review_state !== 'accepted' && partialAccepted > 0 && (
+        <span className="facet facet--partial-accepted">
+          {partialAccepted}/{totalMembers} accepted
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Inline Accept / Reject / Split pills + a `⋯` overflow that holds the
+ * less-frequent cluster actions (Recapture, Open in new tab). Replaces
+ * the old "Actions ▾" dropdown for cluster focus — the row case still
+ * uses ActionsMenu, which is friendlier when most items are disabled.
+ */
+function ClusterChromeActions({
+  sessionId,
+  clusterId,
+  cluster,
+  onAccept,
+  onReject,
+  onSplit,
+  onRecapture,
+}: {
+  sessionId: string;
+  clusterId: string;
+  cluster: import('@visual-compare/api/types').DifferenceClusterRow;
+  onAccept: () => void;
+  onReject: () => void;
+  onSplit: () => void;
+  onRecapture: () => void;
+}): JSX.Element {
+  const isSyntheticOutcome = cluster.signature_version === 'outcome';
+  const syntheticTitle =
+    'Outcome buckets are read-only — accept/reject these rows from the Rows view.';
+  const acceptDisabled = cluster.review_state === 'accepted' || isSyntheticOutcome;
+  const rejectDisabled =
+    cluster.review_state === 'rejected' ||
+    cluster.review_state === 'split' ||
+    isSyntheticOutcome;
+  const splitDisabled =
+    cluster.member_count < 2 ||
+    cluster.review_state === 'split' ||
+    isSyntheticOutcome;
+  return (
+    <>
+      <button
+        type="button"
+        className="btn btn-compact"
+        onClick={onAccept}
+        disabled={acceptDisabled}
+        title={
+          isSyntheticOutcome
+            ? syntheticTitle
+            : cluster.review_state === 'accepted'
+              ? 'Already accepted — reject first to re-accept'
+              : 'Accept this cluster: snapshot every member pair as accepted'
+        }
+      >
+        Accept cluster
+      </button>
+      <button
+        type="button"
+        className="btn btn-compact secondary"
+        onClick={onReject}
+        disabled={rejectDisabled}
+        title={
+          isSyntheticOutcome
+            ? syntheticTitle
+            : cluster.review_state === 'rejected'
+              ? 'Already rejected'
+              : cluster.review_state === 'split'
+                ? 'Split clusters cannot be rejected'
+                : cluster.review_state === 'accepted'
+                  ? 'Reject this cluster: delete its rule-owned acceptances and flip state to rejected'
+                  : 'Reject this cluster'
+        }
+      >
+        Reject
+      </button>
+      <button
+        type="button"
+        className="btn btn-compact secondary"
+        onClick={onSplit}
+        disabled={splitDisabled}
+        title={
+          isSyntheticOutcome
+            ? syntheticTitle
+            : cluster.member_count < 2
+              ? 'Need at least 2 members to split'
+              : cluster.review_state === 'split'
+                ? 'Already a split cluster'
+                : 'Extract some members into a new cluster'
+        }
+      >
+        Split
+      </button>
+      <ClusterOverflowMenu
+        sessionId={sessionId}
+        clusterId={clusterId}
+        onRecapture={onRecapture}
+      />
+    </>
+  );
+}
+
+function ClusterOverflowMenu({
+  sessionId,
+  clusterId,
+  onRecapture,
+}: {
+  sessionId: string;
+  clusterId: string;
+  onRecapture: () => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [open]);
+  return (
+    <div className="actions-menu" ref={ref}>
+      <button
+        type="button"
+        className="actions-menu__toggle"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        title="More cluster actions"
+      >
+        ⋯
+      </button>
+      {open && (
+        <ul className="actions-menu__list" role="menu">
+          <li>
+            <button
+              type="button"
+              role="menuitem"
+              className="actions-menu__item"
+              onClick={() => {
+                setOpen(false);
+                onRecapture();
+              }}
+            >
+              Recapture cluster pairs
+            </button>
+          </li>
+          <li>
+            <a
+              role="menuitem"
+              className="actions-menu__item"
+              href={`/sessions/${sessionId}/clusters/${clusterId}`}
+              target="_blank"
+              rel="noreferrer"
+              onClick={() => setOpen(false)}
+            >
+              Open in new tab ↗
+            </a>
+          </li>
+        </ul>
+      )}
+    </div>
+  );
 }
 
 function HeaderOverflowMenu({
