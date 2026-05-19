@@ -40,6 +40,12 @@ export const captureRunOptionsSchema = z.object({
   hideSelectors: z.array(z.string()).optional(),
   settleDelayMs: z.number().int().nonnegative().default(250),
   useNetworkIdle: z.boolean().default(false),
+  /**
+   * When true, screenshot the entire scrollable page instead of the viewport
+   * rectangle. Width stays fixed so layout doesn't reflow; height of the
+   * captured PNG grows to fit the document. Useful for "long mobile" diffs.
+   */
+  fullPage: z.boolean().default(false),
   // Upper bound is a guard rail, not the per-host cap. The UI further
   // narrows this to `availableParallelism()` via /api/meta/system-info so
   // users on smaller machines don't oversubscribe. 32 is comfortably above
@@ -140,7 +146,7 @@ export function createPlaywrightCaptureWorker(): CaptureWorker {
       const tempDir = join(tmpdir(), 'visual-compare-captures');
       await mkdir(tempDir, { recursive: true });
       const tempPath = join(tempDir, `${randomUUID()}.png`);
-      await page.screenshot({ path: tempPath, fullPage: false, type: 'png' });
+      await page.screenshot({ path: tempPath, fullPage: options.fullPage, type: 'png' });
 
       const httpStatus = navResponse?.status() ?? null;
       const title = await page.title().catch(() => '');

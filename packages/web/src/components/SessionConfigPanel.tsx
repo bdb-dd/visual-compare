@@ -22,6 +22,31 @@ const AUTOSAVE_DEBOUNCE_MS = 500;
 
 type SavingState = 'idle' | 'saving' | 'saved' | 'error';
 
+interface ViewportRowState {
+  selected: boolean;
+  width: string;
+  height: string;
+}
+
+function buildViewportRowState(
+  viewports: ViewportDef[],
+  saved: ViewportDef[],
+  defaultName: string,
+): Record<string, ViewportRowState> {
+  const out: Record<string, ViewportRowState> = {};
+  for (const v of viewports) {
+    out[v.name] = { selected: false, width: String(v.width), height: String(v.height) };
+  }
+  if (saved.length > 0) {
+    for (const v of saved) {
+      out[v.name] = { selected: true, width: String(v.width), height: String(v.height) };
+    }
+  } else if (out[defaultName]) {
+    out[defaultName].selected = true;
+  }
+  return out;
+}
+
 /**
  * The session's persistent project config. Edits autosave with a short
  * debounce — there's no Save button.
@@ -34,10 +59,8 @@ export function SessionConfigPanel({
   defaults,
   onSaved,
 }: Props): JSX.Element {
-  const [viewportNames, setViewportNames] = useState<string[]>(() =>
-    config.default_viewports.length > 0
-      ? config.default_viewports.map((v) => v.name)
-      : [defaults.viewportName],
+  const [viewportRows, setViewportRows] = useState<Record<string, ViewportRowState>>(() =>
+    buildViewportRowState(viewports, config.default_viewports, defaults.viewportName),
   );
   const [targetLevel, setTargetLevel] = useState<EquivalenceLevelId>(
     config.default_equivalence_level ?? defaults.level,
@@ -65,6 +88,10 @@ export function SessionConfigPanel({
     const opts = config.default_capture_options as { concurrency?: number };
     return opts.concurrency !== undefined ? String(opts.concurrency) : '';
   });
+  const [fullPage, setFullPage] = useState<boolean>(() => {
+    const opts = config.default_capture_options as { fullPage?: boolean };
+    return opts.fullPage ?? false;
+  });
   const [invokeLm, setInvokeLm] = useState<boolean>(config.default_invoke_lm);
 
   // Host-dependent ceiling on the concurrency input. Fetched once via
@@ -90,8 +117,23 @@ export function SessionConfigPanel({
   const [error, setError] = useState<string | null>(null);
 
   const buildPayload = (): Partial<SessionConfig> => {
-    const chosenViewports = viewports.filter((v) => viewportNames.includes(v.name));
+    // Snapshot the selected viewports with their (possibly customized) W/H.
+    // Invalid W/H falls back to the system default for that viewport so a
+    // transient empty input doesn't blow away the saved value.
+    const chosenViewports: ViewportDef[] = [];
+    for (const v of viewports) {
+      const row = viewportRows[v.name];
+      if (!row?.selected) continue;
+      const w = Number(row.width);
+      const h = Number(row.height);
+      chosenViewports.push({
+        ...v,
+        width: Number.isInteger(w) && w >= 1 ? w : v.width,
+        height: Number.isInteger(h) && h >= 1 ? h : v.height,
+      });
+    }
     const captureOpts: Record<string, unknown> = {};
+    if (fullPage) captureOpts.fullPage = true;
     const trimmedHide = hideSelectors
       .split('\n')
       .map((s) => s.trim())
@@ -137,10 +179,8 @@ export function SessionConfigPanel({
   useEffect(() => {
     if (configRef.current === config) return;
     configRef.current = config;
-    setViewportNames(
-      config.default_viewports.length > 0
-        ? config.default_viewports.map((v) => v.name)
-        : [defaults.viewportName],
+    setViewportRows(
+      buildViewportRowState(viewports, config.default_viewports, defaults.viewportName),
     );
     setTargetLevel(config.default_equivalence_level ?? defaults.level);
     setLanguage(config.filter_query.language?.join(', ') ?? '');
@@ -151,13 +191,15 @@ export function SessionConfigPanel({
       settleDelayMs?: number;
       waitForSelector?: string;
       concurrency?: number;
+      fullPage?: boolean;
     };
     setHideSelectors(opts.hideSelectors?.join('\n') ?? '');
     setSettleDelayMs(opts.settleDelayMs !== undefined ? String(opts.settleDelayMs) : '');
     setWaitForSelector(opts.waitForSelector ?? '');
     setConcurrency(opts.concurrency !== undefined ? String(opts.concurrency) : '');
+    setFullPage(opts.fullPage ?? false);
     setInvokeLm(config.default_invoke_lm);
-  }, [config, defaults.viewportName, defaults.level]);
+  }, [config, viewports, defaults.viewportName, defaults.level]);
 
   // Autosave: debounce any divergence from the last saved snapshot. The
   // serialized-payload comparison short-circuits no-ops (e.g. re-hydration
@@ -184,10 +226,22 @@ export function SessionConfigPanel({
     // buildPayload reads each piece of local state directly; listing them as
     // deps captures every user edit. onSaved is treated as stable by callers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewportNames, targetLevel, language, category, pathPrefix, hideSelectors, settleDelayMs, waitForSelector, concurrency, invokeLm, sessionId]);
+  }, [viewportRows, targetLevel, language, category, pathPrefix, hideSelectors, settleDelayMs, waitForSelector, concurrency, fullPage, invokeLm, sessionId]);
 
-  const toggle = <T,>(arr: T[], value: T): T[] =>
-    arr.includes(value) ? arr.filter((x) => x !== value) : [...arr, value];
+  const updateViewportRow = (
+    name: string,
+    patch: Partial<ViewportRowState>,
+  ): void => {
+    setViewportRows((prev) => {
+      const fallback = viewports.find((v) => v.name === name);
+      const base: ViewportRowState = prev[name] ?? {
+        selected: false,
+        width: String(fallback?.width ?? 0),
+        height: String(fallback?.height ?? 0),
+      };
+      return { ...prev, [name]: { ...base, ...patch } };
+    });
+  };
 
   return (
     <div className="config-panel">
@@ -199,17 +253,46 @@ export function SessionConfigPanel({
 
       <section>
         <h4>Viewports</h4>
-        <div className="checkbox-row">
-          {viewports.map((v) => (
-            <label key={v.name}>
-              <input
-                type="checkbox"
-                checked={viewportNames.includes(v.name)}
-                onChange={() => setViewportNames((prev) => toggle(prev, v.name))}
-              />
-              {v.name} <span className="muted">({v.width}×{v.height})</span>
-            </label>
-          ))}
+        <div className="viewport-rows">
+          {viewports.map((v) => {
+            const row = viewportRows[v.name] ?? {
+              selected: false,
+              width: String(v.width),
+              height: String(v.height),
+            };
+            return (
+              <div key={v.name} className="viewport-row">
+                <label className="viewport-row-label">
+                  <input
+                    type="checkbox"
+                    checked={row.selected}
+                    onChange={(e) => updateViewportRow(v.name, { selected: e.target.checked })}
+                  />
+                  <span>{v.name}</span>
+                </label>
+                <label className="viewport-dim">
+                  <span className="muted">W</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={row.width}
+                    disabled={!row.selected}
+                    onChange={(e) => updateViewportRow(v.name, { width: e.target.value })}
+                  />
+                </label>
+                <label className="viewport-dim">
+                  <span className="muted">H</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={row.height}
+                    disabled={!row.selected}
+                    onChange={(e) => updateViewportRow(v.name, { height: e.target.value })}
+                  />
+                </label>
+              </div>
+            );
+          })}
         </div>
       </section>
 
@@ -281,6 +364,17 @@ export function SessionConfigPanel({
 
       <section>
         <h4>Capture options</h4>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={fullPage}
+            onChange={(e) => setFullPage(e.target.checked)}
+          />
+          <span>
+            Capture full page. Width is preserved; the screenshot grows to fit
+            the entire scrollable document. Useful for long pages on mobile.
+          </span>
+        </label>
         <label className="field">
           <span>Hide selectors (one per line)</span>
           <textarea

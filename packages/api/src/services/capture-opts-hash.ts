@@ -32,6 +32,7 @@ export interface CanonicalCaptureOpts {
   hideSelectors: string[];
   settleDelayMs: number;
   useNetworkIdle: boolean;
+  fullPage: boolean;
   reducedMotion: NonNullable<CaptureRunOptionsParsed['reducedMotion']>;
   userAgent: string | null;
   locale: string | null;
@@ -61,6 +62,7 @@ export function buildCanonicalCaptureOpts(
     hideSelectors: [...(options.hideSelectors ?? [])].sort(),
     settleDelayMs: options.settleDelayMs,
     useNetworkIdle: options.useNetworkIdle,
+    fullPage: options.fullPage,
     reducedMotion: options.reducedMotion,
     userAgent: options.userAgent ?? null,
     locale: options.locale ?? null,

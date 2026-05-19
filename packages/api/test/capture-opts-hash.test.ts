@@ -66,6 +66,11 @@ describe('captureOptsHashFor', () => {
     expect(captureOptsHashFor(desktop, networkIdle)).not.toBe(baseHash);
   });
 
+  it('changes when fullPage toggles', () => {
+    const fp = captureRunOptionsSchema.parse({ fullPage: true });
+    expect(captureOptsHashFor(desktop, fp)).not.toBe(captureOptsHashFor(desktop, baseOpts));
+  });
+
   it('produces a 64-char hex string', () => {
     expect(captureOptsHashFor(desktop, baseOpts)).toMatch(/^[0-9a-f]{64}$/);
   });
