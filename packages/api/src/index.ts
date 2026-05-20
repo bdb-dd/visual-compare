@@ -19,6 +19,7 @@ import { createPlaywrightCaptureWorker } from './services/capture.js';
 import { createLmClient, readLmConfigFromEnv } from './services/lm.js';
 import { createLmServerControllerFromEnv } from './services/lm-server-factory.js';
 import { createLmUsageTracker } from './services/lm-usage.js';
+import { appendLmEvent } from './services/lm-events.js';
 import { createLmActivityTracker } from './services/lm-activity.js';
 import { createWorkerActivityTracker } from './services/worker-activity.js';
 
@@ -95,9 +96,13 @@ const workerActivity = createWorkerActivityTracker({
   initialCapacity: availableParallelism(),
 });
 workerActivity.start();
+const LM_EVENTS_PATH = process.env.LM_EVENTS_PATH;
 const lm = createLmClient(lmConfig, lmServer.cli, {
   onLmUsage: () => lmUsage.record(),
   beginLmCall: () => lmActivity.trackCall(),
+  onServerStarted: LM_EVENTS_PATH
+    ? () => appendLmEvent({ path: LM_EVENTS_PATH, event: { event: 'powerOn', source: 'api' } })
+    : undefined,
 });
 // eslint-disable-next-line no-console
 console.log(

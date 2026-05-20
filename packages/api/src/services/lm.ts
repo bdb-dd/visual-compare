@@ -448,6 +448,14 @@ export interface CreateLmClientOptions {
    * LmActivityTracker to render a concurrency histogram for the UI.
    */
   beginLmCall?: () => () => void;
+  /**
+   * Fired (best-effort, fire-and-forget) when preflight had to actually
+   * start the LM server (i.e. it was unreachable and we issued
+   * `lms server start` / Scaleway powerOn). The pair to the reaper's
+   * powerOff event — used by the events log to compute time in off
+   * state. Errors are swallowed.
+   */
+  onServerStarted?: () => void | Promise<void>;
 }
 
 /**
@@ -482,6 +490,17 @@ export function createLmClient(
       result,
       expiresAt: Date.now() + config.preflightCacheSeconds * 1000,
     };
+    if (result.ok && result.startedServer && options.onServerStarted) {
+      // Fire-and-forget. The events log must not block preflight.
+      try {
+        const p = options.onServerStarted();
+        if (p && typeof (p as Promise<void>).then === 'function') {
+          void (p as Promise<void>).catch(() => {});
+        }
+      } catch {
+        // ignore
+      }
+    }
     return result;
   };
 

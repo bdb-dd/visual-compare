@@ -73,17 +73,35 @@ interface FakeApiHandle {
   readonly powerOnCalls: number;
 }
 
-function fakeApi(state: ScalewayInstanceState['state']): FakeApiHandle {
+interface FakeApiOptions {
+  /**
+   * Default true. If true, powerOff() flips the reported state to
+   * 'stopped in place' (simulating a working hypervisor halt). If false,
+   * powerOff() returns ok but the state remains unchanged — modelling
+   * the observed-in-production failure mode where the Scaleway task is
+   * accepted but never takes effect.
+   */
+  transitionOnPowerOff?: boolean;
+}
+
+function fakeApi(
+  initial: ScalewayInstanceState['state'],
+  opts: FakeApiOptions = {},
+): FakeApiHandle {
+  const transition = opts.transitionOnPowerOff ?? true;
   const counters = { powerOffCalls: 0, powerOnCalls: 0 };
+  let state = initial;
   const api: ScalewayApi = {
     async getInstance() {
       return { state, publicIp: null };
     },
     async powerOn() {
       counters.powerOnCalls++;
+      state = 'running';
     },
     async powerOff() {
       counters.powerOffCalls++;
+      if (transition) state = 'stopped in place';
     },
   };
   return {
@@ -96,6 +114,8 @@ function fakeApi(state: ScalewayInstanceState['state']): FakeApiHandle {
     },
   };
 }
+
+const noSleep = async () => {};
 
 let dir: string;
 
@@ -122,19 +142,20 @@ function baseEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
 
 describe('runReaper', () => {
   it('returns 2 and refuses to act when Scaleway env is missing', async () => {
-    const logs: string[] = [];
+    const errors: string[] = [];
     const code = await runReaper({
       env: { LM_LAST_USE_PATH: join(dir, 'last') },
-      log: (m) => logs.push(m),
+      log: () => {},
+      logError: (m) => errors.push(m),
     });
     expect(code).toBe(2);
-    expect(logs.join('\n')).toMatch(/missing Scaleway env/);
+    expect(errors.join('\n')).toMatch(/missing Scaleway env/);
   });
 
   it('returns 2 when LM_LAST_USE_PATH is unset', async () => {
     const env = baseEnv();
     delete env.LM_LAST_USE_PATH;
-    const code = await runReaper({ env, log: () => {} });
+    const code = await runReaper({ env, log: () => {}, logError: () => {} });
     expect(code).toBe(2);
   });
 
@@ -142,7 +163,13 @@ describe('runReaper', () => {
     const lastUseMs = Date.now() - 2 * HOUR_MS;
     await writeFile(join(dir, 'last'), String(lastUseMs), 'utf8');
     const handle = fakeApi('running');
-    const code = await runReaper({ env: baseEnv(), api: handle.api, log: () => {} });
+    const code = await runReaper({
+      env: baseEnv(),
+      api: handle.api,
+      log: () => {},
+      logError: () => {},
+      sleep: noSleep,
+    });
     expect(code).toBe(0);
     expect(handle.powerOffCalls).toBe(1);
   });
@@ -151,14 +178,26 @@ describe('runReaper', () => {
     const lastUseMs = Date.now() - 5 * 60_000;
     await writeFile(join(dir, 'last'), String(lastUseMs), 'utf8');
     const handle = fakeApi('running');
-    const code = await runReaper({ env: baseEnv(), api: handle.api, log: () => {} });
+    const code = await runReaper({
+      env: baseEnv(),
+      api: handle.api,
+      log: () => {},
+      logError: () => {},
+      sleep: noSleep,
+    });
     expect(code).toBe(0);
     expect(handle.powerOffCalls).toBe(0);
   });
 
   it('does not power off a stopped instance', async () => {
     const handle = fakeApi('stopped');
-    const code = await runReaper({ env: baseEnv(), api: handle.api, log: () => {} });
+    const code = await runReaper({
+      env: baseEnv(),
+      api: handle.api,
+      log: () => {},
+      logError: () => {},
+      sleep: noSleep,
+    });
     expect(code).toBe(0);
     expect(handle.powerOffCalls).toBe(0);
   });
@@ -171,7 +210,104 @@ describe('runReaper', () => {
       async powerOn() {},
       async powerOff() {},
     };
-    const code = await runReaper({ env: baseEnv(), api, log: () => {} });
+    const code = await runReaper({
+      env: baseEnv(),
+      api,
+      log: () => {},
+      logError: () => {},
+      sleep: noSleep,
+    });
     expect(code).toBe(1);
+  });
+
+  it('logs the verified state and returns 0 when powerOff causes state to leave running', async () => {
+    const lastUseMs = Date.now() - 2 * HOUR_MS;
+    await writeFile(join(dir, 'last'), String(lastUseMs), 'utf8');
+    const handle = fakeApi('running'); // transitionOnPowerOff defaults to true
+    const logs: string[] = [];
+    const code = await runReaper({
+      env: baseEnv(),
+      api: handle.api,
+      log: (m) => logs.push(m),
+      logError: () => {},
+      sleep: noSleep,
+    });
+    expect(code).toBe(0);
+    expect(logs.join('\n')).toMatch(/verified: instance state is now 'stopped in place'/);
+  });
+
+  it('appends a powerOff event when LM_EVENTS_PATH is set and powerOff verifies', async () => {
+    const lastUseMs = Date.now() - 2 * HOUR_MS;
+    await writeFile(join(dir, 'last'), String(lastUseMs), 'utf8');
+    const eventsPath = join(dir, 'events.log');
+    const handle = fakeApi('running');
+    const code = await runReaper({
+      env: baseEnv({ LM_EVENTS_PATH: eventsPath }),
+      api: handle.api,
+      log: () => {},
+      logError: () => {},
+      sleep: noSleep,
+    });
+    expect(code).toBe(0);
+    const events = (await import('node:fs/promises')).readFile;
+    const written = await events(eventsPath, 'utf8');
+    const parsed = JSON.parse(written.trim());
+    expect(parsed).toMatchObject({ event: 'powerOff', source: 'reaper' });
+    expect(parsed.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('does not append an event when verify fails — only successful halts get logged', async () => {
+    await writeFile(join(dir, 'last'), '0', 'utf8');
+    const eventsPath = join(dir, 'events.log');
+    const handle = fakeApi('running', { transitionOnPowerOff: false });
+    let t = 3 * HOUR_MS;
+    const code = await runReaper({
+      env: baseEnv({ LM_EVENTS_PATH: eventsPath }),
+      api: handle.api,
+      log: () => {},
+      logError: () => {},
+      sleep: noSleep,
+      now: () => {
+        const v = t;
+        t += 10 * 60_000;
+        return v;
+      },
+    });
+    expect(code).toBe(1);
+    const { access } = await import('node:fs/promises');
+    await expect(access(eventsPath)).rejects.toThrow(/ENOENT/);
+  });
+
+  it('routes ERROR to logError (stderr) when state stays running past the verify deadline', async () => {
+    // lastUseMs is epoch and fake `now` starts at +3h, so decideAction
+    // sees 3h of idle (> 1h threshold) and picks powerOff. After that,
+    // each `now()` call jumps 10 min — well past the 90s verify timeout
+    // — so the polling loop trips the deadline on its first check and
+    // we hit the ERROR path.
+    await writeFile(join(dir, 'last'), '0', 'utf8');
+    const handle = fakeApi('running', { transitionOnPowerOff: false });
+    const logs: string[] = [];
+    const errors: string[] = [];
+    let t = 3 * HOUR_MS;
+    const code = await runReaper({
+      env: baseEnv(),
+      api: handle.api,
+      log: (m) => logs.push(m),
+      logError: (m) => errors.push(m),
+      sleep: noSleep,
+      now: () => {
+        const v = t;
+        t += 10 * 60_000;
+        return v;
+      },
+    });
+    expect(code).toBe(1);
+    expect(errors.join('\n')).toMatch(
+      /ERROR: instance still 'running'.*action did not take effect/,
+    );
+    // The ERROR line must NOT appear in the stdout-equivalent stream —
+    // cron's MAILTO depends on stderr-only routing to surface a page.
+    expect(logs.join('\n')).not.toMatch(/ERROR/);
+    expect(handle.powerOffCalls).toBe(1);
   });
 });

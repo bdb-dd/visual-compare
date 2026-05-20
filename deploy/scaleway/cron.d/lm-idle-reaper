@@ -2,7 +2,16 @@
 # by cloud-init. Runs every 5 minutes as the visual-compare user so the
 # reaper has read access to /mnt/data/lm-last-use and inherits the same env.
 #
-# Output goes to /var/log/lm-idle-reaper.log (the redirect handles both
-# stdout and stderr; cron MAILTO is intentionally empty).
-MAILTO=""
-*/5 * * * * visual-compare set -a; . /etc/visual-compare/env; cd /opt/visual-compare/packages/api && ./node_modules/.bin/tsx scripts/lm-idle-reaper.ts >> /var/log/lm-idle-reaper.log 2>&1
+# Stream routing:
+#   stdout → /var/log/lm-idle-reaper.log   (routine "noop", "powering off",
+#                                           "verified" lines + Scaleway
+#                                           response bodies)
+#   stderr → cron MAILTO (root)            (env misconfig, Scaleway API
+#                                           errors, verify-deadline ERROR)
+#
+# For stderr to actually reach a human, root's mail must be forwarded
+# off-box. See deploy/scaleway/README.md > "Reaper alerts" for setup.
+# Until that's wired, errors accumulate in /var/mail/root on the VM and
+# can be read interactively with `sudo mail`.
+MAILTO=root
+*/5 * * * * visual-compare set -a; . /etc/visual-compare/env; cd /opt/visual-compare/packages/api && ./node_modules/.bin/tsx scripts/lm-idle-reaper.ts >> /var/log/lm-idle-reaper.log

@@ -18,6 +18,7 @@
  */
 
 import { createLmUsageTracker } from '../src/services/lm-usage.js';
+import { appendLmEvent } from '../src/services/lm-events.js';
 import {
   createScalewayApi,
   readScalewayGpuConfigFromEnv,
@@ -71,32 +72,53 @@ export interface RunReaperOptions {
   api?: ScalewayApi;
   /** Default: process.env. */
   env?: NodeJS.ProcessEnv;
-  /** Default: console.log. */
+  /** Default: console.log with UTC timestamp. Stdout-equivalent. */
   log?: (msg: string) => void;
+  /**
+   * Default: console.error with UTC timestamp. Stderr-equivalent.
+   * Used for conditions that warrant operator attention (Scaleway API
+   * errors, verify-loop timeout, env misconfiguration). Cron entry is
+   * configured so stderr lands in MAILTO instead of being swallowed
+   * into the log file.
+   */
+  logError?: (msg: string) => void;
   /** Default: Date.now. */
   now?: () => number;
+  /** Default: setTimeout-based sleep. Replace with a no-op in unit tests. */
+  sleep?: (ms: number) => Promise<void>;
   /** Default: read LM_LAST_USE_PATH or `<cwd>/data/lm-last-use`. */
   lastUsePathOverride?: string;
+  /**
+   * Default 90_000. Max wall-clock to wait for the instance state to
+   * leave `running` after powerOff is issued. If the deadline trips
+   * without a state change, the reaper logs ERROR and exits non-zero.
+   */
+  verifyTimeoutMs?: number;
+  /** Default 5_000. Interval between post-action state polls. */
+  verifyPollMs?: number;
 }
 
 export async function runReaper(opts: RunReaperOptions = {}): Promise<number> {
   const env = opts.env ?? process.env;
   const log =
     opts.log ?? ((m: string) => console.log(`${new Date().toISOString()} [lm-idle-reaper] ${m}`));
+  const logError =
+    opts.logError ??
+    ((m: string) => console.error(`${new Date().toISOString()} [lm-idle-reaper] ${m}`));
   const now = opts.now ?? (() => Date.now());
 
   const idleMinutes = env.LM_IDLE_SHUTDOWN_MINUTES
     ? Number(env.LM_IDLE_SHUTDOWN_MINUTES)
     : 60;
   if (!Number.isFinite(idleMinutes) || idleMinutes <= 0) {
-    log(`invalid LM_IDLE_SHUTDOWN_MINUTES='${env.LM_IDLE_SHUTDOWN_MINUTES}'`);
+    logError(`invalid LM_IDLE_SHUTDOWN_MINUTES='${env.LM_IDLE_SHUTDOWN_MINUTES}'`);
     return 2;
   }
   const idleThresholdMs = idleMinutes * 60_000;
 
   const cfg = readScalewayGpuConfigFromEnv(env);
   if (!cfg) {
-    log(
+    logError(
       'missing Scaleway env (SCW_GPU_ZONE, SCW_GPU_INSTANCE_ID, SCW_SECRET_KEY, LM_STUDIO_BASE_URL, LM_STUDIO_MODEL) — refusing to run',
     );
     return 2;
@@ -104,7 +126,7 @@ export async function runReaper(opts: RunReaperOptions = {}): Promise<number> {
 
   const lastUsePath = opts.lastUsePathOverride ?? env.LM_LAST_USE_PATH;
   if (!lastUsePath) {
-    log('missing LM_LAST_USE_PATH — refusing to run');
+    logError('missing LM_LAST_USE_PATH — refusing to run');
     return 2;
   }
   const tracker = createLmUsageTracker({ path: lastUsePath });
@@ -115,7 +137,7 @@ export async function runReaper(opts: RunReaperOptions = {}): Promise<number> {
   try {
     instance = await api.getInstance();
   } catch (err) {
-    log(`scaleway getInstance failed: ${err instanceof Error ? err.message : String(err)}`);
+    logError(`scaleway getInstance failed: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
   }
 
@@ -135,11 +157,47 @@ export async function runReaper(opts: RunReaperOptions = {}): Promise<number> {
   try {
     await api.powerOff();
   } catch (err) {
-    log(`scaleway powerOff failed: ${err instanceof Error ? err.message : String(err)}`);
+    logError(`scaleway powerOff failed: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
   }
   log('poweroff issued');
-  return 0;
+
+  // Closing-loop verification. Scaleway's action endpoint is asynchronous
+  // — a 2xx response only means the task was queued, not that the state
+  // actually transitioned. (Production observation: `poweroff` tasks sat
+  // `pending` indefinitely while the instance kept billing.) Poll until
+  // the instance leaves `running` or we hit the deadline.
+  const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const verifyTimeoutMs = opts.verifyTimeoutMs ?? 90_000;
+  const verifyPollMs = opts.verifyPollMs ?? 5_000;
+  const verifyDeadline = now() + verifyTimeoutMs;
+  while (now() < verifyDeadline) {
+    await sleep(verifyPollMs);
+    let post: ScalewayInstanceState;
+    try {
+      post = await api.getInstance();
+    } catch (err) {
+      log(
+        `post-poweroff getInstance failed: ${err instanceof Error ? err.message : String(err)} — retrying`,
+      );
+      continue;
+    }
+    if (post.state !== 'running') {
+      log(`verified: instance state is now '${post.state}'`);
+      const eventsPath = env.LM_EVENTS_PATH;
+      if (eventsPath) {
+        await appendLmEvent({
+          path: eventsPath,
+          event: { event: 'powerOff', source: 'reaper' },
+        });
+      }
+      return 0;
+    }
+  }
+  logError(
+    `ERROR: instance still 'running' ${Math.floor(verifyTimeoutMs / 1000)}s after powerOff — action did not take effect`,
+  );
+  return 1;
 }
 
 // ---------------------------------------------------------------------------

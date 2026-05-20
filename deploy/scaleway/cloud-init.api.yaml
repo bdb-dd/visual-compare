@@ -84,6 +84,12 @@ write_files:
       # the cron job agree. Kept in env (not just systemd) because the
       # reaper runs from cron and only sources this file.
       LM_LAST_USE_PATH=/mnt/data/lm-last-use
+      # Unified GPU on/off events log. The API service appends a
+      # `powerOn` line each time preflight had to start the LM server;
+      # the reaper appends a `powerOff` line each time it issues
+      # stop_in_place AND verifies the state transition. Pair successive
+      # entries to compute time-in-off-state.
+      LM_EVENTS_PATH=/mnt/data/lm-events.log
       SCW_GPU_ZONE=__SCW_GPU_ZONE__
       SCW_GPU_INSTANCE_ID=__SCW_GPU_INSTANCE_ID__
       SCW_SECRET_KEY=__SCW_SECRET_KEY__

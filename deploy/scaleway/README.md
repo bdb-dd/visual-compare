@@ -87,9 +87,65 @@ ssh deploy@$API_PUBLIC_IP sudo journalctl -u visual-compare-api -f
 # tail the reaper log (runs every 5 min)
 ssh deploy@$API_PUBLIC_IP sudo tail -f /var/log/lm-idle-reaper.log
 
+# tail the unified events log (one JSON line per powerOn/powerOff)
+ssh deploy@$API_PUBLIC_IP tail -f /mnt/data/lm-events.log
+
 # inspect GPU state
 ./scripts/provision.sh status
 ```
+
+## Computing GPU off-time
+
+Every powerOn/powerOff transition is recorded as a single JSON line in
+`/mnt/data/lm-events.log` (path: `LM_EVENTS_PATH`):
+
+```json
+{"ts":"2026-05-20T15:07:30.941Z","event":"powerOff","source":"reaper"}
+{"ts":"2026-05-20T18:42:11.220Z","event":"powerOn","source":"api"}
+```
+
+- `powerOff` is written by the reaper only after the verify loop
+  confirms the instance left `running` — stuck/no-op halts are not
+  logged here (they hit the stderr error stream instead).
+- `powerOn` is written by the API service from `preflight` only when it
+  actually had to issue `serverStart` — a preflight that finds the
+  server already up does not write a line.
+
+To sum off-time:
+
+```sh
+sudo cat /mnt/data/lm-events.log \
+  | jq -rs 'sort_by(.ts) | reduce .[] as $e ({total:0, lastOff:null};
+      if $e.event == "powerOff" then .lastOff = $e.ts
+      elif $e.event == "powerOn" and .lastOff != null
+      then .total += (($e.ts|fromdateiso8601) - (.lastOff|fromdateiso8601))
+        | .lastOff = null
+      else . end) | "\(.total/3600 | floor) hours off"'
+```
+
+## Reaper alerts
+
+The cron entry routes routine output to `/var/log/lm-idle-reaper.log`
+and lets *errors* (env misconfig, Scaleway API failures, verify-deadline
+ERROR) fall through to **stderr**, which cron captures and sends to
+`MAILTO=root`.
+
+For these to actually reach a person, the VM needs an MTA + forwarding:
+
+```sh
+# Option 1: install postfix in local-only mode, then forward root mail.
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y postfix bsd-mailx
+# pick "Internet site" (or "Local only") at the prompt
+echo "root: you@yourdomain.com" | sudo tee -a /etc/aliases
+sudo newaliases
+
+# Option 2: skip mail entirely. Watch the stderr-equivalent yourself
+# (it's also in syslog when no MTA is installed):
+sudo journalctl -t CROND -p err -f
+```
+
+Until one of these is wired up, error mail accumulates in
+`/var/mail/root` on the VM and can be inspected with `sudo mail`.
 
 ## Updating
 
@@ -156,6 +212,7 @@ Override knobs (all env, on the API VM in `/etc/visual-compare/env`):
 | `LM_START_TIMEOUT_SECONDS` | 360 | Max wait for `serverStart`. |
 | `LM_LOAD_TIMEOUT_SECONDS` | 240 | Max wait for the model to appear. |
 | `LM_POLL_INTERVAL_SECONDS` | 5 | Probe cadence during waits. |
+| `LM_EVENTS_PATH` | `/mnt/data/lm-events.log` | Unified powerOn/powerOff event log. Unset to disable. |
 | `LM_BACKEND=local` | `scaleway` | Disable Scaleway control entirely. |
 
 Manual overrides:
