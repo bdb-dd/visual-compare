@@ -7,6 +7,7 @@ import { openDatabase } from './db/client.js';
 import { applySchema } from './db/schema.js';
 import { runColumnMigrations } from './db/migrations.js';
 import { recoverInterruptedRuns } from './db/recovery.js';
+import { Evaluator, resumeInterruptedEvaluations } from './services/evaluator.js';
 import { runCacheBackfill } from './services/cache-backfill.js';
 import {
   backfillSessionPrompts,
@@ -106,11 +107,37 @@ console.log(
 const RATE_LIMIT_REFILL_PER_SECOND = Number(process.env.RATE_LIMIT_REFILL_PER_SECOND ?? 5);
 const RATE_LIMIT_BURST = Number(process.env.RATE_LIMIT_BURST ?? 30);
 
+// Build the Evaluator here (rather than letting createApp default it)
+// so we can re-drive interrupted evaluations *before* the API starts
+// serving requests. resume calls `evaluator.start`, which enqueues onto
+// the same JobQueue the request handlers use; doing it first means an
+// incoming Evaluate click during the restart window coalesces onto the
+// resumed eval instead of racing it.
+const evaluator = new Evaluator({
+  db,
+  queue,
+  artifactStore,
+  worker: captureWorker,
+  lm,
+  workerActivity,
+});
+
+const resumed = resumeInterruptedEvaluations(evaluator, recovery.resumable);
+if (resumed.length > 0) {
+  // eslint-disable-next-line no-console
+  console.log(
+    `[recovery] resumed ${resumed.length} evaluation${resumed.length === 1 ? '' : 's'}: ${resumed
+      .map((r) => `${r.session_id.slice(0, 8)}→${r.evaluation_id.slice(0, 8)}${r.coalesced ? ' (coalesced)' : ''}`)
+      .join(', ')}`,
+  );
+}
+
 const app = createApp({
   db,
   queue,
   artifactStore,
   captureWorker,
+  evaluator,
   lm,
   lmActivity,
   workerActivity,

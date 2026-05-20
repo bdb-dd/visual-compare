@@ -2,11 +2,28 @@ import type { Db } from './client.js';
 
 export const INTERRUPTED_BY_RESTART = 'interrupted_by_restart';
 
+export interface ResumableEvaluation {
+  id: string;
+  session_id: string;
+  /** Resolved `EvaluationConfig` JSON snapshot stored at start time. */
+  config_snapshot_json: string;
+}
+
 export interface RecoveryResult {
   jobs: number;
   captures: number;
   comparisons: number;
   evaluations: number;
+  /**
+   * Evaluations that were `running`/`pending` at restart, captured *before*
+   * they were flipped to `error`. The startup script calls
+   * `resumeInterruptedEvaluations` with these so an unfinished eval picks
+   * back up where it left off (cached captures stay cached, the planner
+   * re-queues the still-pending work). One entry per evaluation row;
+   * `evaluator.start` coalesces if multiple were running for the same
+   * session.
+   */
+  resumable: ResumableEvaluation[];
 }
 
 /**
@@ -20,13 +37,31 @@ export interface RecoveryResult {
  * table grow by ~10K rows per interrupted Recapture-all + Evaluate.
  *
  * Both are flipped to `error` with `error_message='interrupted_by_restart'`.
- * Re-driving the work is the planner's job: any not-yet-cached URL will be
- * picked up by the next Evaluate, which creates a fresh capture_run.
+ * The returned `resumable` array carries the evaluations that were live,
+ * so the caller (index.ts) can hand them to `resumeInterruptedEvaluations`
+ * and re-drive the work automatically — no user click required.
  */
 export function recoverInterruptedRuns(db: Db, now: string = new Date().toISOString()): RecoveryResult {
-  const result: RecoveryResult = { jobs: 0, captures: 0, comparisons: 0, evaluations: 0 };
+  const result: RecoveryResult = {
+    jobs: 0,
+    captures: 0,
+    comparisons: 0,
+    evaluations: 0,
+    resumable: [],
+  };
 
   const apply = db.transaction(() => {
+    // Capture the live evaluations BEFORE we flip them to 'error' so the
+    // caller can resume them.
+    result.resumable = db
+      .prepare<unknown[], ResumableEvaluation>(
+        `SELECT id, session_id, config_snapshot_json
+           FROM evaluations
+          WHERE status IN ('running', 'pending')
+          ORDER BY started_at`,
+      )
+      .all();
+
     const jobs = db
       .prepare(
         `UPDATE jobs

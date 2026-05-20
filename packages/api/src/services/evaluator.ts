@@ -973,6 +973,97 @@ export function getEvaluation(db: Db, id: string): EvaluationRow | null {
   return row ?? null;
 }
 
+export interface ResumeResult {
+  /** Original eval id whose work this resume re-drives. */
+  prior_evaluation_id: string;
+  session_id: string;
+  /** New eval row created by the resume call. */
+  evaluation_id: string;
+  /** True when the original session already had a fresh in-flight eval. */
+  coalesced: boolean;
+}
+
+/**
+ * Re-drive every evaluation interrupted by a restart. Called once at boot,
+ * after `recoverInterruptedRuns` flips the orphaned rows to `error`. The
+ * snapshot stored on each evaluation lets us reconstruct the user's intent
+ * (force_recapture, url_pair_ids, target_level, viewports, capture_options,
+ * lm_model_id) so the new orchestration picks up where the dead process
+ * left off — captures already in the cache are reused, only the still-
+ * missing work is re-queued.
+ *
+ * Session, prompt, and LM-server config are re-resolved from current state
+ * (the new evaluator.start path), not snapshotted; if a session's config
+ * changed between the old eval starting and the restart, the resume uses
+ * today's config. That's the conservative choice — a stale snapshot could
+ * easily reference deleted url_pair_ids or removed viewports.
+ *
+ * Failures during a single resume are logged but don't abort the loop;
+ * the user can still click Evaluate manually to recover.
+ */
+export function resumeInterruptedEvaluations(
+  evaluator: Evaluator,
+  resumable: ReadonlyArray<{ id: string; session_id: string; config_snapshot_json: string }>,
+): ResumeResult[] {
+  const out: ResumeResult[] = [];
+  for (const prior of resumable) {
+    try {
+      const input = configSnapshotToInput(prior.config_snapshot_json);
+      const result = evaluator.start(prior.session_id, input);
+      out.push({
+        prior_evaluation_id: prior.id,
+        session_id: prior.session_id,
+        evaluation_id: result.evaluation_id,
+        coalesced: result.coalesced,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[evaluator] failed to resume evaluation ${prior.id} for session ${prior.session_id}: ${(err as Error).message}`,
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * Best-effort mapper from a stored EvaluationConfig snapshot to the
+ * EvaluationConfigInput shape `evaluator.start` accepts. Fields that
+ * resolve from current session/LM config (`filter_query`,
+ * `region_match_config`, `lm_prompt_ids`, `lm_include_diff_image`) are
+ * deliberately dropped — picking them up fresh is more likely to be
+ * correct than replaying a possibly stale snapshot. Unparseable input
+ * yields an empty config (which still works: the resolver fills from
+ * the session).
+ */
+function configSnapshotToInput(json: string): EvaluationConfigInput {
+  let snapshot: Partial<EvaluationConfig>;
+  try {
+    snapshot = JSON.parse(json) as Partial<EvaluationConfig>;
+  } catch {
+    return {};
+  }
+  const input: EvaluationConfigInput = {};
+  if (Array.isArray(snapshot.viewports) && snapshot.viewports.length > 0) {
+    input.viewports = snapshot.viewports;
+  }
+  if (snapshot.target_level) input.target_level = snapshot.target_level;
+  if (typeof snapshot.invoke_lm === 'boolean') input.invoke_lm = snapshot.invoke_lm;
+  if (snapshot.capture_options) {
+    input.capture_options = snapshot.capture_options as unknown as Record<string, unknown>;
+  }
+  if (Array.isArray(snapshot.url_pair_ids) && snapshot.url_pair_ids.length > 0) {
+    input.url_pair_ids = snapshot.url_pair_ids;
+  }
+  if (typeof snapshot.lm_model_id === 'string' && snapshot.lm_model_id.length > 0) {
+    input.lm_model_id = snapshot.lm_model_id;
+  }
+  if (snapshot.force_recapture) {
+    input.force_recapture = { sides: snapshot.force_recapture.sides ?? [] };
+  }
+  return input;
+}
+
 export function listEvaluations(db: Db, sessionId: string): EvaluationRow[] {
   return db
     .prepare<[string], EvaluationRow>(

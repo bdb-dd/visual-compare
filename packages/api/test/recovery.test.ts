@@ -93,7 +93,21 @@ describe('recoverInterruptedRuns', () => {
     const result = recoverInterruptedRuns(db);
     // running+pending jobs (3), processing+pending captures (2),
     // processing+pending comparisons (2), running+pending evaluations (2).
-    expect(result).toEqual({ jobs: 3, captures: 2, comparisons: 2, evaluations: 2 });
+    expect(result.jobs).toBe(3);
+    expect(result.captures).toBe(2);
+    expect(result.comparisons).toBe(2);
+    expect(result.evaluations).toBe(2);
+
+    // resumable carries every running/pending evaluation so startup can
+    // re-drive them. Completed evals are filtered out. Snapshot json
+    // round-trips so the resume caller can reconstruct EvaluationConfig.
+    expect(result.resumable.map((r) => r.id).sort()).toEqual(
+      [runningEvalId, pendingEvalId].sort(),
+    );
+    for (const r of result.resumable) {
+      expect(r.session_id).toBe(sessionId);
+      expect(r.config_snapshot_json).toBe('{}');
+    }
 
     const statusOf = (table: string, id: string) =>
       db.prepare<[string], { status: string; error_message: string | null }>(
