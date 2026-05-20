@@ -13,6 +13,8 @@ import type {
   ClusterMemberDto,
   ClusterSummaryDto,
 } from '@visual-compare/api/types';
+import { useCaptureEta } from '../hooks/useCaptureEta.js';
+import { CaptureStatusChip } from './CaptureStatusChip.js';
 
 /**
  * Cluster review category index — the body of the cluster surface, extracted
@@ -803,6 +805,17 @@ function InlineMemberList({
     return members.filter((m) => m.viewport_name === activeViewport);
   }, [members, activeViewport]);
 
+  // Poll capture ETAs while any visible member is stale; turns off
+  // automatically once the run completes.
+  const anyMemberStale = useMemo(
+    () =>
+      filteredMembers.some(
+        (m) => m.capture_a_status.is_stale || m.capture_b_status.is_stale,
+      ),
+    [filteredMembers],
+  );
+  const etaByKey = useCaptureEta(sessionId, anyMemberStale);
+
   // Suppress the bar entirely when there's only one viewport — the
   // export ⋯ that used to anchor its right edge has moved up to the
   // cluster row's count button, so a single-tab tablist would carry no
@@ -861,6 +874,13 @@ function InlineMemberList({
               {isAccepted && <span className="member-row__accepted" aria-label="accepted">✓</span>}
               {isRejected && <span className="member-row__rejected" aria-label="rejected">✗</span>}
               <span className="member-row__url">{m.url_a}</span>
+              <span className="member-row__status">
+                <CaptureStatusChip
+                  statusA={m.capture_a_status}
+                  statusB={m.capture_b_status}
+                  etaMs={etaByKey.get(`${m.url_pair_id}::${m.viewport_name}`)?.eta_ms}
+                />
+              </span>
               <span
                 className="member-row__changed"
                 title={m.changed_pct != null ? 'Pixel-changed percentage from the imagick pass' : 'No pixel diff recorded for this member'}

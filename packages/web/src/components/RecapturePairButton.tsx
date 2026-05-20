@@ -8,6 +8,12 @@ interface Props {
   /** Compact variant for use inside dense list rows. */
   compact?: boolean;
   /**
+   * Icon-only variant: renders a single ↻ glyph. Used when the button
+   * sits inline next to other row chrome (e.g. the verdict chip) where
+   * a wide "Recapture" label would crowd the row meta.
+   */
+  iconOnly?: boolean;
+  /**
    * Fires after the invalidate + evaluate kick-off succeeds, with the
    * evaluate result. Callers may return a Promise (e.g. to poll the
    * evaluation and then navigate); the button stays in "Recapturing…"
@@ -24,6 +30,7 @@ export function RecapturePairButton({
   pairId,
   className,
   compact,
+  iconOnly,
   onTriggered,
 }: Props): JSX.Element {
   const [busy, setBusy] = useState(false);
@@ -44,21 +51,28 @@ export function RecapturePairButton({
   };
 
   const title = error
-    ?? 'Drop cached captures for this pair and re-evaluate both URLs from source';
+    ?? (busy
+      ? 'Recapture in flight'
+      : 'Drop cached captures for this pair and re-evaluate both URLs from source');
   const classes = ['btn', 'secondary'];
   if (compact) classes.push('btn-compact');
+  if (iconOnly) classes.push('btn-icon');
   if (className) classes.push(className);
+
+  const label = iconOnly
+    ? busy ? '↻' : '↻'   // glyph stays; busy state shown via the spin class
+    : busy ? 'Recapturing…' : 'Recapture';
 
   return (
     <button
       type="button"
-      className={classes.join(' ')}
+      className={`${classes.join(' ')}${iconOnly && busy ? ' btn-icon--spinning' : ''}`}
       onClick={(e) => void handleClick(e)}
       disabled={busy}
       title={title}
       aria-label="Recapture this pair"
     >
-      {busy ? 'Recapturing…' : 'Recapture'}
+      {label}
     </button>
   );
 }

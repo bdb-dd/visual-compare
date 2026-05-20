@@ -6,6 +6,8 @@ import type {
   SessionResultsSummary,
 } from '@visual-compare/api/types';
 import { RecapturePairButton } from './RecapturePairButton.js';
+import { useCaptureEta } from '../hooks/useCaptureEta.js';
+import { CaptureStatusChip } from './CaptureStatusChip.js';
 import {
   levelMatches,
   outcomeMatches,
@@ -73,27 +75,6 @@ function verdictOf(r: SessionResultRow, targetLevel: EquivalenceLevelId): Verdic
   if (r.acceptance_status === 'expanded_diff') return 'expanded';
   if (r.acceptance_status === 'accepted') return 'accepted';
   return isAtLeastAsStrict(r.matched_at_level, targetLevel) ? 'passed' : 'failed';
-}
-
-/**
- * If either capture errored, return a short badge label + a longer tooltip
- * showing which side and the error. Null when both captures succeeded
- * (and the regular missing/level badge should show instead).
- */
-function captureFailureLabel(
-  r: SessionResultRow,
-): { label: string; tooltip: string } | null {
-  const aErr = r.capture_a_status.status === 'error';
-  const bErr = r.capture_b_status.status === 'error';
-  if (!aErr && !bErr) return null;
-  const which = aErr && bErr ? 'A+B' : aErr ? 'A' : 'B';
-  const reason = (aErr && r.capture_a_status.error_message)
-    || (bErr && r.capture_b_status.error_message)
-    || 'unknown error';
-  return {
-    label: `💥 capture failed (${which})`,
-    tooltip: `Capture failed on ${which}: ${reason}`,
-  };
 }
 
 function missingLabel(o: SessionResultRow['pair_outcome']): string | null {
@@ -246,6 +227,15 @@ export function SessionResultsList({
   );
   const listRef = useRef<HTMLDivElement | null>(null);
 
+  // Poll capture ETAs while any visible row is showing stale captures —
+  // gates the `~30s` suffix in the row's stale chip. The hook stops
+  // polling on its own once we flip `anyStale` to false.
+  const anyStale = useMemo(
+    () => visible.some((r) => r.capture_a_status.is_stale || r.capture_b_status.is_stale),
+    [visible],
+  );
+  const etaByKey = useCaptureEta(sessionId ?? null, anyStale);
+
   // Auto-select the first visible row when the current selection drops out.
   useEffect(() => {
     if (visible.length === 0) {
@@ -334,17 +324,26 @@ export function SessionResultsList({
             const isSelected = key === selectedKey;
             const thumb = thumbUrl(r.pixel?.im_diff_sha256);
             const missing = missingLabel(r.pair_outcome);
-            const failedCapture = captureFailureLabel(r);
+            const aErr = r.capture_a_status.status === 'error';
+            const bErr = r.capture_b_status.status === 'error';
+            const errored = aErr || bErr;
             return (
               <div
                 key={key}
                 className={`comparison-row-wrap ${isSelected ? 'selected' : ''} verdict-${verdict}`}
               >
-                <button
-                  type="button"
+                <div
+                  role="button"
+                  tabIndex={0}
                   data-row-key={key}
                   className={`comparison-row ${isSelected ? 'selected' : ''} verdict-${verdict}`}
                   onClick={() => onSelect(key, r)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelect(key, r);
+                    }
+                  }}
                 >
                   <div className="thumb">
                     {thumb ? (
@@ -364,21 +363,28 @@ export function SessionResultsList({
                   <div className="meta">
                     <div className="row-line">
                       <span className="label" title={label}>{label}</span>
-                      <span className={`verdict-chip verdict-${verdict}`}>{verdictGlyph(verdict)}</span>
+                      <span className="row-line__actions">
+                        <span className={`verdict-chip verdict-${verdict}`}>{verdictGlyph(verdict)}</span>
+                        {sessionId && (
+                          <RecapturePairButton
+                            sessionId={sessionId}
+                            pairId={r.url_pair_id}
+                            iconOnly
+                            onTriggered={onRecaptured}
+                          />
+                        )}
+                      </span>
                     </div>
                     <div className="row-line muted">
                       <span className="viewport-badge">{r.viewport_name}</span>
-                      {failedCapture && (
-                        <span
-                          className="viewport-badge viewport-badge--error"
-                          title={failedCapture.tooltip}
-                        >
-                          {failedCapture.label}
-                        </span>
-                      )}
+                      <CaptureStatusChip
+                        statusA={r.capture_a_status}
+                        statusB={r.capture_b_status}
+                        etaMs={etaByKey.get(key)?.eta_ms}
+                      />
                       {missing ? (
                         <span className="viewport-badge">{missing}</span>
-                      ) : !failedCapture && (
+                      ) : !errored && (
                         <>
                           <span className="viewport-badge">{r.matched_at_level ?? '—'}</span>
                           <span className="changed-pct">{fmtPct(r.pixel?.changed_pct)}</span>
@@ -386,17 +392,7 @@ export function SessionResultsList({
                       )}
                     </div>
                   </div>
-                </button>
-                {sessionId && (
-                  <div className="comparison-row-actions">
-                    <RecapturePairButton
-                      sessionId={sessionId}
-                      pairId={r.url_pair_id}
-                      compact
-                      onTriggered={onRecaptured}
-                    />
-                  </div>
-                )}
+                </div>
               </div>
             );
           })

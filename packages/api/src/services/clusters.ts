@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/client.js';
+import { loadLatestCapturesByKey } from './capture-staleness.js';
 import type {
   ClusterReviewState,
   DifferenceClusterRow,
@@ -298,6 +299,16 @@ export interface ClusterMember {
   changed_pct: number | null;
   lm_summary: string | null;
   lm_confidence: number | null;
+  /**
+   * Per-side capture status, mirroring the SessionResultRow shape so the
+   * Clusters view can show the same stale-recapture / recapture-failed
+   * badges as the Rows view. `is_stale` is true when a newer captures row
+   * exists for this (pair, viewport, side) than the one referenced by the
+   * comparison the member was materialised from — typically a recapture
+   * that's still in flight or that errored.
+   */
+  capture_a_status: import('../types.js').CaptureStatusInfo;
+  capture_b_status: import('../types.js').CaptureStatusInfo;
 }
 
 /**
@@ -455,8 +466,30 @@ export function listClusterMembers(
   // aggregate counts.
   const cluster = getCluster(db, sessionId, clusterId);
   if (!cluster) return [];
-  return db
-    .prepare<[string, string, string, number], ClusterMember>(
+
+  interface RawMember {
+    difference_id: string;
+    comparison_id: string;
+    url_pair_id: string;
+    viewport_name: string;
+    url_a: string;
+    url_b: string;
+    description: string;
+    severity: string | null;
+    bounding_box_json: string | null;
+    capture_a_sha: string | null;
+    capture_b_sha: string | null;
+    capture_a_id: string;
+    capture_b_id: string;
+    im_diff_sha: string | null;
+    ssim: number | null;
+    changed_pct: number | null;
+    lm_summary: string | null;
+    lm_confidence: number | null;
+  }
+
+  const rows = db
+    .prepare<[string, string, string, number], RawMember>(
       `WITH latest_comparison AS (
          SELECT c.id,
                 ROW_NUMBER() OVER (
@@ -478,6 +511,8 @@ export function listClusterMembers(
               d.bounding_box_json        AS bounding_box_json,
               ca.screenshot_sha256       AS capture_a_sha,
               cb.screenshot_sha256       AS capture_b_sha,
+              ca.id                      AS capture_a_id,
+              cb.id                      AS capture_b_id,
               c.im_diff_sha256           AS im_diff_sha,
               c.ssim                     AS ssim,
               c.changed_pixel_percentage AS changed_pct,
@@ -496,4 +531,37 @@ export function listClusterMembers(
         LIMIT ?`,
     )
     .all(sessionId, cluster.signature, cluster.signature_version, limit);
+
+  // Attach per-side capture status. Staleness compares the *comparison's*
+  // capture_id (what the cluster panel is rendering) against the latest
+  // captures row for the (pair, viewport, side). When a recapture is in
+  // flight, the latest row is the new pending capture and the comparison's
+  // capture is the prior one — flag as stale + report the latest attempt's
+  // status so the UI can show a "recapturing" / "recapture failed" badge.
+  const latestByKey = loadLatestCapturesByKey(db, sessionId);
+  const statusFor = (
+    capId: string,
+    side: 'a' | 'b',
+    row: RawMember,
+  ): import('../types.js').CaptureStatusInfo => {
+    const latest = latestByKey.get(`${row.url_pair_id}::${row.viewport_name}::${side}`);
+    if (!latest || latest.capture_id === capId) {
+      return { status: 'complete', error_message: null, is_stale: false };
+    }
+    if (latest.status === 'error') {
+      return { status: 'error', error_message: latest.error_message, is_stale: true };
+    }
+    if (latest.status === 'complete') {
+      // A different completed capture exists (different opts_hash). Member
+      // sha is from an older capture; surface as stale-but-complete.
+      return { status: 'complete', error_message: null, is_stale: true };
+    }
+    return { status: 'in_progress', error_message: null, is_stale: true };
+  };
+
+  return rows.map(({ capture_a_id, capture_b_id, ...rest }) => ({
+    ...rest,
+    capture_a_status: statusFor(capture_a_id, 'a', { ...rest, capture_a_id, capture_b_id }),
+    capture_b_status: statusFor(capture_b_id, 'b', { ...rest, capture_a_id, capture_b_id }),
+  }));
 }

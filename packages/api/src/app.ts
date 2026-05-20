@@ -68,7 +68,10 @@ export function createApp(deps: AppDeps): Express {
 
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
-  app.use('/api/sessions', sessionsRouter(deps.db, evaluator, deps.lm));
+  app.use(
+    '/api/sessions',
+    sessionsRouter({ db: deps.db, evaluator, lm: deps.lm }),
+  );
   app.use(
     '/api/capture-runs',
     captureRunsRouter({

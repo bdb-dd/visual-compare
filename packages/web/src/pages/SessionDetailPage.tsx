@@ -572,11 +572,11 @@ export function SessionDetailPage(): JSX.Element {
 
   const handleInvalidateAll = async () => {
     if (!session) return;
-    if (!confirm('Drop every cached capture for this session?')) return;
+    if (!confirm('Start a new evaluation that recaptures every pair in this session?')) return;
     setBusy(true);
     try {
-      await api.invalidateCaptures(session.id, {});
-      await refreshResults();
+      await api.recapture(session.id, {});
+      await Promise.all([refreshEvaluations(), refreshResults()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -606,7 +606,7 @@ export function SessionDetailPage(): JSX.Element {
     if (failedPairIds.length === 0) return;
     if (
       !confirm(
-        `Drop cached captures for ${failedPairIds.length} pair${
+        `Start a new evaluation that recaptures ${failedPairIds.length} pair${
           failedPairIds.length === 1 ? '' : 's'
         } whose last capture failed?`,
       )
@@ -615,8 +615,8 @@ export function SessionDetailPage(): JSX.Element {
     }
     setBusy(true);
     try {
-      await api.invalidateCaptures(session.id, { pair_ids: failedPairIds });
-      await refreshResults();
+      await api.recapture(session.id, { pair_ids: failedPairIds });
+      await Promise.all([refreshEvaluations(), refreshResults()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

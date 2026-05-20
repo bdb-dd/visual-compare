@@ -506,8 +506,9 @@ describe('acceptance_status in /results', () => {
     //    captures so a fresh comparison is produced.
     h.ctl.changedPct = 4; // accepted was 1; delta knob is 0.5 → expanded
     await request(h.app)
-      .post(`/api/sessions/${sessionId}/invalidate-captures`)
+      .post(`/api/sessions/${sessionId}/recapture`)
       .send({});
+    await settle(h);
     h.evaluator.start(sessionId, {
       viewports: [desktop],
       target_level: 'tolerant',
@@ -540,8 +541,9 @@ describe('acceptance_status in /results', () => {
     h.ctl.changedPct = 90;
     h.ctl.ssim = 0.1;
     await request(h.app)
-      .post(`/api/sessions/${sessionId}/invalidate-captures`)
+      .post(`/api/sessions/${sessionId}/recapture`)
       .send({});
+    await settle(h);
     h.evaluator.start(sessionId, { viewports: [desktop], target_level: 'tolerant' });
     await settle(h);
 

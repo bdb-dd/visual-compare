@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type RefOb
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ImageWithBoxes } from './ImageWithBoxes.js';
+import { StaleBadge } from './StaleBadge.js';
+import { useCaptureEta } from '../hooks/useCaptureEta.js';
 import { FitModeToggle, useFitMode } from './FitModeToggle.js';
 import { useSyncedScroll, type SyncedScroll } from './useSyncedScroll.js';
 import { RecapturePairButton } from './RecapturePairButton.js';
@@ -270,6 +272,18 @@ export function ClusterDetailPanel({
   const displayed: ClusterMemberDto | null = displayedIndex >= 0
     ? (members[displayedIndex] ?? null)
     : representative;
+
+  // Poll capture ETAs while any cluster member is stale. The badge in each
+  // image pane reads from this map keyed on `${url_pair_id}::${viewport_name}`.
+  // The hook stops polling once no members are stale anymore.
+  const anyMemberStale = useMemo(
+    () => members.some((m) => m.capture_a_status.is_stale || m.capture_b_status.is_stale),
+    [members],
+  );
+  const etaByKey = useCaptureEta(sessionId, anyMemberStale);
+  const displayedEta = displayed
+    ? etaByKey.get(`${displayed.url_pair_id}::${displayed.viewport_name}`)
+    : undefined;
 
   // Per-member acceptance is just a row acceptance under the hood
   // (sessions.ts:553 POST /:id/acceptances). We index acceptances by
@@ -702,9 +716,15 @@ export function ClusterDetailPanel({
           </div>
 
           <div className={`cluster-detail__images cluster-detail__images--${viewMode} fit-${fitMode}`}>
-            {viewMode === 'triple' && <ImageTriple member={displayed} bbox={displayedBbox} sync={figureSync} />}
-            {viewMode === 'ab' && <ImageAB member={displayed} bbox={displayedBbox} sync={figureSync} />}
-            {viewMode === 'slider' && <ImageSlider member={displayed} bbox={displayedBbox} />}
+            {viewMode === 'triple' && (
+              <ImageTriple member={displayed} bbox={displayedBbox} sync={figureSync} etaMs={displayedEta?.eta_ms} />
+            )}
+            {viewMode === 'ab' && (
+              <ImageAB member={displayed} bbox={displayedBbox} sync={figureSync} etaMs={displayedEta?.eta_ms} />
+            )}
+            {viewMode === 'slider' && (
+              <ImageSlider member={displayed} bbox={displayedBbox} etaMs={displayedEta?.eta_ms} />
+            )}
           </div>
         </section>
       ) : (
@@ -785,10 +805,12 @@ function ImageTriple({
   member,
   bbox,
   sync,
+  etaMs,
 }: {
   member: ClusterMemberDto;
   bbox: { x: number; y: number; width: number; height: number } | null;
   sync: SyncedScroll;
+  etaMs?: number;
 }): JSX.Element {
   const aUrl = imageUrl(member.capture_a_sha);
   const bUrl = imageUrl(member.capture_b_sha);
@@ -797,11 +819,11 @@ function ImageTriple({
   return (
     <>
       <figure ref={sync.refs[0]} onScroll={sync.onScroll}>
-        <figcaption>A</figcaption>
+        <figcaption>A<StaleBadge status={member.capture_a_status} etaMs={etaMs} /></figcaption>
         {aUrl ? <ImageWithBoxes src={aUrl} alt="capture A" boxes={boxes} /> : <span className="missing-img">no image</span>}
       </figure>
       <figure ref={sync.refs[1]} onScroll={sync.onScroll}>
-        <figcaption>B</figcaption>
+        <figcaption>B<StaleBadge status={member.capture_b_status} etaMs={etaMs} /></figcaption>
         {bUrl ? <ImageWithBoxes src={bUrl} alt="capture B" boxes={boxes} /> : <span className="missing-img">no image</span>}
       </figure>
       <figure ref={sync.refs[2]} onScroll={sync.onScroll}>
@@ -821,10 +843,12 @@ function ImageAB({
   member,
   bbox,
   sync,
+  etaMs,
 }: {
   member: ClusterMemberDto;
   bbox: { x: number; y: number; width: number; height: number } | null;
   sync: SyncedScroll;
+  etaMs?: number;
 }): JSX.Element {
   const aUrl = imageUrl(member.capture_a_sha);
   const bUrl = imageUrl(member.capture_b_sha);
@@ -832,11 +856,11 @@ function ImageAB({
   return (
     <>
       <figure ref={sync.refs[0]} onScroll={sync.onScroll}>
-        <figcaption>A</figcaption>
+        <figcaption>A<StaleBadge status={member.capture_a_status} etaMs={etaMs} /></figcaption>
         {aUrl ? <ImageWithBoxes src={aUrl} alt="capture A" boxes={boxes} /> : <span className="missing-img">no image</span>}
       </figure>
       <figure ref={sync.refs[1]} onScroll={sync.onScroll}>
-        <figcaption>B</figcaption>
+        <figcaption>B<StaleBadge status={member.capture_b_status} etaMs={etaMs} /></figcaption>
         {bUrl ? <ImageWithBoxes src={bUrl} alt="capture B" boxes={boxes} /> : <span className="missing-img">no image</span>}
       </figure>
     </>
@@ -852,9 +876,11 @@ function ImageAB({
 function ImageSlider({
   member,
   bbox,
+  etaMs,
 }: {
   member: ClusterMemberDto;
   bbox: { x: number; y: number; width: number; height: number } | null;
+  etaMs?: number;
 }): JSX.Element {
   const aUrl = imageUrl(member.capture_a_sha);
   const bUrl = imageUrl(member.capture_b_sha);
@@ -917,8 +943,12 @@ function ImageSlider({
         <div className="image-slider__bar" />
         <div className="image-slider__grip">⇆</div>
       </div>
-      <div className="image-slider__label image-slider__label--a">A</div>
-      <div className="image-slider__label image-slider__label--b">B</div>
+      <div className="image-slider__label image-slider__label--a">
+        A<StaleBadge status={member.capture_a_status} etaMs={etaMs} />
+      </div>
+      <div className="image-slider__label image-slider__label--b">
+        B<StaleBadge status={member.capture_b_status} etaMs={etaMs} />
+      </div>
     </div>
   );
 }

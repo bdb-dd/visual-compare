@@ -41,10 +41,7 @@ import {
   type LmPromptInvocationReason,
 } from '../services/lm-prompts.js';
 import { promptGuidanceSchema } from '../services/lm-prompt-guidance.js';
-import {
-  invalidateCapturesInputSchema,
-  invalidateSessionCaptures,
-} from '../services/cache-invalidation.js';
+import { computeCaptureEta } from '../services/capture-eta.js';
 import {
   acceptanceInputSchema,
   deleteAcceptance,
@@ -67,7 +64,32 @@ const PAIR_OUTCOME_VALUES = new Set<string>([
   'both_missing',
 ]);
 
-export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Router {
+/**
+ * Scope for a recapture request. The route translates this into an
+ * EvaluationConfig with `force_recapture` set, so the recapture flows
+ * through the standard evaluator orchestrator (captures + comparisons in
+ * parallel, Stop button works, etc.).
+ *
+ *   {}                          → every enabled pair, both sides
+ *   { side: 'b' }               → every enabled pair, B side
+ *   { pair_ids: [...] }         → those pairs, both sides
+ *   { pair_ids: [...], side:'a'}→ those pairs, A side only
+ */
+const recaptureScopeSchema = z
+  .object({
+    pair_ids: z.array(z.string().min(1)).optional(),
+    side: z.enum(['a', 'b']).optional(),
+  })
+  .strict();
+
+export interface SessionsRouterDeps {
+  db: Db;
+  evaluator: Evaluator;
+  lm?: LmClient;
+}
+
+export function sessionsRouter(deps: SessionsRouterDeps): Router {
+  const { db, evaluator, lm } = deps;
   const router = Router();
 
   router.get('/', (req, res) => {
@@ -495,7 +517,7 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
     res.json(result);
   });
 
-  router.post('/:id/invalidate-captures', (req, res) => {
+  router.post('/:id/recapture', (req, res) => {
     const id = req.params.id;
     if (!id) {
       res.status(400).json({ error: 'invalid_request', message: 'id is required' });
@@ -505,7 +527,7 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
       res.status(404).json({ error: 'not_found' });
       return;
     }
-    const parsed = invalidateCapturesInputSchema.safeParse(req.body ?? {});
+    const parsed = recaptureScopeSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
       res.status(400).json({
         error: 'invalid_body',
@@ -514,8 +536,50 @@ export function sessionsRouter(db: Db, evaluator: Evaluator, lm?: LmClient): Rou
       });
       return;
     }
-    const result = invalidateSessionCaptures(db, id, parsed.data);
-    res.json(result);
+    // Validate pair scope before kicking off the eval so callers get a 400
+    // for "no such pair" instead of a silent evaluator no-op.
+    if (parsed.data.pair_ids !== undefined) {
+      const known = new Set(listUrlPairs(db, id).map((p) => p.id));
+      const unknown = parsed.data.pair_ids.filter((pid) => !known.has(pid));
+      const valid = parsed.data.pair_ids.filter((pid) => known.has(pid));
+      if (valid.length === 0) {
+        res.status(400).json({
+          error: 'recapture_failed',
+          message: 'No url_pairs match the supplied pair_ids',
+          unknown_pair_ids: unknown,
+        });
+        return;
+      }
+      const result = evaluator.start(id, {
+        url_pair_ids: valid,
+        invoke_lm: true,
+        force_recapture: { sides: parsed.data.side ? [parsed.data.side] : [] },
+      });
+      res.status(202).json({ ...result, unknown_pair_ids: unknown });
+      return;
+    }
+    const result = evaluator.start(id, {
+      invoke_lm: true,
+      force_recapture: { sides: parsed.data.side ? [parsed.data.side] : [] },
+    });
+    res.status(202).json({ ...result, unknown_pair_ids: [] });
+  });
+
+  // Per-(pair, viewport) ETA for the session's currently in-flight capture
+  // run. Used by the Rows + Clusters surfaces to render "Stale · recapturing
+  // (~Xs)" next to each stale row/member. Returns an empty map when nothing
+  // is in flight, so the UI can stop polling.
+  router.get('/:id/capture-eta', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    if (!getSession(db, id)) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json(computeCaptureEta(db, id));
   });
 
   // Capture + comparison errors for a session, flattened into one list

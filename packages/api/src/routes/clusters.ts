@@ -20,6 +20,7 @@ import {
 import { getSessionConfig } from '../services/sessions.js';
 import { captureOptsHashFor } from '../services/capture-opts-hash.js';
 import { captureRunOptionsSchema, type CaptureRunOptionsParsed } from '../services/capture.js';
+import { loadLatestCapturesByKey } from '../services/capture-staleness.js';
 import type { SessionConfig } from '../types.js';
 import type {
   ClusterDetailDto,
@@ -138,6 +139,8 @@ export function clustersRouter(db: Db): Router {
       changed_pct: m.changed_pct,
       lm_summary: m.lm_summary,
       lm_confidence: m.lm_confidence,
+      capture_a_status: m.capture_a_status,
+      capture_b_status: m.capture_b_status,
     }));
     // Prefer the representative entry from the member list when present —
     // keeps the two views in sync without a second SQL round-trip. Falls back
@@ -369,6 +372,8 @@ function representativeFor(db: Db, cluster: DifferenceClusterRow): ClusterRepres
     url_b: string;
     capture_a_sha: string | null;
     capture_b_sha: string | null;
+    capture_a_id: string;
+    capture_b_id: string;
     im_diff_sha: string | null;
     ssim: number | null;
     changed_pct: number | null;
@@ -387,6 +392,8 @@ function representativeFor(db: Db, cluster: DifferenceClusterRow): ClusterRepres
               p.url_b                 AS url_b,
               ca.screenshot_sha256    AS capture_a_sha,
               cb.screenshot_sha256    AS capture_b_sha,
+              ca.id                   AS capture_a_id,
+              cb.id                   AS capture_b_id,
               c.im_diff_sha256        AS im_diff_sha,
               c.ssim                  AS ssim,
               c.changed_pixel_percentage AS changed_pct,
@@ -401,6 +408,20 @@ function representativeFor(db: Db, cluster: DifferenceClusterRow): ClusterRepres
     )
     .get(cluster.representative_difference_id);
   if (!row) return null;
+  const latestByKey = loadLatestCapturesByKey(db, cluster.session_id);
+  const statusFor = (capId: string, side: 'a' | 'b'): import('../types.js').CaptureStatusInfo => {
+    const latest = latestByKey.get(`${row.url_pair_id}::${row.viewport_name}::${side}`);
+    if (!latest || latest.capture_id === capId) {
+      return { status: 'complete', error_message: null, is_stale: false };
+    }
+    if (latest.status === 'error') {
+      return { status: 'error', error_message: latest.error_message, is_stale: true };
+    }
+    if (latest.status === 'complete') {
+      return { status: 'complete', error_message: null, is_stale: true };
+    }
+    return { status: 'in_progress', error_message: null, is_stale: true };
+  };
   return {
     difference_id: cluster.representative_difference_id,
     comparison_id: row.comparison_id,
@@ -418,6 +439,8 @@ function representativeFor(db: Db, cluster: DifferenceClusterRow): ClusterRepres
     changed_pct: row.changed_pct,
     lm_summary: row.lm_summary,
     lm_confidence: row.lm_confidence,
+    capture_a_status: statusFor(row.capture_a_id, 'a'),
+    capture_b_status: statusFor(row.capture_b_id, 'b'),
   };
 }
 
@@ -760,6 +783,17 @@ function buildOutcomeClusterDetail(
     // url_pair_id + viewport is enough to keep it unique within the
     // cluster.
     const syntheticDifferenceId = `outcome-member:${p.id}:${parsed.viewport}`;
+    // Synthetic outcome clusters render the most-recent captures-row sha
+    // per side, so by construction they're never showing a stale capture.
+    // `a.errored` / `b.errored` already encode the error state at the
+    // capture level; surface that as the status so the badge logic still
+    // produces a consistent shape downstream.
+    const sideStatus = (s: { sha: string | null; errored: boolean; missing: boolean }) =>
+      s.errored
+        ? ({ status: 'error', error_message: null, is_stale: false } as const)
+        : s.missing
+          ? ({ status: 'missing', error_message: null, is_stale: false } as const)
+          : ({ status: 'complete', error_message: null, is_stale: false } as const);
     members.push({
       difference_id: syntheticDifferenceId,
       comparison_id: comparison?.id ?? '',
@@ -777,6 +811,8 @@ function buildOutcomeClusterDetail(
       changed_pct: null,
       lm_summary: null,
       lm_confidence: null,
+      capture_a_status: sideStatus(a),
+      capture_b_status: sideStatus(b),
     });
   }
 

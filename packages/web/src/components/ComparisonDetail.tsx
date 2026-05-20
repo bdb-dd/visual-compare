@@ -5,6 +5,8 @@ import { FitModeToggle, useFitMode } from './FitModeToggle.js';
 import { useSyncedScroll } from './useSyncedScroll.js';
 import { RecapturePairButton } from './RecapturePairButton.js';
 import { StatusPill } from './StatusPill.js';
+import { StaleBadge } from './StaleBadge.js';
+import { useCaptureEta } from '../hooks/useCaptureEta.js';
 import { isAtLeastAsStrict } from '@visual-compare/api/constants/equivalence';
 import type {
   AcceptanceRow,
@@ -79,6 +81,14 @@ export function ComparisonDetail({
   const splitSync = useSyncedScroll(2);
   const [refreshTick, setRefreshTick] = useState(0);
   const [recapturing, setRecapturing] = useState(false);
+
+  // Poll the capture ETA while either side of the focused row is stale.
+  // Hook auto-stops when the row's recapture completes.
+  const rowIsStale = !!(row?.capture_a_status.is_stale || row?.capture_b_status.is_stale);
+  const etaByKey = useCaptureEta(sessionId ?? null, rowIsStale);
+  const rowEta = row
+    ? etaByKey.get(`${row.url_pair_id}::${row.viewport_name}`)
+    : undefined;
 
   useEffect(() => {
     setDetail(null);
@@ -274,15 +284,28 @@ export function ComparisonDetail({
           <Pane label="Diff" src={c.im_diff_url} alt="diff" boxes={boxes} />
         )}
         {viewMode === 'a' && (
-          <Pane label={`A · ${capture_a.viewport_name}`} src={capture_a.screenshot_url} alt="A" boxes={boxes} />
+          <Pane
+            label={`A · ${capture_a.viewport_name}`}
+            badge={<StaleBadge status={row?.capture_a_status} etaMs={rowEta?.eta_ms} />}
+            src={capture_a.screenshot_url}
+            alt="A"
+            boxes={boxes}
+          />
         )}
         {viewMode === 'b' && (
-          <Pane label={`B · ${capture_b.viewport_name}`} src={capture_b.screenshot_url} alt="B" boxes={boxes} />
+          <Pane
+            label={`B · ${capture_b.viewport_name}`}
+            badge={<StaleBadge status={row?.capture_b_status} etaMs={rowEta?.eta_ms} />}
+            src={capture_b.screenshot_url}
+            alt="B"
+            boxes={boxes}
+          />
         )}
         {viewMode === 'split' && (
           <>
             <Pane
               label="A"
+              badge={<StaleBadge status={row?.capture_a_status} etaMs={rowEta?.eta_ms} />}
               src={capture_a.screenshot_url}
               alt="A"
               boxes={boxes}
@@ -291,6 +314,7 @@ export function ComparisonDetail({
             />
             <Pane
               label="B"
+              badge={<StaleBadge status={row?.capture_b_status} etaMs={rowEta?.eta_ms} />}
               src={capture_b.screenshot_url}
               alt="B"
               boxes={boxes}
@@ -327,6 +351,7 @@ export function ComparisonDetail({
 
 function Pane({
   label,
+  badge,
   src,
   alt,
   boxes,
@@ -334,6 +359,7 @@ function Pane({
   onScroll,
 }: {
   label: string;
+  badge?: JSX.Element | null;
   src: string | null;
   alt: string;
   boxes: BoundingBoxPercent[];
@@ -342,7 +368,10 @@ function Pane({
 }): JSX.Element {
   return (
     <div className="panel" ref={paneRef} onScroll={onScroll}>
-      <header>{label}</header>
+      <header>
+        {label}
+        {badge}
+      </header>
       {src ? (
         <ImageWithBoxes src={src} alt={alt} boxes={boxes} />
       ) : (
@@ -351,6 +380,7 @@ function Pane({
     </div>
   );
 }
+
 
 /**
  * Inline accept/clear controls. Three states:

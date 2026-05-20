@@ -187,8 +187,16 @@ describe('SessionResultRow capture statuses', () => {
     const res = await request(h.app).get(`/api/sessions/${sessionId}/results`);
     expect(res.status).toBe(200);
     const row = res.body.results[0] as SessionResultRow;
-    expect(row.capture_a_status).toEqual({ status: 'complete', error_message: null });
-    expect(row.capture_b_status).toEqual({ status: 'complete', error_message: null });
+    expect(row.capture_a_status).toEqual({
+      status: 'complete',
+      error_message: null,
+      is_stale: false,
+    });
+    expect(row.capture_b_status).toEqual({
+      status: 'complete',
+      error_message: null,
+      is_stale: false,
+    });
     expect(row.status).toBe('cached');
   });
 
@@ -236,8 +244,10 @@ describe('SessionResultRow capture statuses', () => {
     expect(row.capture_a_status).toEqual({
       status: 'error',
       error_message: 'navigation timeout 30000ms exceeded',
+      is_stale: false,
     });
     expect(row.capture_b_status.status).toBe('missing');
+    expect(row.capture_b_status.is_stale).toBe(false);
     expect(row.status).toBe('pending');
   });
 

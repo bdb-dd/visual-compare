@@ -20,6 +20,7 @@ import {
   type ExplicitComparisonPair,
 } from './comparison.js';
 import { getSessionConfig, listUrlPairs } from './sessions.js';
+import { loadLatestCapturesByKey } from './capture-staleness.js';
 import {
   getSessionPrompt,
   type LmPromptInvocationReason,
@@ -87,6 +88,20 @@ export const evaluationConfigInputSchema = z
     url_pair_ids: z.array(z.string()).optional(),
     /** Override the model id used for cache lookups; rarely needed. */
     lm_model_id: z.string().min(1).optional(),
+    /**
+     * When set, the planner ignores cached captures for the scoped tuples
+     * and treats them as misses, so the orchestrator re-captures them. The
+     * existing capture/comparison parallelism still applies — comparisons
+     * dispatch per-pair as each new sha lands. `sides` empty = both sides;
+     * the pair scope is the eval's `url_pair_ids` (null = every enabled
+     * pair). Used by the Recapture button to fold "recapture + re-evaluate"
+     * into a single evaluation run.
+     */
+    force_recapture: z
+      .object({
+        sides: z.array(z.enum(['a', 'b'])).default([]),
+      })
+      .optional(),
   })
   .strict();
 
@@ -119,6 +134,12 @@ export interface EvaluationConfig {
    * incorporates this so toggling it forces a re-run of LM.
    */
   lm_include_diff_image: boolean;
+  /**
+   * When non-null, the planner treats the matching (pair, viewport, side)
+   * tuples as capture misses regardless of cache state. Pair scope is
+   * `url_pair_ids` (null = every enabled pair). `sides: []` means both.
+   */
+  force_recapture: { sides: ('a' | 'b')[] } | null;
 }
 
 export interface PlannedComparison {
@@ -222,6 +243,9 @@ export function resolveEvaluationConfig(
     // Production deployments override via the env reader, which defaults
     // the env value to `false` once the toggle exists.
     lm_include_diff_image: lm?.config.includeDiffImage ?? true,
+    force_recapture: input?.force_recapture
+      ? { sides: input.force_recapture.sides ?? [] }
+      : null,
   };
 }
 
@@ -357,13 +381,36 @@ export function planEvaluation(
   const missingByKey = new Set<string>(); // pair_id::vp_name::side for is_missing=1 captures
   let captureHits = 0;
 
+  // force_recapture: empty sides list means both. The pair scope is the
+  // eval's enabledPairs (already filtered by url_pair_ids upstream), so we
+  // only need to honor the side restriction here.
+  const forcedSides: Set<CaptureSide> | null = config.force_recapture
+    ? new Set(
+        config.force_recapture.sides.length > 0
+          ? config.force_recapture.sides
+          : SIDES,
+      )
+    : null;
+
+  // Latest captures row per (pair, vp, side) for the session. Lets us
+  // detect "the cache row is stale because a newer pending/processing/error
+  // captures row exists" — which is the steady state during an in-flight
+  // recapture. Treating those as misses keeps the orchestrator's
+  // dispatchReady poll from racing comparisons against the about-to-be-
+  // -overwritten cache sha.
+  const latestCapturesByKey = loadLatestCapturesByKey(db, sessionId);
+
   for (const pair of enabledPairs) {
     for (const vp of config.viewports) {
       const optsHash = captureOptsHashFor(vp, config.capture_options);
       for (const side of SIDES) {
         const url = side === 'a' ? pair.url_a : pair.url_b;
         const cached = captureCacheLookup.get(url, vp.name, optsHash);
-        if (cached) {
+        const latest = latestCapturesByKey.get(`${pair.id}::${vp.name}::${side}`);
+        const isStale = !!(cached && latest && latest.capture_id !== cached.capture_id);
+        const forced = forcedSides?.has(side) ?? false;
+        const useCacheHit = cached && !isStale && !forced;
+        if (useCacheHit) {
           captureShaByKey.set(`${pair.id}::${vp.name}::${side}`, cached.screenshot_sha256);
           if (cached.is_missing === 1) {
             missingByKey.add(`${pair.id}::${vp.name}::${side}`);
@@ -709,9 +756,16 @@ export class Evaluator {
       const fallbackCaptureRunId = (): string | null =>
         captureRunId ?? this.#anyCaptureRunForSession(sessionId);
 
+      // dispatchReady plans without force_recapture: phase 1's pending
+      // captures rows already make the cache "stale" (latest captures row
+      // != cache.capture_id), so the planner's always-on is_stale check
+      // keeps the comparison from racing the still-rolling-forward cache.
+      // Once the new captures complete and the cache rolls forward,
+      // is_stale clears and the comparison dispatches against fresh shas.
+      const dispatchConfig: EvaluationConfig = { ...config, force_recapture: null };
       const dispatchReady = (): void => {
         if (signal.aborted) return;
-        const plan = planEvaluation(db, sessionId, config);
+        const plan = planEvaluation(db, sessionId, dispatchConfig);
         const rowsByPair = this.#loadCapturesForMisses(plan.comparison_misses);
         const pairs: ExplicitComparisonPair[] = [];
         for (const m of plan.comparison_misses) {
@@ -783,7 +837,11 @@ export class Evaluator {
       }
 
       // -- Phase 3: finalize -----------------------------------------------
-      const finalPlan = planEvaluation(db, sessionId, config);
+      // Use dispatchConfig (force_recapture cleared) so cache_hits reflect
+      // the post-recapture steady state: cache rolled forward, no longer
+      // "forced." Otherwise the recapture'd sides would still be counted
+      // as misses despite their fresh captures.
+      const finalPlan = planEvaluation(db, sessionId, dispatchConfig);
       db.prepare(
         `UPDATE evaluations
            SET status = 'complete',
@@ -1055,17 +1113,28 @@ export function readSessionResults(
 
   const captureCacheLookup = db.prepare<
     [string, string, string],
-    { screenshot_sha256: string; is_missing: number | null }
+    { screenshot_sha256: string; is_missing: number | null; capture_id: string }
   >(
     // Join captures to surface is_missing for the matching capture row. The
     // missing-page columns live on captures, not capture_cache, so a denormal
     // lookup is the cheapest path. is_missing is null for legacy rows that
     // predate the column; the row-builder treats null as 'not missing'.
-    `SELECT cc.screenshot_sha256, c.is_missing
+    // capture_id flows through so is_stale can compare against the latest
+    // captures row for (pair, viewport, side).
+    `SELECT cc.screenshot_sha256, c.is_missing, cc.capture_id
        FROM capture_cache cc
        LEFT JOIN captures c ON c.id = cc.capture_id
       WHERE cc.url = ? AND cc.viewport_name = ? AND cc.capture_opts_hash = ?`,
   );
+
+  // Batched "latest captures row per (pair, viewport, side)" for the session.
+  // Used to compute `is_stale`: the displayed sha (from capture_cache) is
+  // stale when the latest captures row for the same (pair, vp, side) is
+  // different from the one the cache row points at — i.e. there's been a
+  // more recent attempt that's pending, errored, or completed under a
+  // different opts_hash. Single window-function pass, indexed via
+  // idx_captures_pair + idx_captures_run.
+  const latestCapturesByKey = loadLatestCapturesByKey(db, sessionId);
 
   const pixelCacheLookup = db.prepare<
     [string, string, string],
@@ -1115,21 +1184,58 @@ export function readSessionResults(
   );
 
   const captureStatusFor = (
-    sha: string | null,
-    url: string,
+    cacheCaptureId: string | null,
+    pairId: string,
     viewportName: string,
+    side: 'a' | 'b',
+    url: string,
   ): import('../types.js').CaptureStatusInfo => {
-    if (sha) return { status: 'complete', error_message: null };
-    const row = recentCaptureLookup.get(sessionId, url, viewportName);
-    if (!row) return { status: 'missing', error_message: null };
-    if (row.status === 'error') return { status: 'error', error_message: row.error_message };
-    if (row.status === 'complete') {
-      // The capture row says complete but no cache row matches the current
-      // capture_opts_hash — different config produced a complete capture
-      // under a *different* options set. Treat as missing for this config.
-      return { status: 'missing', error_message: null };
+    const latest = latestCapturesByKey.get(`${pairId}::${viewportName}::${side}`);
+
+    // No cache row: nothing to display. Status comes from the latest
+    // captures row (if any) — this is the diagnostic-pending path for
+    // first-ever captures and config-changed captures.
+    if (cacheCaptureId === null) {
+      if (!latest) {
+        // Fall back to (url, viewport) lookup so config-changed sessions
+        // that have captures under a different opts_hash still surface a
+        // status. is_stale doesn't apply when there's no displayed sha.
+        const row = recentCaptureLookup.get(sessionId, url, viewportName);
+        if (!row) return { status: 'missing', error_message: null, is_stale: false };
+        if (row.status === 'error') {
+          return { status: 'error', error_message: row.error_message, is_stale: false };
+        }
+        if (row.status === 'complete') {
+          return { status: 'missing', error_message: null, is_stale: false };
+        }
+        return { status: 'in_progress', error_message: null, is_stale: false };
+      }
+      if (latest.status === 'error') {
+        return { status: 'error', error_message: latest.error_message, is_stale: false };
+      }
+      if (latest.status === 'complete') {
+        // Latest captures row is complete but no cache row for the current
+        // opts_hash — config-changed scenario. Treat as missing.
+        return { status: 'missing', error_message: null, is_stale: false };
+      }
+      return { status: 'in_progress', error_message: null, is_stale: false };
     }
-    return { status: 'in_progress', error_message: null };
+
+    // Cache row exists; we have a sha to display. Decide freshness by
+    // comparing against the latest captures row for this (pair, vp, side).
+    if (!latest || latest.capture_id === cacheCaptureId) {
+      return { status: 'complete', error_message: null, is_stale: false };
+    }
+    if (latest.status === 'error') {
+      return { status: 'error', error_message: latest.error_message, is_stale: true };
+    }
+    if (latest.status === 'complete') {
+      // Newer complete capture exists but the cache row hasn't rolled
+      // forward (different opts_hash). Displayed sha is stale relative to
+      // the newer attempt; surface as complete-but-stale.
+      return { status: 'complete', error_message: null, is_stale: true };
+    }
+    return { status: 'in_progress', error_message: null, is_stale: true };
   };
 
   // Pre-load acceptances and per-pair config overrides for the session so
@@ -1237,8 +1343,20 @@ export function readSessionResults(
             : bMissing
               ? 'b_missing'
               : 'both_present';
-      const captureAStatus = captureStatusFor(aSha, pair.url_a, vp.name);
-      const captureBStatus = captureStatusFor(bSha, pair.url_b, vp.name);
+      const captureAStatus = captureStatusFor(
+        aRow?.capture_id ?? null,
+        pair.id,
+        vp.name,
+        'a',
+        pair.url_a,
+      );
+      const captureBStatus = captureStatusFor(
+        bRow?.capture_id ?? null,
+        pair.id,
+        vp.name,
+        'b',
+        pair.url_b,
+      );
       const acceptance = acceptanceByKey.get(`${pair.id}::${vp.name}`) ?? null;
       const pairOverride = overrideByPair.get(pair.id) ?? null;
       const resolved = resolvePairConfig(sessionShape, pairOverride);

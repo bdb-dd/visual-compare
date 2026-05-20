@@ -51,6 +51,23 @@ header.app-header nav a.active { color: #e6e8eb; font-weight: 600; }
 .btn[disabled] { opacity: 0.6; cursor: not-allowed; }
 .btn.secondary { background: #2a2e36; }
 .btn.btn-compact { padding: 4px 8px; font-size: 12px; border-radius: 4px; }
+.btn.btn-icon {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 22px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.btn.btn-icon--spinning {
+  animation: btn-icon-spin 1s linear infinite;
+}
+@keyframes btn-icon-spin {
+  to { transform: rotate(360deg); }
+}
 
 .recapture-banner {
   background: #1c2738;
@@ -759,18 +776,6 @@ ul.diff-list li {
   border-bottom: 1px solid #23262d;
 }
 .comparison-row-wrap .comparison-row { border-bottom: 0; }
-.comparison-row-actions {
-  display: flex;
-  align-items: center;
-  padding-right: 12px;
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-.comparison-row-wrap:hover .comparison-row-actions,
-.comparison-row-wrap:focus-within .comparison-row-actions,
-.comparison-row-wrap.selected .comparison-row-actions {
-  opacity: 1;
-}
 .comparison-row {
   display: flex;
   gap: 10px;
@@ -827,6 +832,22 @@ ul.diff-list li {
   justify-content: space-between;
   gap: 8px;
 }
+.comparison-row .row-line__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* The Recapture button reveals on row hover/focus/selection — keep the
+     verdict chip stable, the icon is the addition. */
+}
+.comparison-row .row-line__actions .btn.btn-icon {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.comparison-row-wrap:hover .row-line__actions .btn.btn-icon,
+.comparison-row-wrap:focus-within .row-line__actions .btn.btn-icon,
+.comparison-row-wrap.selected .row-line__actions .btn.btn-icon {
+  opacity: 1;
+}
 .comparison-row .row-line .label {
   font-size: 13px;
   font-weight: 600;
@@ -848,6 +869,44 @@ ul.diff-list li {
 .comparison-row .viewport-badge--error {
   background: #3a1f1f;
   color: #f8a4a4;
+}
+.comparison-row .viewport-badge--stale {
+  background: #3a2e1f;
+  color: #f3c674;
+}
+.stale-badge {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 4px;
+  padding: 1px 6px;
+  vertical-align: middle;
+  background: #3a2e1f;
+  color: #f3c674;
+}
+.stale-badge--error {
+  background: #3a1f1f;
+  color: #f8a4a4;
+}
+.capture-status-chip {
+  display: inline-block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.capture-status-chip--failed {
+  background: #3a1f1f;
+  color: #f8a4a4;
+}
+.capture-status-chip--stale {
+  background: #3a2e1f;
+  color: #f3c674;
 }
 .comparison-row .changed-pct {
   font-variant-numeric: tabular-nums;
@@ -3233,12 +3292,19 @@ kbd {
 .member-row {
   position: relative;
   display: grid;
-  grid-template-columns: 1fr 70px;
+  /* URL column · status chip · % changed. Status column is auto-sized so
+     it collapses to zero width when fresh (no chip rendered) — keeps the
+     "% changed" column right-aligned in the common case. */
+  grid-template-columns: 1fr auto 70px;
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
   font-size: 13px;
   cursor: pointer;
+}
+.member-row__status {
+  display: inline-flex;
+  align-items: center;
 }
 .member-row:nth-child(odd) { background: #0e1014; }
 .member-row:hover { background: #1a1d24; }

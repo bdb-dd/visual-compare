@@ -409,6 +409,15 @@ export interface ClusterMemberDto {
   changed_pct: number | null;
   lm_summary: string | null;
   lm_confidence: number | null;
+  /**
+   * Per-side capture status mirroring SessionResultRow so the Clusters
+   * view can show the same stale-recapture / recapture-failed badge as
+   * the Rows view. `is_stale: true` means a newer captures row exists
+   * for this (pair, viewport, side) than the one the cluster member's
+   * comparison was materialised from.
+   */
+  capture_a_status: CaptureStatusInfo;
+  capture_b_status: CaptureStatusInfo;
 }
 
 /**
@@ -470,6 +479,14 @@ export interface CaptureStatusInfo {
    */
   status: CaptureStatusKind;
   error_message: string | null;
+  /**
+   * True when the displayed sha is from an earlier capture run than the
+   * latest one to touch this (pair, viewport, side). Happens during an
+   * in-flight recapture, or when the latest recapture errored — the cache
+   * still points at the prior good capture, and the row's `status` reflects
+   * the latest attempt (`in_progress` or `error`).
+   */
+  is_stale: boolean;
 }
 
 /**

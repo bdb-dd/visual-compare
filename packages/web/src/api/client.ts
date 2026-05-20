@@ -121,22 +121,18 @@ export const api = {
     ),
 
   /**
-   * Drop the cached captures for this pair (both A and B), then trigger an
-   * evaluation scoped to it. The new captures get fresh shas so the pixel
-   * and LM caches miss naturally and the full pipeline re-runs end-to-end.
-   * `invoke_lm: true` so the LM second-pass actually runs when the LM
-   * cache misses — Recapture is the gesture you reach for when a verdict
-   * (often an LM one) needs to be re-derived.
+   * Recapture this pair. The single endpoint kicks off captures and
+   * comparisons in one evaluation — the orchestrator streams comparisons
+   * as each new capture sha lands. Prior captures stay visible with a
+   * "stale" badge until they're overwritten. Returns the same shape as
+   * `recapture` for parity with the unscoped flow.
    */
-  recapturePair: async (sessionId: string, pairId: string) => {
-    await api.invalidateCaptures(sessionId, { pair_ids: [pairId] });
-    return api.evaluate(sessionId, { url_pair_ids: [pairId], invoke_lm: true });
-  },
+  recapturePair: (sessionId: string, pairId: string) =>
+    api.recapture(sessionId, { pair_ids: [pairId] }),
 
   /**
-   * Recapture every distinct pair that contributes to this cluster. Uses
-   * the same chain as recapturePair, fanned out over the cluster's member
-   * pair ids. Throws if the cluster has no resolvable members.
+   * Recapture every distinct pair that contributes to this cluster.
+   * Throws if the cluster has no resolvable members.
    */
   recaptureCluster: async (sessionId: string, clusterId: string) => {
     const dto = await api.getCluster(sessionId, clusterId, { limit: 10000 });
@@ -144,8 +140,7 @@ export const api = {
     if (pairIds.length === 0) {
       throw new Error('Cluster has no member pairs to recapture');
     }
-    await api.invalidateCaptures(sessionId, { pair_ids: pairIds });
-    return api.evaluate(sessionId, { url_pair_ids: pairIds, invoke_lm: true });
+    return api.recapture(sessionId, { pair_ids: pairIds });
   },
 
   listEvaluations: (id: string) =>
@@ -183,9 +178,18 @@ export const api = {
       method: 'POST',
     }),
 
-  invalidateCaptures: (id: string, body: { pair_ids?: string[]; side?: 'a' | 'b' }) =>
-    request<{ deleted_count: number; invalidated_urls: string[]; unknown_pair_ids: string[] }>(
-      `/api/sessions/${id}/invalidate-captures`,
+  /**
+   * Start an evaluation scoped to the supplied pairs/sides that forces a
+   * recapture of the matching tuples regardless of cache state (empty body
+   * = every enabled pair, both sides). The capture_cache is left intact so
+   * the UI keeps showing the prior captures with a "stale" badge until each
+   * new capture lands; comparisons dispatch in parallel as captures land,
+   * via the orchestrator's standard streaming behavior. Returns the
+   * evaluation_id so PlanAndEvaluate can adopt it and flip to "Stop."
+   */
+  recapture: (id: string, body: { pair_ids?: string[]; side?: 'a' | 'b' }) =>
+    request<{ evaluation_id: string; coalesced: boolean; unknown_pair_ids: string[] }>(
+      `/api/sessions/${id}/recapture`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -282,6 +286,22 @@ export const api = {
     request<{ comparison_runs: ComparisonRunRow[] }>(`/api/comparison-runs?session_id=${encodeURIComponent(sessionId)}`),
 
   getJob: (id: string) => request<{ job: JobRow }>(`/api/jobs/${id}`),
+
+  /**
+   * Per-(pair, viewport) ETA for the session's in-flight capture run.
+   * Empty `members` + `run_id: null` means nothing's in flight — UI stops
+   * polling. Polled every few seconds while there are stale members
+   * visible; results plug into the StaleBadge label.
+   */
+  getCaptureEta: (sessionId: string) =>
+    request<{
+      run_id: string | null;
+      concurrency: number | null;
+      avg_duration_ms: number | null;
+      avg_source: 'in_run' | 'session' | null;
+      total_in_flight: number;
+      members: Record<string, { eta_ms: number; rank: number; sides: ('a' | 'b')[] }>;
+    }>(`/api/sessions/${sessionId}/capture-eta`),
 
   getViewports: () => request<{ viewports: ViewportDef[]; default: string }>(`/api/meta/viewports`),
   getLevels: () =>
