@@ -161,7 +161,7 @@ export function PlanAndEvaluate({
     <>
       <div className="evaluate-control">
         <button
-          className="btn primary"
+          className={`btn ${isRunning ? 'secondary' : 'primary'}`}
           onClick={() => void (isRunning ? stop() : click())}
           disabled={isStopping || (!isRunning && (!results || allCached))}
           title={
