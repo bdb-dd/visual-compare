@@ -1,4 +1,5 @@
 import type { LmsCli, LmsCliResult } from './lms-cli.js';
+import { retry } from './http-retry.js';
 
 /**
  * Scaleway-backed implementation of the `LmsCli` interface. Used in the
@@ -126,34 +127,58 @@ export function createScalewayApi(
   } as const;
 
   const action = async (verb: 'poweron' | 'poweroff') => {
-    const res = await fetchImpl(`${serverUrl}/action`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ action: verb }),
-    });
-    if (res.status === 409) {
-      // Already in target state — Scaleway returns 409 ("instance is locked"
-      // or "no transition") for repeat actions. Treat as success.
-      return;
-    }
-    if (!res.ok) {
-      const body = await safeText(res);
-      throw new Error(`Scaleway ${verb} failed: HTTP ${res.status} ${body}`);
-    }
+    await retry(
+      async () => {
+        const res = await fetchImpl(`${serverUrl}/action`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ action: verb }),
+        });
+        if (res.status === 409) {
+          // Already in target state — Scaleway returns 409 ("instance is locked"
+          // or "no transition") for repeat actions. Treat as success.
+          return;
+        }
+        if (!res.ok) {
+          const body = await safeText(res);
+          throw new Error(`Scaleway ${verb} failed: HTTP ${res.status} ${body}`);
+        }
+      },
+      {
+        label: `scaleway ${verb}`,
+        onRetry: (err, attempt, delayMs) =>
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[scaleway] ${verb} attempt ${attempt} failed (${(err as Error).message}); retrying in ${delayMs}ms`,
+          ),
+      },
+    );
   };
 
   return {
     async getInstance() {
-      const res = await fetchImpl(serverUrl, { headers });
-      if (!res.ok) {
-        const body = await safeText(res);
-        throw new Error(`Scaleway getInstance failed: HTTP ${res.status} ${body}`);
-      }
-      const json = (await res.json()) as ScalewayServerResponse;
-      return {
-        state: normalizeState(json.server?.state),
-        publicIp: json.server?.public_ip?.address ?? null,
-      };
+      return retry(
+        async () => {
+          const res = await fetchImpl(serverUrl, { headers });
+          if (!res.ok) {
+            const body = await safeText(res);
+            throw new Error(`Scaleway getInstance failed: HTTP ${res.status} ${body}`);
+          }
+          const json = (await res.json()) as ScalewayServerResponse;
+          return {
+            state: normalizeState(json.server?.state),
+            publicIp: json.server?.public_ip?.address ?? null,
+          };
+        },
+        {
+          label: 'scaleway getInstance',
+          onRetry: (err, attempt, delayMs) =>
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[scaleway] getInstance attempt ${attempt} failed (${(err as Error).message}); retrying in ${delayMs}ms`,
+            ),
+        },
+      );
     },
     powerOn: () => action('poweron'),
     powerOff: () => action('poweroff'),

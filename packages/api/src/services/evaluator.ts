@@ -806,8 +806,27 @@ export class Evaluator {
         comparisonJobIds.push(result.job_id);
       };
 
+      // Per-item isolation: a transient failure in dispatchReady (e.g.,
+      // an HTTP 502 from a Scaleway control-plane call inside preflight)
+      // used to crash #orchestrate and mark the whole evaluation `'error'`,
+      // leaving thousands of queued items undone. We now log and continue —
+      // the next poll re-plans against current state, so transient failures
+      // self-heal once the underlying service comes back. dispatchReady's
+      // writes (startComparisonRunForPairs) are append-only and idempotent
+      // on `existingRunId`, so a partially-applied dispatch is safe to retry.
+      const tryDispatchReady = (): void => {
+        try {
+          dispatchReady();
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[evaluator] dispatchReady failed transiently for evaluation ${evaluationId}: ${(err as Error).message}; will retry on next poll`,
+          );
+        }
+      };
+
       // Initial dispatch: any pairs already resolvable from cache hits.
-      dispatchReady();
+      tryDispatchReady();
 
       // Poll loop while the capture job is still flying. The cadence
       // balances "tight enough that the GPU rarely idles" against "loose
@@ -817,12 +836,12 @@ export class Evaluator {
       while (!captureDone && !signal.aborted) {
         await sleep(pollMs);
         if (signal.aborted) break;
-        dispatchReady();
+        tryDispatchReady();
       }
 
       // Final dispatch after captures resolve, to catch any pair that became
       // ready in the gap between the last poll tick and capture completion.
-      if (!signal.aborted) dispatchReady();
+      if (!signal.aborted) tryDispatchReady();
 
       // Await every dispatched comparison job.
       for (const jobId of comparisonJobIds) {
@@ -841,7 +860,22 @@ export class Evaluator {
       // the post-recapture steady state: cache rolled forward, no longer
       // "forced." Otherwise the recapture'd sides would still be counted
       // as misses despite their fresh captures.
-      const finalPlan = planEvaluation(db, sessionId, dispatchConfig);
+      //
+      // Wrap the final plan in try/catch: if a transient DB hiccup makes
+      // cache_hits unavailable, we still want to mark the eval `'complete'`
+      // with empty cache_hits rather than `'error'` — all the actual
+      // capture/comparison work already happened successfully by this
+      // point, and `'error'` would discard that signal.
+      let finalCacheHits: { captures: number; pixel: number; lm: number };
+      try {
+        finalCacheHits = planEvaluation(db, sessionId, dispatchConfig).cache_hits;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[evaluator] final plan failed for evaluation ${evaluationId}: ${(err as Error).message}; finalizing without cache_hits`,
+        );
+        finalCacheHits = { captures: 0, pixel: 0, lm: 0 };
+      }
       db.prepare(
         `UPDATE evaluations
            SET status = 'complete',
@@ -851,7 +885,7 @@ export class Evaluator {
          WHERE id = ?`,
       ).run(
         comparisonRunId,
-        JSON.stringify(finalPlan.cache_hits),
+        JSON.stringify(finalCacheHits),
         new Date().toISOString(),
         evaluationId,
       );
