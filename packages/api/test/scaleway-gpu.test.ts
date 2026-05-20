@@ -184,6 +184,24 @@ describe('createScalewayApi', () => {
     expect(captured!.headers['X-Auth-Token']).toBe('k');
   });
 
+  it('powerOff POSTs `stop_in_place` (not `poweroff`)', async () => {
+    // Regression: `poweroff` is an ACPI signal that the GPU image's guest
+    // has been observed to ignore, leaving the Scaleway task `pending`
+    // forever while the instance keeps billing. `stop_in_place` halts at
+    // the hypervisor and is what the idle reaper actually wants.
+    let capturedBody: unknown = null;
+    const impl = (async (input: string | URL | Request, init?: RequestInit) => {
+      capturedBody = init?.body ? JSON.parse(init.body as string) : null;
+      return new Response('{}', { status: 202 });
+    }) as typeof fetch;
+    const api = createScalewayApi(
+      { zone: 'z', instanceId: 'i', secretKey: 'k', apiBaseUrl: 'https://api.example' },
+      impl,
+    );
+    await api.powerOff();
+    expect(capturedBody).toEqual({ action: 'stop_in_place' });
+  });
+
   it('treats 409 as success (idempotent powerOff)', async () => {
     const impl = (async () => new Response('conflict', { status: 409 })) as typeof fetch;
     const api = createScalewayApi(

@@ -143,7 +143,10 @@ Normal flow:
 3. The analyze call proceeds. Every successful call updates
    `/mnt/data/lm-last-use`.
 4. The reaper runs every 5 min. When `now - last-use ≥ 60 min` *and* the
-   instance is `running`, it issues `poweroff`.
+   instance is `running`, it issues `stop_in_place` (hypervisor-level
+   halt; stops compute billing, preserves disk + IP). `poweroff` was
+   tried initially and observed to leave Scaleway tasks `pending` while
+   the guest ignored the ACPI signal.
 
 Override knobs (all env, on the API VM in `/etc/visual-compare/env`):
 
