@@ -159,7 +159,7 @@ export const api = {
     id: string,
     opts: { intervalMs?: number; timeoutMs?: number } = {},
   ) => {
-    const intervalMs = opts.intervalMs ?? 1500;
+    const intervalMs = opts.intervalMs ?? 5000;
     const timeoutMs = opts.timeoutMs ?? 5 * 60 * 1000;
     const startedAt = Date.now();
     let evaluation: EvaluationStatusDto | null = null;

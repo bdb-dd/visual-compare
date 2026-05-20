@@ -56,7 +56,17 @@ export interface ReviewDashboardSnapshot {
 
 const ReviewDashboardContext = createContext<ReviewDashboardSnapshot | null>(null);
 
-const FAST_POLL_MS = 1_500;
+/**
+ * Cadence flips based on whether an evaluation is in flight. While an eval
+ * is `pending`/`running` we want crisp updates to the results delta and
+ * progress chip; once it settles there's nothing on the page that changes
+ * server-side, so 30s is plenty (and drops baseline load 6×). Before the
+ * first response lands we don't know yet, so we default to the active
+ * cadence to avoid a 30s blind window for users landing on a page where
+ * an eval is already running.
+ */
+const ACTIVE_POLL_MS = 5_000;
+const IDLE_POLL_MS = 30_000;
 
 export function ReviewDashboardProvider({
   sessionId,
@@ -98,8 +108,13 @@ export function ReviewDashboardProvider({
 
   // Self-pacing background poll: pauses when tab is hidden, waits for
   // each request to settle before scheduling the next, fires immediately
-  // on tab return.
-  useVisiblePolling(refresh, FAST_POLL_MS, !!sessionId);
+  // on tab return. Cadence backs off to IDLE_POLL_MS once we've confirmed
+  // there is no active eval — useVisiblePolling tears down and re-arms
+  // when intervalMs changes, so the transition is automatic.
+  const evalStatus = data?.evaluation?.status;
+  const isActive = evalStatus === 'pending' || evalStatus === 'running';
+  const intervalMs = data === null || isActive ? ACTIVE_POLL_MS : IDLE_POLL_MS;
+  useVisiblePolling(refresh, intervalMs, !!sessionId);
 
   const trackEvaluation = useCallback((id: string | null) => {
     trackedEvalRef.current = id;

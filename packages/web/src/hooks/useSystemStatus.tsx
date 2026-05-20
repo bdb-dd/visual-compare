@@ -23,7 +23,7 @@ import { useVisiblePolling } from './useVisiblePolling.js';
  * cache and the response is small.
  */
 
-const POLL_INTERVAL_MS = 4_000;
+const POLL_INTERVAL_MS = 5_000;
 
 export interface SystemStatusSnapshot {
   data: SystemStatusDto | null;

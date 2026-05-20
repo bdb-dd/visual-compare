@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from './client.js';
 import type { JobRow } from '@visual-compare/api/types';
 
-export function usePolledJob(jobId: string | null, intervalMs = 1000): JobRow | null {
+export function usePolledJob(jobId: string | null, intervalMs = 5000): JobRow | null {
   const [job, setJob] = useState<JobRow | null>(null);
   useEffect(() => {
     if (!jobId) return;
