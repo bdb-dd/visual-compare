@@ -328,7 +328,7 @@ export function readLmConfigFromEnv(env: NodeJS.ProcessEnv = process.env): LmCon
   return {
     baseURL: env.LM_STUDIO_BASE_URL ?? 'http://localhost:1234/v1',
     apiKey: env.LM_STUDIO_API_KEY ?? 'lm-studio',
-    model: env.LM_STUDIO_MODEL ?? 'google/gemma-4-e2b',
+    model: env.LM_STUDIO_MODEL ?? 'google/gemma-4-26b-a4b',
     promptVersion: env.LM_STUDIO_PROMPT_VERSION ?? DEFAULT_PROMPT_VERSION,
     maxTokens: env.LM_STUDIO_MAX_TOKENS ? Number(env.LM_STUDIO_MAX_TOKENS) : 1024,
     temperature: env.LM_STUDIO_TEMPERATURE ? Number(env.LM_STUDIO_TEMPERATURE) : 0.1,

@@ -45,13 +45,30 @@ the `@visual-compare/api/*` path alias declared in `tsconfig.base.json`.
 
 ## Getting started
 
+These steps are shared by both run modes below. Use `mise exec -- pnpm`
+in this repo (the `mise.toml` pins Node + pnpm); plain `npm` produces
+hard-to-debug version skew.
+
 ```sh
-pnpm install
-pnpm install:playwright
-pnpm dev          # API on :3001, Vite on :5173
+pnpm install                # installs both packages/api and packages/web
+pnpm install:playwright     # Chromium binaries for capture
+pnpm build                  # required for `pnpm start` and for deploy
 ```
 
-For a single package:
+From here, pick a run mode:
+
+- [**Running locally**](#running-locally) — dev servers against an LM Studio you run on your machine.
+- [**Deployment**](#deployment) — Scaleway API VM with the LM on a separate GPU instance.
+
+## Running locally
+
+Start both servers (API on :3001, Vite on :5173):
+
+```sh
+pnpm dev
+```
+
+Or one at a time:
 
 ```sh
 pnpm dev:api
@@ -64,35 +81,37 @@ Production-style local run (after `pnpm build`):
 pnpm start        # runs the built API from packages/api/dist
 ```
 
-## Implementation status
+### LM Studio
 
-What's live on `main` / `refactor`:
+The optional LM second pass talks to [LM Studio](https://lmstudio.ai) over
+its OpenAI-compatible API on `http://localhost:1234/v1`. Install LM
+Studio, pull a vision-capable model — `google/gemma-4-26b-a4b` is the
+recommended (and current) default — and set `LM_STUDIO_MODEL` if you've
+loaded a different id. With `LM_STUDIO_AUTO_START` and `LM_STUDIO_AUTO_LOAD`
+on (defaults), the API will start the server and load the model via
+the `lms` CLI on the first comparison that needs a verdict.
 
-- **CSV intake → capture → pixel compare → optional LM verdict** end-to-end.
-- **Cluster review surface.** Differences carry a v1 signature
-  (`change_type`, `region_role`, `element_label`) materialised into
-  `difference_clusters`. The UI groups members by cluster, supports
-  Shift+arrow navigation, "A | B" view, per-member accept, contextual
-  acceptance rules (cluster + category), and split-cluster placeholders.
-- **Acceptance rules.** `acceptance_rules` fan out into `acceptances`
-  via `acceptCluster` / `acceptCategory` / `applySessionRules` (see
-  `packages/api/src/services/acceptance-rules.ts`).
-- **LM v3 prompt.** Default prompt version is `v3`; JSON-schema routing
-  is content-based on the prompt text. Existing sessions retain their
-  prior prompt version until reset — see `PHASE_C_NOTES.md` for the
-  per-session upgrade procedure.
-- **Session-scoped routing**, metrics row, error log tab, in-process
-  CPU usage indicator, capture-failed outcome filter.
+### Environment variables
 
-Refactor phases 1–5 are shipped (see `plans/in-progress/refactoring-plan.md`).
-Phase 6 (worker VM pool) is deferred — see the section at the end of
-this README.
+All read by `readLmConfigFromEnv()` in
+`packages/api/src/services/lm.ts` unless noted. Defaults in parentheses.
 
-## Runtime layout
-
-Image artifacts are stored content-addressed under
-`data/images/sha256/<2hex>/<full>.png`. SQLite database lives at
-`data/visual-compare.sqlite`. The `data/` directory is gitignored.
+| Var | Default | Purpose |
+| --- | --- | --- |
+| `LM_STUDIO_BASE_URL` | `http://localhost:1234/v1` | OpenAI-compatible endpoint. Also used by the Scaleway backend, pointed at the GPU VM. |
+| `LM_STUDIO_API_KEY` | `lm-studio` | Authorization token; LM Studio doesn't enforce it. |
+| `LM_STUDIO_MODEL` | `google/gemma-4-26b-a4b` | Model id to load and route to. |
+| `LM_STUDIO_PROMPT_VERSION` | `v3` | System prompt version (see `constants/lm-prompts.ts`). |
+| `LM_STUDIO_MAX_TOKENS` | `1024` (overridden to `4096` in `mise.toml`) | Output-token cap. |
+| `LM_STUDIO_TEMPERATURE` | `0.1` | Sampling temperature. |
+| `LM_STUDIO_TIMEOUT_SECONDS` | `240` | Per-call timeout. |
+| `LM_STUDIO_AUTO_START` | `true` | Run `lms server start` when `/v1/models` is unreachable. |
+| `LM_STUDIO_AUTO_LOAD` | `true` | Run `lms load <model>` when the configured model isn't loaded. |
+| `LM_STUDIO_PREFLIGHT_CACHE_SECONDS` | `30` | TTL for the cached preflight result. |
+| `LM_STUDIO_INCLUDE_DIFF_IMAGE` | `false` | Send the red-highlight diff PNG alongside A and B. |
+| `LM_STUDIO_PARALLEL` | `2` | Concurrent in-flight LM calls (read in `index.ts`). |
+| `DB_PATH` | `data/visual-compare.sqlite` | SQLite path. |
+| `IMAGES_DIR` | `data/images` | Image artifact root. |
 
 ### Sharing the image store across worktrees
 
@@ -112,9 +131,6 @@ content-addressed `sha256` filenames; identical screenshots dedupe
 automatically. The SQLite DB stays per-worktree on purpose so a schema
 change on one branch can't corrupt another branch's data. The script is
 idempotent and refuses to clobber a non-empty `data/images` directory.
-
-You can also override either path explicitly via the `DB_PATH` and
-`IMAGES_DIR` env vars.
 
 ### Reusing captures across worktrees
 
@@ -147,6 +163,12 @@ End-to-end docs (provisioning, DNS, deploy, secrets rotation, backups,
 GPU lifecycle, costs, troubleshooting) are in
 `deploy/scaleway/README.md`.
 
+The LM backend swaps from local LM Studio to a Scaleway GPU instance
+via `LM_BACKEND=scaleway`. Required env in that mode: `SCW_GPU_ZONE`,
+`SCW_GPU_INSTANCE_ID`, `SCW_SECRET_KEY`, `LM_STUDIO_BASE_URL` (pointed
+at the GPU VM), and `LM_STUDIO_MODEL`. The full SCW env reference lives
+in `deploy/scaleway/README.md`.
+
 Two convenience wrappers are exposed from the repo root:
 
 ```sh
@@ -158,6 +180,38 @@ pnpm deploy                # rsync code, rebuild, reload services
 
 Both wrappers forward arguments to the underlying scripts in
 `deploy/scaleway/scripts/`.
+
+## Implementation status
+
+What's live on `main` / `refactor`:
+
+- **CSV intake → capture → pixel compare → optional LM verdict** end-to-end.
+- **Cluster review surface.** Differences carry a v1 signature
+  (`change_type`, `region_role`, `element_label`) materialised into
+  `difference_clusters`. The UI groups members by cluster, supports
+  Shift+arrow navigation, "A | B" view, per-member accept, contextual
+  acceptance rules (cluster + category), and split-cluster placeholders.
+- **Acceptance rules.** `acceptance_rules` fan out into `acceptances`
+  via `acceptCluster` / `acceptCategory` / `applySessionRules` (see
+  `packages/api/src/services/acceptance-rules.ts`).
+- **LM v3 prompt.** Default prompt version is `v3`; JSON-schema routing
+  is content-based on the prompt text. Existing sessions retain their
+  prior prompt version until reset — see `PHASE_C_NOTES.md` for the
+  per-session upgrade procedure.
+- **Session-scoped routing**, metrics row, error log tab, in-process
+  CPU usage indicator, capture-failed outcome filter.
+
+Refactor phases 1–5 are shipped (see `plans/in-progress/refactoring-plan.md`).
+Phase 6 (worker VM pool) is deferred — see the section at the end of
+this README.
+
+## Runtime layout
+
+Image artifacts are stored content-addressed under
+`data/images/sha256/<2hex>/<full>.png`. SQLite database lives at
+`data/visual-compare.sqlite`. The `data/` directory is gitignored.
+Both paths apply to local dev and the deployed API; override either
+via the `DB_PATH` / `IMAGES_DIR` env vars.
 
 ## Planned: capture / comparison execution infrastructure
 

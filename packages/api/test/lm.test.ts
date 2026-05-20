@@ -367,7 +367,7 @@ describe('readLmConfigFromEnv', () => {
   it('returns the documented defaults when env is empty', () => {
     const cfg = readLmConfigFromEnv({});
     expect(cfg.baseURL).toBe('http://localhost:1234/v1');
-    expect(cfg.model).toBe('google/gemma-4-e2b');
+    expect(cfg.model).toBe('google/gemma-4-26b-a4b');
     // DEFAULT_PROMPT_VERSION bumped to 'v3' with the v1-taxonomy prompt cutover.
     expect(cfg.promptVersion).toBe('v3');
     expect(cfg.temperature).toBe(0.1);
