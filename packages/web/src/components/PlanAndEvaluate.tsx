@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { api } from '../api/client.js';
 import type { EvaluationStatusDto, SessionResultsDto } from '@visual-compare/api/types';
+import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 
 interface Props {
   sessionId: string;
@@ -36,43 +37,39 @@ export function PlanAndEvaluate({
   // settling the row to `cancelled`. Drives the "Stopping…" label so the
   // button can't be clicked twice. Reset on every fresh evaluation.
   const [stopRequested, setStopRequested] = useState(false);
-  const pollRef = useRef<number | null>(null);
   const onCompleteRef = useRef(onEvaluationComplete);
   onCompleteRef.current = onEvaluationComplete;
 
-  useEffect(() => {
-    return () => {
-      if (pollRef.current !== null) window.clearInterval(pollRef.current);
-    };
-  }, []);
+  const isTerminal =
+    evaluation?.status === 'complete' ||
+    evaluation?.status === 'error' ||
+    evaluation?.status === 'cancelled';
+  const polling = !!evaluation && !isTerminal;
 
-  const startPolling = (evaluationId: string) => {
-    if (pollRef.current !== null) window.clearInterval(pollRef.current);
-    pollRef.current = window.setInterval(async () => {
-      // Skip network round-trip while the tab is hidden — the next visible
-      // tick will catch up. Cuts background load to ~0 for forgotten tabs.
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
-        return;
-      }
+  // Self-pacing poll: useVisiblePolling waits for each fetch to settle
+  // before scheduling the next, so a slow upstream backs the cadence off
+  // instead of stacking pending requests. The hook turns off automatically
+  // when `polling` flips false (evaluation reached a terminal state).
+  useVisiblePolling(
+    async () => {
+      if (!evaluation) return;
       try {
-        const res = await api.getEvaluation(evaluationId);
+        const res = await api.getEvaluation(evaluation.id);
         setEvaluation(res.evaluation);
         if (
           res.evaluation.status === 'complete' ||
           res.evaluation.status === 'error' ||
           res.evaluation.status === 'cancelled'
         ) {
-          if (pollRef.current !== null) {
-            window.clearInterval(pollRef.current);
-            pollRef.current = null;
-          }
           onCompleteRef.current();
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
-    }, POLL_INTERVAL_MS);
-  };
+    },
+    POLL_INTERVAL_MS,
+    polling,
+  );
 
   // Adopt an in-flight evaluation surfaced by the parent. Fires when:
   //   1. Page loads mid-run — local `evaluation` is null, parent's
@@ -91,9 +88,9 @@ export function PlanAndEvaluate({
     if (!isLive) return;
     setEvaluation(latestEvaluation);
     setStopRequested(false);
-    startPolling(latestEvaluation.id);
     // intentional: don't depend on `evaluation` (avoid restart loops); we
-    // only adopt once per latestEvaluation id.
+    // only adopt once per latestEvaluation id. useVisiblePolling picks it
+    // up via the `polling` flag derived from `evaluation` state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [latestEvaluation?.id, latestEvaluation?.status]);
 
@@ -113,9 +110,9 @@ export function PlanAndEvaluate({
         initial.evaluation.status === 'cancelled'
       ) {
         onEvaluationComplete();
-      } else {
-        startPolling(res.evaluation_id);
       }
+      // No explicit startPolling — useVisiblePolling watches `polling`
+      // (derived from evaluation.status) and arms itself.
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

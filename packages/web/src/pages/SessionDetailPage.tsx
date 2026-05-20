@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
+import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 import { ActionsMenu } from '../components/ActionsMenu.js';
 import { AnomaliesTab } from '../components/AnomaliesTab.js';
 import { ClustersTab } from '../components/ClustersTab.js';
@@ -346,18 +347,24 @@ export function SessionDetailPage(): JSX.Element {
     evalRunning ||
     (results?.plan.capture_misses ?? 0) > 0 ||
     (results?.plan.comparison_misses ?? 0) > 0;
-  // Cursor is updated in-place via a ref so the polling effect doesn't have
-  // to depend on it (which would tear down/restart the interval each tick).
+  // Cursor is updated in-place via a ref so the polling closure doesn't
+  // restart on every cursor change.
   const cursorRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!session || !shouldPoll) return;
-    if (cursorRef.current === null) cursorRef.current = new Date().toISOString();
-    let cancelled = false;
-    const tick = async () => {
+    if (session && shouldPoll && cursorRef.current === null) {
+      cursorRef.current = new Date().toISOString();
+    }
+  }, [session, shouldPoll]);
+
+  // useVisiblePolling: pauses on hidden tabs and waits for each tick to
+  // settle before scheduling the next, so a slow upstream backs off the
+  // cadence instead of stacking pending requests.
+  useVisiblePolling(
+    async () => {
+      if (!session || !shouldPoll) return;
       const since = cursorRef.current ?? new Date().toISOString();
       try {
         const delta = await api.getResults(id, undefined, { since });
-        if (cancelled) return;
         // Update header counts + summary chips + latest eval from the
         // (small) delta payload, leaving the rows array untouched.
         setResults((prev) => {
@@ -403,7 +410,6 @@ export function SessionDetailPage(): JSX.Element {
         }
 
         const rowsResponse = await api.getResults(id, undefined, { keys: changed });
-        if (cancelled) return;
         // Merge the changed rows into the existing array, keyed by
         // url_pair_id::viewport_name. New rows (didn't exist before) are
         // appended; existing rows are replaced in place to preserve order.
@@ -426,23 +432,12 @@ export function SessionDetailPage(): JSX.Element {
           return { ...prev, results: merged };
         });
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        setError(err instanceof Error ? err.message : String(err));
       }
-    };
-    const wrappedTick = (): void => {
-      // Skip the network round-trip while the tab is hidden — the next
-      // visible tick picks up the cursor and pulls the merged delta.
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
-        return;
-      }
-      void tick();
-    };
-    const handle = window.setInterval(wrappedTick, 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(handle);
-    };
-  }, [session, shouldPoll, id]);
+    },
+    5000,
+    !!session && shouldPoll,
+  );
 
   // Reset the cursor whenever a full refresh happens (initial load or
   // explicit user actions). The next delta poll then picks up changes since
