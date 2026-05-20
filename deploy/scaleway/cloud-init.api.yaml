@@ -87,6 +87,13 @@ write_files:
       SCW_GPU_ZONE=__SCW_GPU_ZONE__
       SCW_GPU_INSTANCE_ID=__SCW_GPU_INSTANCE_ID__
       SCW_SECRET_KEY=__SCW_SECRET_KEY__
+      # Per-IP token bucket on /api/*. Defaults in src/index.ts are 5/30,
+      # which under-provisions a single-tab user (~2 req/s across pollers
+      # plus retry storms when upstream returns 502). 20/120 keeps abusive
+      # clients out while leaving headroom for the dashboard's normal
+      # polling cadence.
+      RATE_LIMIT_REFILL_PER_SECOND=20
+      RATE_LIMIT_BURST=120
 
   # Caddy site config. The placeholders here are env-substituted at deploy
   # time by render-caddyfile.sh — see Caddyfile.template in the repo.

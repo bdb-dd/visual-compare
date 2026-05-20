@@ -1,5 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 import { api, type LmActivityDto } from '../api/client.js';
+import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 
 /**
  * Compact sparkline of in-flight LM `analyze` calls over the last few
@@ -20,28 +21,25 @@ export function LmActivityHistogram(_props: LmActivityHistogramProps = {}): JSX.
   const [data, setData] = useState<LmActivityDto | null>(null);
   const [errored, setErrored] = useState(false);
 
+  const fetchOnce = async () => {
+    try {
+      const next = await api.getLmActivity();
+      setData(next);
+      setErrored(false);
+    } catch {
+      setErrored(true);
+    }
+  };
+
   useEffect(() => {
-    let cancelled = false;
-    const fetchOnce = async () => {
-      try {
-        const next = await api.getLmActivity();
-        if (cancelled) return;
-        setData(next);
-        setErrored(false);
-      } catch {
-        if (cancelled) return;
-        setErrored(true);
-      }
-    };
     void fetchOnce();
-    // Re-poll at the server's cadence so each new sample shows up exactly
-    // once. Default 4 s falls back if the server didn't ship a value.
-    const interval = _props.pollMs ?? data?.interval_ms ?? 4000;
-    const t = setInterval(() => { void fetchOnce(); }, interval);
-    return () => { cancelled = true; clearInterval(t); };
-    // Intentionally watch interval_ms so we re-arm the timer with the
-    // server's value once the first response lands.
-  }, [_props.pollMs, data?.interval_ms]);
+  }, []);
+
+  // Re-poll at the server's cadence so each new sample shows up exactly
+  // once. Default 4 s falls back if the server didn't ship a value.
+  // Polling pauses when the tab is hidden via useVisiblePolling.
+  const interval = _props.pollMs ?? data?.interval_ms ?? 4000;
+  useVisiblePolling(fetchOnce, interval);
 
   if (errored || !data || data.samples.length === 0 || data.parallel <= 0) {
     // Render nothing rather than a confusing empty box. The LM status

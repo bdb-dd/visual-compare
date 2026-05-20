@@ -1,5 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 import { api, type LmStatusDto } from '../api/client.js';
+import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 
 export interface LmStatusPillProps {
   /** Polling interval in ms. 0 disables polling. Default 30s. */
@@ -30,12 +31,13 @@ export function LmStatusPill({ intervalMs = 30_000 }: LmStatusPillProps): JSX.El
     }
   };
 
+  // Initial fetch on mount.
   useEffect(() => {
     void refresh();
-    if (intervalMs <= 0) return;
-    const t = setInterval(() => { void refresh(); }, intervalMs);
-    return () => clearInterval(t);
-  }, [intervalMs]);
+  }, []);
+
+  // Background polling; pauses when the tab is hidden.
+  useVisiblePolling(refresh, intervalMs, intervalMs > 0);
 
   if (!status) {
     return <span className="status-pill pending">LM …</span>;

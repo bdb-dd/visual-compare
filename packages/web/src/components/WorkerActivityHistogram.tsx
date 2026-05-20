@@ -1,5 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 import { api, type WorkerActivityDto } from '../api/client.js';
+import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
 
 /**
  * Compact sparkline of in-flight capture + comparison work over the last
@@ -23,24 +24,24 @@ export function WorkerActivityHistogram(
   const [data, setData] = useState<WorkerActivityDto | null>(null);
   const [errored, setErrored] = useState(false);
 
+  const fetchOnce = async () => {
+    try {
+      const next = await api.getWorkerActivity();
+      setData(next);
+      setErrored(false);
+    } catch {
+      setErrored(true);
+    }
+  };
+
+  // Initial fetch on mount.
   useEffect(() => {
-    let cancelled = false;
-    const fetchOnce = async () => {
-      try {
-        const next = await api.getWorkerActivity();
-        if (cancelled) return;
-        setData(next);
-        setErrored(false);
-      } catch {
-        if (cancelled) return;
-        setErrored(true);
-      }
-    };
     void fetchOnce();
-    const interval = _props.pollMs ?? data?.interval_ms ?? 4000;
-    const t = setInterval(() => { void fetchOnce(); }, interval);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [_props.pollMs, data?.interval_ms]);
+  }, []);
+
+  // Background polling; pauses when the tab is hidden via useVisiblePolling.
+  const interval = _props.pollMs ?? data?.interval_ms ?? 4000;
+  useVisiblePolling(fetchOnce, interval);
 
   if (errored || !data || data.samples.length === 0 || data.capacity <= 0) {
     return null;

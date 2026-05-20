@@ -49,6 +49,11 @@ export function PlanAndEvaluate({
   const startPolling = (evaluationId: string) => {
     if (pollRef.current !== null) window.clearInterval(pollRef.current);
     pollRef.current = window.setInterval(async () => {
+      // Skip network round-trip while the tab is hidden — the next visible
+      // tick will catch up. Cuts background load to ~0 for forgotten tabs.
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
       try {
         const res = await api.getEvaluation(evaluationId);
         setEvaluation(res.evaluation);

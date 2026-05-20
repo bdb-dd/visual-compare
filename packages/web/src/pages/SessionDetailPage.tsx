@@ -429,7 +429,15 @@ export function SessionDetailPage(): JSX.Element {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       }
     };
-    const handle = window.setInterval(() => void tick(), 5000);
+    const wrappedTick = (): void => {
+      // Skip the network round-trip while the tab is hidden — the next
+      // visible tick picks up the cursor and pulls the merged delta.
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
+      void tick();
+    };
+    const handle = window.setInterval(wrappedTick, 5000);
     return () => {
       cancelled = true;
       window.clearInterval(handle);
