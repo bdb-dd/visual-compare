@@ -1030,11 +1030,22 @@ export function resumeInterruptedEvaluations(
  * Best-effort mapper from a stored EvaluationConfig snapshot to the
  * EvaluationConfigInput shape `evaluator.start` accepts. Fields that
  * resolve from current session/LM config (`filter_query`,
- * `region_match_config`, `lm_prompt_ids`, `lm_include_diff_image`) are
- * deliberately dropped — picking them up fresh is more likely to be
- * correct than replaying a possibly stale snapshot. Unparseable input
- * yields an empty config (which still works: the resolver fills from
- * the session).
+ * `region_match_config`, `lm_prompt_ids`, `lm_include_diff_image`,
+ * `capture_options`) are deliberately dropped — picking them up fresh
+ * is more likely to be correct than replaying a possibly stale snapshot.
+ *
+ * `capture_options` in particular: an interrupted eval was likely
+ * interrupted *because* its concurrency was set too high for the box
+ * (the OOM-kill → resume → OOM-kill loop we hit in practice). Re-
+ * resolving from the session means an operator can drop concurrency in
+ * the session config and have the next restart cycle pick it up
+ * automatically, instead of being stuck replaying the original eval's
+ * settings. The cost is that a one-off per-eval capture-options
+ * override is lost on resume — acceptable trade given the failure
+ * mode.
+ *
+ * Unparseable input yields an empty config (which still works: the
+ * resolver fills from the session).
  */
 function configSnapshotToInput(json: string): EvaluationConfigInput {
   let snapshot: Partial<EvaluationConfig>;
@@ -1049,9 +1060,6 @@ function configSnapshotToInput(json: string): EvaluationConfigInput {
   }
   if (snapshot.target_level) input.target_level = snapshot.target_level;
   if (typeof snapshot.invoke_lm === 'boolean') input.invoke_lm = snapshot.invoke_lm;
-  if (snapshot.capture_options) {
-    input.capture_options = snapshot.capture_options as unknown as Record<string, unknown>;
-  }
   if (Array.isArray(snapshot.url_pair_ids) && snapshot.url_pair_ids.length > 0) {
     input.url_pair_ids = snapshot.url_pair_ids;
   }

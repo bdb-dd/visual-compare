@@ -239,6 +239,51 @@ describe('resumeInterruptedEvaluations', () => {
     expect(prior.error_message).toBe('interrupted_by_restart');
   });
 
+  it('drops snapshot capture_options on resume so current session config wins (concurrency, etc.)', async () => {
+    const { sessionId } = await uploadOnePair(h);
+    // The user previously dropped concurrency in session config to keep
+    // the box from OOM-cycling. The interrupted eval's snapshot still
+    // carries the old higher value — resume must NOT replay it.
+    await request(h.app)
+      .put(`/api/sessions/${sessionId}/config`)
+      .send({
+        default_viewports: [desktop],
+        default_capture_options: { concurrency: 2 },
+      });
+
+    const priorEvalId = randomUUID();
+    const snapshot = {
+      viewports: [desktop],
+      target_level: 'tolerant',
+      invoke_lm: false,
+      // Stale value — should NOT be propagated.
+      capture_options: { concurrency: 16, viewports: [desktop] },
+      url_pair_ids: null,
+      force_recapture: null,
+    };
+    h.db.prepare(
+      `INSERT INTO evaluations
+        (id, session_id, config_snapshot_json, enabled_pair_count, status, started_at)
+        VALUES (?, ?, ?, 1, 'running', ?)`,
+    ).run(priorEvalId, sessionId, JSON.stringify(snapshot), new Date().toISOString());
+
+    const recovery = recoverInterruptedRuns(h.db);
+    const resumed = resumeInterruptedEvaluations(h.evaluator, recovery.resumable);
+    expect(resumed).toHaveLength(1);
+
+    // The resumed eval's stored config_snapshot_json should reflect the
+    // session's current concurrency (2), not the snapshot's stale 16.
+    const newSnap = h.db
+      .prepare('SELECT config_snapshot_json FROM evaluations WHERE id = ?')
+      .get(resumed[0]!.evaluation_id) as { config_snapshot_json: string };
+    const parsed = JSON.parse(newSnap.config_snapshot_json) as {
+      capture_options: { concurrency: number };
+    };
+    expect(parsed.capture_options.concurrency).toBe(2);
+
+    await settle(h);
+  });
+
   it('coalesces when a fresh evaluation is already running for the same session', async () => {
     const { sessionId } = await uploadOnePair(h);
     // Kick off a real eval that's mid-flight.
