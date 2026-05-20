@@ -24,6 +24,11 @@
 #                                 #   survives instance recreation
 #   ./provision.sh api-delete     # delete the API instance; preserves the IP
 #                                 #   if reserve-api-ip was run first
+#   ./provision.sh resize-api <type> [--dry-run]
+#                                 # in-place resize the API instance to a new
+#                                 # commercial-type (e.g. POP2-HC-8C-16G).
+#                                 # Stops, updates commercial-type, restarts.
+#                                 # Block volume + reserved IP are preserved.
 #   ./provision.sh status         # print IDs + IPs
 #
 # All required secrets / parameters come from `provision.env` in this
@@ -442,6 +447,147 @@ cmd_api_delete() {
   cat "$STATE_FILE" | sed 's/^/  /'
 }
 
+cmd_resize_api() {
+  load_env; load_state
+
+  # ---- Arg parsing: positional target type + optional flags ----
+  local target_type=""
+  local dry_run="false"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry_run="true"; shift ;;
+      -h|--help)
+        cat <<'EOF'
+Usage: provision.sh resize-api <commercial-type> [--dry-run]
+
+In-place resize of the API instance (visual-compare-api) to a new
+Scaleway commercial type. Stops the VM, updates commercial-type via the
+Scaleway API, then powers it back on. The attached block volume and any
+reserved IP carry over untouched.
+
+Example:
+  ./provision.sh resize-api POP2-HC-8C-16G
+  ./provision.sh resize-api POP2-HC-8C-16G --dry-run
+
+Pre-flight verifies the target type exists in the zone and that the
+instance is in a state we can act on. With --dry-run, exits before the
+first state-changing call so you can confirm the plan safely.
+EOF
+        return 0
+        ;;
+      -*) fail "unknown flag: $1 (try --help)" ;;
+      *)
+        if [ -z "$target_type" ]; then target_type="$1"
+        else fail "unexpected positional arg: $1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  [ -n "$target_type" ] || fail "missing target commercial-type. Try: ./provision.sh resize-api --help"
+  [ -n "${SCW_API_INSTANCE_ID:-}" ] || fail "no API instance id in state — run ./provision.sh api first"
+
+  # ---- Pre-flight: inspect current state + validate target ----
+  local server_json
+  server_json="$(scw instance server get "$SCW_API_INSTANCE_ID" zone="$SCW_API_ZONE" -o json)"
+  local current_type current_state
+  current_type="$(printf '%s' "$server_json" | jq -r '.commercial_type')"
+  current_state="$(printf '%s' "$server_json" | jq -r '.state')"
+
+  log "instance:      $SCW_API_INSTANCE_ID (zone $SCW_API_ZONE)"
+  log "current type:  $current_type"
+  log "current state: $current_state"
+
+  if [ "$current_type" = "$target_type" ]; then
+    log "already at target type ($target_type); nothing to do."
+    return 0
+  fi
+
+  # list-server-types returns an array of `{name, availability, cpu, ram,
+  # hourly_price, …}`. Fail fast if the target isn't there at all OR if
+  # Scaleway reports its availability as anything other than "available"
+  # (e.g. "scarce", "shortage"), so we don't stop the VM only to discover
+  # the new type can't actually be allocated.
+  local type_meta
+  type_meta="$(scw instance server-type list zone="$SCW_API_ZONE" -o json \
+               | jq -r --arg t "$target_type" '
+                   .[]
+                   | select(.name == $t)
+                   | [.availability, .cpu, .ram,
+                      ((.hourly_price.units // 0) * 1e9 + (.hourly_price.nanos // 0)) / 1e9]
+                   | @tsv')"
+  if [ -z "$type_meta" ]; then
+    fail "target type '$target_type' is not listed in zone $SCW_API_ZONE — see: scw instance server-type list zone=$SCW_API_ZONE"
+  fi
+  local availability cpu ram hourly_eur
+  IFS=$'\t' read -r availability cpu ram hourly_eur <<<"$type_meta"
+  if [ "$availability" != "available" ]; then
+    fail "target type '$target_type' availability=$availability in zone $SCW_API_ZONE — pick a different size or zone"
+  fi
+  log "target type:   $target_type — cpu=$cpu ram=$((ram / 1024 / 1024 / 1024))GB hourly≈€$hourly_eur"
+
+  # Reminder rather than auto-snapshot — snapshots are slow and the
+  # operator may already have one. The README runbook covers it.
+  log "reminder: snapshot the block volume first if you haven't:"
+  log "  scw block snapshot create volume-id=${SCW_BLOCK_VOLUME_ID:-<unset>} zone=$SCW_API_ZONE name=pre-resize-\$(date +%F)"
+
+  if [ "$dry_run" = "true" ]; then
+    log "DRY RUN — would stop, update commercial-type, then start. Exiting."
+    return 0
+  fi
+
+  # ---- Stop ----
+  case "$current_state" in
+    stopped|"stopped in place"|archived)
+      log "instance already $current_state; skipping stop."
+      ;;
+    running)
+      log "stopping API instance $SCW_API_INSTANCE_ID …"
+      scw instance server stop "$SCW_API_INSTANCE_ID" zone="$SCW_API_ZONE" >/dev/null
+      scw instance server wait "$SCW_API_INSTANCE_ID" zone="$SCW_API_ZONE" timeout=5m
+      ;;
+    *)
+      fail "instance is in unexpected state '$current_state'; refusing to act"
+      ;;
+  esac
+
+  # ---- Resize ----
+  log "updating commercial-type → $target_type …"
+  scw instance server update "$SCW_API_INSTANCE_ID" zone="$SCW_API_ZONE" \
+    commercial-type="$target_type" >/dev/null
+
+  # ---- Start ----
+  log "powering API instance back on …"
+  scw instance server start "$SCW_API_INSTANCE_ID" zone="$SCW_API_ZONE" >/dev/null
+  scw instance server wait  "$SCW_API_INSTANCE_ID" zone="$SCW_API_ZONE" timeout=10m
+
+  # Refresh public IP into state.env. With a reserved IP this should be a
+  # no-op, but the assignment can shift across instance type changes in
+  # some Scaleway zones; checking is cheap insurance.
+  local ip
+  ip="$(scw_server_ip "$SCW_API_INSTANCE_ID" "$SCW_API_ZONE")"
+  if [ -n "$ip" ] && [ "${API_PUBLIC_IP:-}" != "$ip" ]; then
+    save_state API_PUBLIC_IP "$ip"
+  fi
+
+  # Verify the new type is actually what the instance reports.
+  local new_type
+  new_type="$(scw instance server get "$SCW_API_INSTANCE_ID" zone="$SCW_API_ZONE" -o json | jq -r '.commercial_type')"
+  if [ "$new_type" != "$target_type" ]; then
+    fail "resize verification failed: instance reports commercial_type=$new_type (expected $target_type)"
+  fi
+  log "resize complete: $current_type → $new_type"
+  log ""
+  log "next steps (manual):"
+  log "  ssh deploy@${API_PUBLIC_IP:-<unknown>}"
+  log "  nproc                                                 # confirm core count"
+  log "  systemctl show visual-compare-api -p MemoryMax        # confirm cgroup cap"
+  log "  systemctl show visual-compare-api -p Environment | tr ' ' '\\n' | grep MAGICK_NICE"
+  log "  curl -sS http://127.0.0.1:3001/healthz                # API responding"
+  log "  sudo journalctl -u visual-compare-api -f              # tail for errors"
+}
+
 cmd_open_gpu_port() {
   load_env; load_state
   [ -n "${SCW_GPU_INSTANCE_ID:-}" ] || fail "no GPU instance id in state — run ./provision.sh gpu first"
@@ -533,6 +679,7 @@ main() {
     gpu-delete)     shift; cmd_gpu_delete     "$@" ;;
     reserve-api-ip) shift; cmd_reserve_api_ip "$@" ;;
     api-delete)     shift; cmd_api_delete     "$@" ;;
+    resize-api)     shift; cmd_resize_api     "$@" ;;
     status)    shift; cmd_status    "$@" ;;
     "")        sed -n '2,30p' "$0" ;;
     *)         fail "unknown subcommand: $sub" ;;

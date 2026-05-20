@@ -36,9 +36,11 @@ ExecStart=/usr/bin/node dist/index.js
 
 Restart=on-failure
 RestartSec=5s
-# Playwright + ImageMagick can spike memory under load. Give the process
-# headroom on the DEV1-M (4 GB) tier without letting a runaway eat the box.
-MemoryMax=3G
+# Playwright + ImageMagick can spike memory under load. Sized for the
+# POP2-HC-8C-16G tier: 12 GB leaves ~4 GB headroom for the kernel, page
+# cache, and ad-hoc tooling (caddy, ssh, the cron reaper) without letting
+# a runaway API eat the box. If you bump the instance type, re-tune this.
+MemoryMax=12G
 # A failing comparison shouldn't take the API down — but a wedged process
 # should be killable. 60 s is plenty for in-flight HTTP to drain.
 TimeoutStopSec=60s

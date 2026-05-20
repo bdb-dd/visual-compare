@@ -157,6 +157,84 @@ rsyncs the current checkout, re-installs deps, rebuilds, reloads Caddy,
 restarts the API service. The script is safe to re-run; it only restarts
 what it touched. Data on `/mnt/data` is untouched.
 
+## Resizing the API VM
+
+In-place resize within the same family (e.g. `POP2-HC-4C-8G` →
+`POP2-HC-8C-16G`) preserves the block volume, the reserved IP, and the
+root disk. Downtime is ~3–5 minutes — the time it takes the VM to halt,
+have its `commercial-type` updated, and come back up.
+
+Before starting:
+
+- Confirm the target type is available in the zone:
+  ```sh
+  scw instance server-type list zone=$SCW_API_ZONE | grep POP2-HC
+  ```
+- Snapshot the block volume (cheap insurance):
+  ```sh
+  scw block snapshot create volume-id=$SCW_BLOCK_VOLUME_ID zone=$SCW_API_ZONE \
+    name=pre-resize-$(date +%F)
+  ```
+- Update the source of truth in this repo if you haven't:
+  - `provision.env`: `API_INSTANCE_TYPE=…`
+  - `systemd/visual-compare-api.service`: re-tune `MemoryMax`
+  - Commit so future re-provisions match.
+
+Maintenance window:
+
+```sh
+# 1. Apply the systemd unit + env-file changes on the live VM.
+ssh deploy@$API_PUBLIC_IP
+sudo systemctl stop visual-compare-api
+# Re-sync the systemd unit (matches the repo version):
+sudo cp /opt/visual-compare/deploy/scaleway/systemd/visual-compare-api.service \
+        /etc/systemd/system/visual-compare-api.service
+# If MAGICK_NICE / RATE_LIMIT_* etc. need updating:
+sudoedit /etc/visual-compare/env
+sudo systemctl daemon-reload
+exit
+
+# 2. Stop the VM (graceful halt, preserves volumes + IP).
+scw instance server stop $SCW_API_INSTANCE_ID zone=$SCW_API_ZONE
+# Wait until state=stopped (poll every ~5 s).
+scw instance server get $SCW_API_INSTANCE_ID zone=$SCW_API_ZONE -o json \
+  | jq -r .state
+
+# 3. Change the commercial type.
+scw instance server update $SCW_API_INSTANCE_ID zone=$SCW_API_ZONE \
+  commercial-type=POP2-HC-8C-16G
+
+# 4. Power back on; wait until state=running.
+scw instance server start $SCW_API_INSTANCE_ID zone=$SCW_API_ZONE
+scw instance server wait  $SCW_API_INSTANCE_ID zone=$SCW_API_ZONE timeout=10m
+```
+
+Verification:
+
+```sh
+ssh deploy@$API_PUBLIC_IP
+# CPU count picked up by the kernel
+nproc
+# Memory cap honoured by systemd
+systemctl show visual-compare-api -p MemoryMax
+# Env-file vars in effect
+systemctl show visual-compare-api -p Environment | tr ' ' '\n' | grep -E 'MAGICK_NICE|RATE_LIMIT'
+# API is serving
+curl -sS http://127.0.0.1:3001/healthz
+# Optional: tail the API log and run a small comparison to confirm IM
+# saturates more cores and the event-loop monitor stays calm.
+sudo journalctl -u visual-compare-api -f
+```
+
+If the API doesn't come up, the block volume snapshot from step 0 plus the
+preserved reserved IP let you roll back: stop, `commercial-type=POP2-HC-4C-8G`,
+start.
+
+Cross-family moves (POP2 → PRO2, x86 → COPRA/Arm) are *not* in-place —
+recreate via `./scripts/provision.sh api-delete` + `./scripts/provision.sh api`
+after editing `API_INSTANCE_TYPE`. The reserved IP id in state.env is
+preserved through delete, so DNS doesn't churn.
+
 ## Rotating secrets
 
 Edit `provision.env` locally, then re-render the API env file on the VM:
