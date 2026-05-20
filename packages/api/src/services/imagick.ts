@@ -20,6 +20,20 @@ export interface MagickResult {
 const DEFAULT_BIN = process.env.MAGICK_BIN || 'magick';
 const DEFAULT_TIMEOUT_MS = Number(process.env.MAGICK_TIMEOUT_MS ?? 60_000);
 const DEFAULT_RETRIES = Number(process.env.MAGICK_RETRIES ?? 1);
+/**
+ * Niceness applied to spawned `magick` processes. Positive values
+ * deprioritize IM relative to the Node API process, which keeps the event
+ * loop and HTTP responses responsive even when comparisons are saturating
+ * the CPU. 0 (default) leaves scheduling unchanged. Range is OS-dependent
+ * (Linux/macOS: -20..19; higher = lower priority).
+ *
+ * Only applied when the binary is the default `magick` — tests that
+ * substitute their own `bin` (e.g. `/bin/sleep`, `/usr/bin/printenv`) are
+ * untouched so timing assertions stay deterministic.
+ */
+const DEFAULT_NICE = Number(process.env.MAGICK_NICE ?? 0);
+/** Resolved at module load so we don't probe the filesystem per spawn. */
+const NICE_BIN = process.env.NICE_BIN || '/usr/bin/nice';
 
 /**
  * IM resource limits applied to every spawned `magick` call (unless the
@@ -106,7 +120,16 @@ function runMagickOnce(
     // killing only the magick parent leaves orphans that keep the stdout
     // pipe open and the 'close' event never fires — the timeout would
     // appear to hang forever.
-    const child = spawn(bin, args, {
+    //
+    // When MAGICK_NICE>0 and the caller hasn't overridden the binary, run
+    // magick under `nice -n N` so it competes for CPU at a lower priority
+    // than the Node API process. The `nice` wrapper inherits the same
+    // process group via detached: true, so the SIGKILL-by-pgid path still
+    // tears down the whole subtree (nice + magick + helpers) on timeout.
+    const useNice = DEFAULT_NICE > 0 && bin === DEFAULT_BIN;
+    const spawnBin = useNice ? NICE_BIN : bin;
+    const spawnArgs = useNice ? ['-n', String(DEFAULT_NICE), bin, ...args] : args;
+    const child = spawn(spawnBin, spawnArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env,
       detached: true,
@@ -133,11 +156,19 @@ function runMagickOnce(
     child.on('error', (err) => {
       if (timer) clearTimeout(timer);
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        reject(
-          new Error(
-            `'${bin}' was not found on PATH. Install ImageMagick 7 (e.g. \`brew install imagemagick\`) or set MAGICK_BIN.`,
-          ),
-        );
+        if (useNice) {
+          reject(
+            new Error(
+              `'${NICE_BIN}' was not found. MAGICK_NICE is set but the nice binary is missing; unset MAGICK_NICE or set NICE_BIN to an absolute path.`,
+            ),
+          );
+        } else {
+          reject(
+            new Error(
+              `'${bin}' was not found on PATH. Install ImageMagick 7 (e.g. \`brew install imagemagick\`) or set MAGICK_BIN.`,
+            ),
+          );
+        }
         return;
       }
       reject(err);

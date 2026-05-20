@@ -10,6 +10,7 @@ import { JobQueue } from '../src/services/queue.js';
 import { createArtifactStore } from '../src/services/artifact-store.js';
 import type { CaptureWorker } from '../src/services/capture.js';
 import type { ComparisonImagick } from '../src/services/comparison.js';
+import { comparisonRunOptionsSchema } from '../src/services/comparison.js';
 import type { LmClient } from '../src/services/lm.js';
 import { createApp } from '../src/app.js';
 import type { ViewportDef } from '../src/types.js';
@@ -217,8 +218,16 @@ describe('comparison run concurrency', () => {
     expect(h.imagick.peakInFlight).toBe(3);
   });
 
-  it('defaults to concurrency 4 when omitted', async () => {
-    const sessionId = await uploadSession(h.app, 8);
+  it('applies the schema default concurrency when omitted from the request', async () => {
+    // The default is hardware-derived (availableParallelism() - 1), so read
+    // it from the schema rather than hard-coding a number. The assertion
+    // that matters is "the parsed default is the peak we observe" — i.e.
+    // the default flows HTTP body → schema → comparison loop intact.
+    const expectedDefault = comparisonRunOptionsSchema.parse({
+      targetLevel: 'tolerant',
+    }).concurrency;
+
+    const sessionId = await uploadSession(h.app, expectedDefault * 2);
     const captureRunId = await startCaptures(h, sessionId);
 
     await request(h.app)
@@ -233,17 +242,17 @@ describe('comparison run concurrency', () => {
     const drainP = h.queue.drain();
     await new Promise<void>((resolve) => {
       const tick = () => {
-        if (h.imagick.inFlight >= 4) resolve();
+        if (h.imagick.inFlight >= expectedDefault) resolve();
         else setTimeout(tick, 5);
       };
       tick();
     });
-    expect(h.imagick.peakInFlight).toBe(4);
+    expect(h.imagick.peakInFlight).toBe(expectedDefault);
     h.imagick.release();
     await new Promise((r) => setTimeout(r, 10));
     h.imagick.release();
     await drainP;
-    expect(h.imagick.resolveCount).toBe(8);
+    expect(h.imagick.resolveCount).toBe(expectedDefault * 2);
   });
 
   it('completes all comparisons when concurrency=1 (regression guard)', async () => {

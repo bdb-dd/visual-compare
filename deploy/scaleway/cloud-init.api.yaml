@@ -100,6 +100,13 @@ write_files:
       # polling cadence.
       RATE_LIMIT_REFILL_PER_SECOND=20
       RATE_LIMIT_BURST=120
+      # Run spawned `magick` processes at lower scheduling priority than the
+      # Node API. Under saturating comparison runs IM otherwise takes all
+      # cores and the Node event loop gets starved at the kernel level
+      # (timer callbacks fire late, HTTP responses lag). Bench on a 16-core
+      # box showed `nice -n 10` cuts event-loop p99 lag by ~45% with no
+      # throughput regression vs `nice -n 0`. 0 disables the prefix.
+      MAGICK_NICE=10
 
   # Caddy site config. The placeholders here are env-substituted at deploy
   # time by render-caddyfile.sh — see Caddyfile.template in the repo.

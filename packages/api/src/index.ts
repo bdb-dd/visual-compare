@@ -22,6 +22,10 @@ import { createLmUsageTracker } from './services/lm-usage.js';
 import { appendLmEvent } from './services/lm-events.js';
 import { createLmActivityTracker } from './services/lm-activity.js';
 import { createWorkerActivityTracker } from './services/worker-activity.js';
+import {
+  createEventLoopMonitor,
+  formatSnapshot,
+} from './services/event-loop-monitor.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const PACKAGE_ROOT = resolve(dirname(__filename), '..');
@@ -96,6 +100,26 @@ const workerActivity = createWorkerActivityTracker({
   initialCapacity: availableParallelism(),
 });
 workerActivity.start();
+
+// Event-loop delay monitor. The histogram itself is cheap (~µs per tick),
+// so we always enable it. Periodic logging is opt-in via env:
+//   EVENT_LOOP_LOG_MS=1000   → log a one-line snapshot every second
+//   (unset / 0)              → silent; can still be sampled via code
+const eventLoopMonitor = createEventLoopMonitor();
+eventLoopMonitor.start();
+const EVENT_LOOP_LOG_MS = Number(process.env.EVENT_LOOP_LOG_MS ?? 0);
+let eventLoopLogTimer: NodeJS.Timeout | null = null;
+if (EVENT_LOOP_LOG_MS > 0) {
+  eventLoopLogTimer = setInterval(() => {
+    const snap = eventLoopMonitor.snapshot();
+    if (snap.count > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`${new Date().toISOString()} ${formatSnapshot(snap)}`);
+    }
+  }, EVENT_LOOP_LOG_MS);
+  eventLoopLogTimer.unref();
+}
+
 const LM_EVENTS_PATH = process.env.LM_EVENTS_PATH;
 const lm = createLmClient(lmConfig, lmServer.cli, {
   onLmUsage: () => lmUsage.record(),
@@ -176,6 +200,8 @@ const server = LISTEN_HOST
 const shutdown = async (signal: string) => {
   // eslint-disable-next-line no-console
   console.log(`[api] received ${signal}, shutting down`);
+  if (eventLoopLogTimer) clearInterval(eventLoopLogTimer);
+  eventLoopMonitor.stop();
   queue.stop();
   server.close();
   await captureWorker.shutdown();

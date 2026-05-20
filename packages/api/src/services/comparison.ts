@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { availableParallelism } from 'node:os';
 import { tmpdir } from 'node:os';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
@@ -36,6 +37,22 @@ import type {
 } from '../types.js';
 import { pipelineVersionFor } from '../constants/pipeline.js';
 
+/**
+ * Default comparison concurrency. Each in-flight comparison can saturate one
+ * core through ImageMagick (compareAe + SSIM + connected-components are all
+ * CPU-bound), so we cap the default at `cpus - 1` to leave a core for the
+ * Node API event loop, Playwright captures, and SQLite. Floor at 1, ceil
+ * at the schema's max (16). Env override: `COMPARISON_CONCURRENCY_DEFAULT`.
+ */
+const DEFAULT_COMPARISON_CONCURRENCY = (() => {
+  const envOverride = Number(process.env.COMPARISON_CONCURRENCY_DEFAULT);
+  if (Number.isFinite(envOverride) && envOverride >= 1) {
+    return Math.min(16, Math.floor(envOverride));
+  }
+  const cpus = availableParallelism();
+  return Math.max(1, Math.min(16, cpus - 1));
+})();
+
 export const comparisonRunOptionsSchema = z.object({
   /** Session-wide target level. Single value; the pipeline records `matched_at_level` per comparison. */
   targetLevel: z.enum([
@@ -53,11 +70,12 @@ export const comparisonRunOptionsSchema = z.object({
    * comparison is largely independent (own diff temp file, own
    * artifact-store write, own DB transaction), so the loop scales close to
    * linearly up to ~CPU/2 before IM CPU contention or SQLite write
-   * serialization start to bite. Default 4 is a reasonable balance for
-   * typical 8-core boxes that may also be running Playwright captures
-   * alongside; bump to 8+ for dedicated comparison-only runs.
+   * serialization start to bite. The default is derived from
+   * `availableParallelism() - 1` so the API has a free core for the event
+   * loop; override via `COMPARISON_CONCURRENCY_DEFAULT` or pass an explicit
+   * value in the request options.
    */
-  concurrency: z.number().int().min(1).max(16).default(4),
+  concurrency: z.number().int().min(1).max(16).default(DEFAULT_COMPARISON_CONCURRENCY),
 });
 
 export type ComparisonRunOptionsParsed = z.output<typeof comparisonRunOptionsSchema>;
