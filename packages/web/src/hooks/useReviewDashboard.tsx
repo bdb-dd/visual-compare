@@ -58,14 +58,17 @@ const ReviewDashboardContext = createContext<ReviewDashboardSnapshot | null>(nul
 
 /**
  * Cadence flips based on whether an evaluation is in flight. While an eval
- * is `pending`/`running` we want crisp updates to the results delta and
+ * is `pending`/`running` we want updates to the results delta and
  * progress chip; once it settles there's nothing on the page that changes
- * server-side, so 30s is plenty (and drops baseline load 6×). Before the
- * first response lands we don't know yet, so we default to the active
- * cadence to avoid a 30s blind window for users landing on a page where
- * an eval is already running.
+ * server-side, so 30s is plenty. Before the first response lands we
+ * don't know yet, so we default to the active cadence to avoid a 30s
+ * blind window for users landing on a page where an eval is already
+ * running. Note: ACTIVE here is "every 20s while busy" — that's roughly
+ * one progress update per long-eval phase, which is the granularity
+ * users actually consume. Pair this with the LM/worker activity
+ * sparklines (every 5s from useSystemStatus) for the live indicators.
  */
-const ACTIVE_POLL_MS = 5_000;
+const ACTIVE_POLL_MS = 20_000;
 const IDLE_POLL_MS = 30_000;
 
 export function ReviewDashboardProvider({
