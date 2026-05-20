@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ImageWithBoxes } from './ImageWithBoxes.js';
 import { StaleBadge } from './StaleBadge.js';
-import { useCaptureEta } from '../hooks/useCaptureEta.js';
+import { useReviewCaptureEta } from '../hooks/useReviewDashboard.js';
 import { FitModeToggle, useFitMode } from './FitModeToggle.js';
 import { useSyncedScroll, type SyncedScroll } from './useSyncedScroll.js';
 import { RecapturePairButton } from './RecapturePairButton.js';
@@ -273,14 +273,9 @@ export function ClusterDetailPanel({
     ? (members[displayedIndex] ?? null)
     : representative;
 
-  // Poll capture ETAs while any cluster member is stale. The badge in each
-  // image pane reads from this map keyed on `${url_pair_id}::${viewport_name}`.
-  // The hook stops polling once no members are stale anymore.
-  const anyMemberStale = useMemo(
-    () => members.some((m) => m.capture_a_status.is_stale || m.capture_b_status.is_stale),
-    [members],
-  );
-  const etaByKey = useCaptureEta(sessionId, anyMemberStale);
+  // ETA map comes from the shared ReviewDashboardProvider — one poll
+  // per session, distributed via context.
+  const etaByKey = useReviewCaptureEta();
   const displayedEta = displayed
     ? etaByKey.get(`${displayed.url_pair_id}::${displayed.viewport_name}`)
     : undefined;

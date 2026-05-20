@@ -23,7 +23,7 @@ import type { CaptureStatusInfo } from '@visual-compare/api/types';
 export interface CaptureStatusChipProps {
   statusA: CaptureStatusInfo;
   statusB: CaptureStatusInfo;
-  /** Pair-level ETA from useCaptureEta; ignored on errored pairs. */
+  /** Pair-level ETA from the shared dashboard hook; ignored on errored pairs. */
   etaMs?: number;
 }
 

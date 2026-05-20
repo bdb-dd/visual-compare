@@ -1,47 +1,17 @@
-import { useEffect, useState, type JSX } from 'react';
-import { api, type WorkerActivityDto } from '../api/client.js';
-import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
+import { type JSX } from 'react';
+import { useSystemStatus } from '../hooks/useSystemStatus.js';
 
 /**
  * Compact sparkline of in-flight capture + comparison work over the last
  * few minutes. Mirrors `LmActivityHistogram` exactly — same cadence, same
  * bar layout — so the two indicators sit next to each other in the
- * session header and read consistently.
- *
- * Stays correct after the Phase 6 worker pool lands: at that point the
- * /api/meta/worker-activity endpoint serves data aggregated from the
- * pool's telemetry instead of in-process `createLimit` calls, but the
- * DTO shape is unchanged.
+ * session header and read consistently. Reads from the shared
+ * `SystemStatusProvider` snapshot, so no per-component polling.
  */
-export interface WorkerActivityHistogramProps {
-  /** Override the poll cadence in ms. Default: trust server's interval_ms. */
-  pollMs?: number;
-}
-
-export function WorkerActivityHistogram(
-  _props: WorkerActivityHistogramProps = {},
-): JSX.Element | null {
-  const [data, setData] = useState<WorkerActivityDto | null>(null);
-  const [errored, setErrored] = useState(false);
-
-  const fetchOnce = async () => {
-    try {
-      const next = await api.getWorkerActivity();
-      setData(next);
-      setErrored(false);
-    } catch {
-      setErrored(true);
-    }
-  };
-
-  // Initial fetch on mount.
-  useEffect(() => {
-    void fetchOnce();
-  }, []);
-
-  // Background polling; pauses when the tab is hidden via useVisiblePolling.
-  const interval = _props.pollMs ?? data?.interval_ms ?? 4000;
-  useVisiblePolling(fetchOnce, interval);
+export function WorkerActivityHistogram(): JSX.Element | null {
+  const snap = useSystemStatus();
+  const data = snap?.data?.worker_activity ?? null;
+  const errored = !!snap?.error;
 
   if (errored || !data || data.samples.length === 0 || data.capacity <= 0) {
     return null;

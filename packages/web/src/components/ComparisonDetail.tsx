@@ -6,7 +6,7 @@ import { useSyncedScroll } from './useSyncedScroll.js';
 import { RecapturePairButton } from './RecapturePairButton.js';
 import { StatusPill } from './StatusPill.js';
 import { StaleBadge } from './StaleBadge.js';
-import { useCaptureEta } from '../hooks/useCaptureEta.js';
+import { useReviewCaptureEta } from '../hooks/useReviewDashboard.js';
 import { isAtLeastAsStrict } from '@visual-compare/api/constants/equivalence';
 import type {
   AcceptanceRow,
@@ -82,10 +82,11 @@ export function ComparisonDetail({
   const [refreshTick, setRefreshTick] = useState(0);
   const [recapturing, setRecapturing] = useState(false);
 
-  // Poll the capture ETA while either side of the focused row is stale.
-  // Hook auto-stops when the row's recapture completes.
-  const rowIsStale = !!(row?.capture_a_status.is_stale || row?.capture_b_status.is_stale);
-  const etaByKey = useCaptureEta(sessionId ?? null, rowIsStale);
+  // ETA map comes from the shared ReviewDashboardProvider — one poll
+  // per session, distributed via context. Outside the session-scoped
+  // surface (e.g., the legacy /comparisons/:id deep-link) the map is
+  // empty, which is fine — stale ETAs are session-only.
+  const etaByKey = useReviewCaptureEta();
   const rowEta = row
     ? etaByKey.get(`${row.url_pair_id}::${row.viewport_name}`)
     : undefined;

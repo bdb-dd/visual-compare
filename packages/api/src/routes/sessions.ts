@@ -42,6 +42,7 @@ import {
 } from '../services/lm-prompts.js';
 import { promptGuidanceSchema } from '../services/lm-prompt-guidance.js';
 import { computeCaptureEta } from '../services/capture-eta.js';
+import { computeReviewDashboard } from '../services/dashboard.js';
 import {
   acceptanceInputSchema,
   deleteAcceptance,
@@ -580,6 +581,31 @@ export function sessionsRouter(deps: SessionsRouterDeps): Router {
       return;
     }
     res.json(computeCaptureEta(db, id));
+  });
+
+  // Per-session aggregate. Folds the three per-session pollers
+  // (evaluation, results-delta, capture-eta) into one request so the
+  // dashboard polls a single endpoint instead of fanning out. See
+  // services/dashboard.ts for the design rationale.
+  router.get('/:id/dashboard', (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
+      return;
+    }
+    if (!getSession(db, id)) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const sinceParam = req.query.since;
+    const since =
+      typeof sinceParam === 'string' && /\d{4}-\d{2}-\d{2}T/.test(sinceParam)
+        ? sinceParam
+        : undefined;
+    const evalParam = req.query.eval;
+    const evaluationId =
+      typeof evalParam === 'string' && evalParam.length > 0 ? evalParam : undefined;
+    res.json(computeReviewDashboard(db, id, lm, { since, evaluationId }));
   });
 
   // Capture + comparison errors for a session, flattened into one list

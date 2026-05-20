@@ -5,10 +5,11 @@ import { SessionDetailPage } from './pages/SessionDetailPage.js';
 import { ComparisonDetailPage } from './pages/ComparisonDetailPage.js';
 import { LmStatusPill } from './components/LmStatusPill.js';
 import { api } from './api/client.js';
+import { SystemStatusProvider } from './hooks/useSystemStatus.js';
 
 export function App(): JSX.Element {
   return (
-    <>
+    <SystemStatusProvider>
       <GlobalHeader />
       <Routes>
         <Route path="/" element={<SessionsPage />} />
@@ -35,7 +36,7 @@ export function App(): JSX.Element {
         <Route path="/sessions/:id/comparisons/:comparison_id" element={<ComparisonDetailPage />} />
         <Route path="/comparisons/:id" element={<LegacyComparisonRedirect />} />
       </Routes>
-    </>
+    </SystemStatusProvider>
   );
 }
 

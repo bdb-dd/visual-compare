@@ -1,6 +1,5 @@
-import { useEffect, useState, type JSX } from 'react';
-import { api, type LmActivityDto } from '../api/client.js';
-import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
+import { type JSX } from 'react';
+import { useSystemStatus } from '../hooks/useSystemStatus.js';
 
 /**
  * Compact sparkline of in-flight LM `analyze` calls over the last few
@@ -8,38 +7,15 @@ import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
  * 1.0). Lives next to the LM status pill in the session header so an
  * operator can immediately see whether the GPU is being exercised.
  *
- * The server tracks concurrency directly (we broker every call), so this
- * is GPU-faithful for our single-tenant LM Studio deployment — see the
- * server-side comment in services/lm-activity.ts for the caveat.
+ * Reads from the shared `SystemStatusProvider` snapshot — no per-
+ * component polling. The server tracks concurrency directly (we broker
+ * every call), so this is GPU-faithful for our single-tenant LM Studio
+ * deployment; see services/lm-activity.ts for the caveat.
  */
-export interface LmActivityHistogramProps {
-  /** Override the poll cadence in ms. Default: trust server's interval_ms. */
-  pollMs?: number;
-}
-
-export function LmActivityHistogram(_props: LmActivityHistogramProps = {}): JSX.Element | null {
-  const [data, setData] = useState<LmActivityDto | null>(null);
-  const [errored, setErrored] = useState(false);
-
-  const fetchOnce = async () => {
-    try {
-      const next = await api.getLmActivity();
-      setData(next);
-      setErrored(false);
-    } catch {
-      setErrored(true);
-    }
-  };
-
-  useEffect(() => {
-    void fetchOnce();
-  }, []);
-
-  // Re-poll at the server's cadence so each new sample shows up exactly
-  // once. Default 4 s falls back if the server didn't ship a value.
-  // Polling pauses when the tab is hidden via useVisiblePolling.
-  const interval = _props.pollMs ?? data?.interval_ms ?? 4000;
-  useVisiblePolling(fetchOnce, interval);
+export function LmActivityHistogram(): JSX.Element | null {
+  const snap = useSystemStatus();
+  const data = snap?.data?.lm_activity ?? null;
+  const errored = !!snap?.error;
 
   if (errored || !data || data.samples.length === 0 || data.parallel <= 0) {
     // Render nothing rather than a confusing empty box. The LM status

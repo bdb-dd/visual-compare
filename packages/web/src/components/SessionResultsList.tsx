@@ -6,7 +6,7 @@ import type {
   SessionResultsSummary,
 } from '@visual-compare/api/types';
 import { RecapturePairButton } from './RecapturePairButton.js';
-import { useCaptureEta } from '../hooks/useCaptureEta.js';
+import { useReviewCaptureEta } from '../hooks/useReviewDashboard.js';
 import { CaptureStatusChip } from './CaptureStatusChip.js';
 import {
   levelMatches,
@@ -227,14 +227,9 @@ export function SessionResultsList({
   );
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  // Poll capture ETAs while any visible row is showing stale captures —
-  // gates the `~30s` suffix in the row's stale chip. The hook stops
-  // polling on its own once we flip `anyStale` to false.
-  const anyStale = useMemo(
-    () => visible.some((r) => r.capture_a_status.is_stale || r.capture_b_status.is_stale),
-    [visible],
-  );
-  const etaByKey = useCaptureEta(sessionId ?? null, anyStale);
+  // ETA map is provided by the shared ReviewDashboardProvider — one
+  // poll per session, distributed via context. No local polling here.
+  const etaByKey = useReviewCaptureEta();
 
   // Auto-select the first visible row when the current selection drops out.
   useEffect(() => {

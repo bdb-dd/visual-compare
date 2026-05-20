@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type JSX }
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
+import { ReviewDashboardProvider, useReviewDashboard } from '../hooks/useReviewDashboard.js';
 import { ActionsMenu } from '../components/ActionsMenu.js';
 import { AnomaliesTab } from '../components/AnomaliesTab.js';
 import { ClustersTab } from '../components/ClustersTab.js';
@@ -54,7 +55,23 @@ const MODE_LABELS: Record<Mode, string> = {
   config: 'Config',
 };
 
+/**
+ * Outer wrapper installs the per-session `ReviewDashboardProvider` so
+ * the inner body and its descendants share a single dashboard poll
+ * (evaluation + results delta + capture ETA in one request) via context.
+ * The page-level state still lives in the body; the provider just owns
+ * the polling and exposes the latest snapshot.
+ */
 export function SessionDetailPage(): JSX.Element {
+  const { id = '' } = useParams();
+  return (
+    <ReviewDashboardProvider sessionId={id}>
+      <SessionDetailPageBody />
+    </ReviewDashboardProvider>
+  );
+}
+
+function SessionDetailPageBody(): JSX.Element {
   const { id = '' } = useParams();
   // URL schema for this page (Phase 4 audit):
   //   mode    = clusters | rows | anomalies   (clusters omitted as canonical)
@@ -347,72 +364,64 @@ export function SessionDetailPage(): JSX.Element {
     evalRunning ||
     (results?.plan.capture_misses ?? 0) > 0 ||
     (results?.plan.comparison_misses ?? 0) > 0;
-  // Cursor is updated in-place via a ref so the polling closure doesn't
-  // restart on every cursor change.
-  const cursorRef = useRef<string | null>(null);
+  // Consume the shared dashboard snapshot. The provider polls
+  // /api/sessions/:id/dashboard once and exposes the latest aggregate —
+  // evaluation status + results delta + capture ETA — via context. This
+  // body merges the delta payload into its local results/evaluations
+  // state, then follows up with /results?keys= for any changed rows.
+  const dashboard = useReviewDashboard();
+  const lastProcessedCursorRef = useRef<string | null>(null);
   useEffect(() => {
-    if (session && shouldPoll && cursorRef.current === null) {
-      cursorRef.current = new Date().toISOString();
-    }
-  }, [session, shouldPoll]);
+    const delta = dashboard?.data?.results_delta;
+    if (!delta) return;
+    // Idempotent on cursor: the provider polls faster than we want to
+    // re-fetch row payloads, so skip merges we've already applied.
+    if (lastProcessedCursorRef.current === delta.cursor) return;
+    lastProcessedCursorRef.current = delta.cursor;
 
-  // useVisiblePolling: pauses on hidden tabs and waits for each tick to
-  // settle before scheduling the next, so a slow upstream backs off the
-  // cadence instead of stacking pending requests.
-  useVisiblePolling(
-    async () => {
-      if (!session || !shouldPoll) return;
-      const since = cursorRef.current ?? new Date().toISOString();
-      try {
-        const delta = await api.getResults(id, undefined, { since });
-        // Update header counts + summary chips + latest eval from the
-        // (small) delta payload, leaving the rows array untouched.
-        setResults((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            plan: delta.plan,
-            summary: delta.summary,
-            // Keep results from the previous payload; we'll merge changed
-            // rows below if needed.
-            results: prev.results,
-          };
-        });
-        if (delta.latest_evaluation) {
-          setEvaluations((prev) => {
-            const head = delta.latest_evaluation!;
-            if (prev[0]?.id === head.id) {
-              const next = [...prev];
-              next[0] = head;
-              return next;
-            }
-            // Fresh evaluation we hadn't seen — prepend; full re-fetch is
-            // unnecessary and adds round-trips.
-            return [head, ...prev.filter((e) => e.id !== head.id)];
-          });
+    if (!shouldPoll) return;
+
+    setResults((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        plan: delta.plan,
+        summary: delta.summary,
+        // Keep rows from the previous payload; the keys followup below
+        // merges in the changed ones.
+        results: prev.results,
+      };
+    });
+    if (delta.latest_evaluation) {
+      setEvaluations((prev) => {
+        const head = delta.latest_evaluation!;
+        if (prev[0]?.id === head.id) {
+          const next = [...prev];
+          next[0] = head;
+          return next;
         }
-        if (delta.cursor) cursorRef.current = delta.cursor;
+        return [head, ...prev.filter((e) => e.id !== head.id)];
+      });
+    }
 
-        const changed = delta.changed_pair_keys ?? [];
-        if (changed.length === 0) return;
+    const changed = delta.changed_pair_keys ?? [];
+    if (changed.length === 0) return;
 
-        // The `?keys=` followup encodes the changed keys in the URL. Each
-        // key is ~45 chars, and Node's default --max-http-header-size is
-        // 8 KB; somewhere around 100 keys we'd risk a 431 from the dev
-        // server proxy. When the delta is that large (e.g. a server restart
-        // bulk-flips thousands of pending rows in one go), just do a full
-        // refresh — the row set is small enough that one big payload beats
-        // chunking the URL into many requests.
-        const MAX_DELTA_KEYS = 100;
+    // The `?keys=` followup encodes the changed keys in the URL. Each
+    // key is ~45 chars, and Node's default --max-http-header-size is
+    // 8 KB; somewhere around 100 keys we'd risk a 431 from the dev
+    // server proxy. When the delta is that large (e.g. a server restart
+    // bulk-flips thousands of pending rows in one go), just do a full
+    // refresh — the row set is small enough that one big payload beats
+    // chunking the URL into many requests.
+    const MAX_DELTA_KEYS = 100;
+    void (async () => {
+      try {
         if (changed.length > MAX_DELTA_KEYS) {
           await refreshResults();
           return;
         }
-
         const rowsResponse = await api.getResults(id, undefined, { keys: changed });
-        // Merge the changed rows into the existing array, keyed by
-        // url_pair_id::viewport_name. New rows (didn't exist before) are
-        // appended; existing rows are replaced in place to preserve order.
         setResults((prev) => {
           if (!prev) return prev;
           const byKey = new Map<string, SessionResultRow>();
@@ -434,17 +443,14 @@ export function SessionDetailPage(): JSX.Element {
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
-    },
-    5000,
-    !!session && shouldPoll,
-  );
+    })();
+  }, [dashboard?.data?.results_delta, shouldPoll, id, refreshResults]);
 
-  // Reset the cursor whenever a full refresh happens (initial load or
-  // explicit user actions). The next delta poll then picks up changes since
-  // that moment.
-  useEffect(() => {
-    if (results) cursorRef.current = new Date().toISOString();
-  }, [results?.session_id]);
+  // Note: cursor management moved to the ReviewDashboardProvider. A full
+  // refresh no longer needs to reset a local cursor — the provider's
+  // next tick reconciles. Worst case is a brief window where the merged
+  // /results?keys= followup re-fetches a few rows that were just freshly
+  // loaded; the merge is idempotent.
 
   // Phase ζ: page-level keyboard shortcuts.
   // - 1/2/3/4 switch mode (works regardless of focus).
@@ -783,7 +789,6 @@ export function SessionDetailPage(): JSX.Element {
             sessionId={session.id}
             results={results}
             onEvaluationComplete={handleEvaluationComplete}
-            latestEvaluation={lastEval ?? null}
           />
         </div>
       </header>

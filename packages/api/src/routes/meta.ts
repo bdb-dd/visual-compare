@@ -93,5 +93,64 @@ export function metaRouter(deps: MetaRouterDeps = {}): Router {
     res.json(deps.workerActivity.snapshot());
   });
 
+  /**
+   * Global system-status aggregate. Folds /lm-status, /lm-activity, and
+   * /worker-activity into one request so the chrome polls a single
+   * endpoint rather than three. `?force=1` is forwarded to the LM
+   * preflight (otherwise it serves from the 30s cache).
+   */
+  router.get('/system-status', async (req, res) => {
+    const force = req.query.force === '1' || req.query.force === 'true';
+
+    const lmActivity = deps.lmActivity
+      ? deps.lmActivity.snapshot()
+      : { samples: [], parallel: 0, interval_ms: 0 };
+    const workerActivity = deps.workerActivity
+      ? deps.workerActivity.snapshot()
+      : { samples: [], capacity: 0, interval_ms: 0 };
+
+    if (!deps.lm) {
+      res.json({
+        lm: {
+          ok: false,
+          configured: false,
+          message: 'LM client is not configured on the server.',
+        },
+        lm_activity: lmActivity,
+        worker_activity: workerActivity,
+      });
+      return;
+    }
+
+    const pf = await deps.lm.preflight({ force });
+    const lm = pf.ok
+      ? {
+          ok: true,
+          configured: true,
+          server_reachable: true,
+          model_loaded: true,
+          configured_model: pf.configuredModel,
+          loaded_models: pf.loadedModels,
+          started_server: pf.startedServer,
+          loaded_model: pf.loadedModel,
+          duration_ms: pf.durationMs,
+        }
+      : {
+          ok: false,
+          configured: true,
+          server_reachable: pf.serverReachable,
+          model_loaded: pf.modelLoaded,
+          configured_model: pf.configuredModel,
+          loaded_models: pf.loadedModels,
+          reason: pf.reason,
+          message: pf.message,
+          started_server: pf.startedServer,
+          loaded_model: pf.loadedModel,
+          duration_ms: pf.durationMs,
+        };
+
+    res.json({ lm, lm_activity: lmActivity, worker_activity: workerActivity });
+  });
+
   return router;
 }

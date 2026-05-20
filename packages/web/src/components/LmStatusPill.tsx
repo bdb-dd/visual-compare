@@ -1,43 +1,16 @@
-import { useEffect, useState, type JSX } from 'react';
-import { api, type LmStatusDto } from '../api/client.js';
-import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
-
-export interface LmStatusPillProps {
-  /** Polling interval in ms. 0 disables polling. Default 30s. */
-  intervalMs?: number;
-}
+import { type JSX } from 'react';
+import { type LmStatusDto } from '../api/client.js';
+import { useSystemStatus } from '../hooks/useSystemStatus.js';
 
 /**
- * Compact pill showing LM Studio reachability. Polls /api/meta/lm-status
- * (cached server-side for 30s, so a 30s poll is sympathetic).
+ * Compact pill showing LM Studio reachability. Reads from the
+ * `SystemStatusProvider` context, which polls /api/meta/system-status
+ * once across the whole app (no per-component polling). Click-to-refresh
+ * still forces a fresh preflight via `forceRefresh`.
  */
-export function LmStatusPill({ intervalMs = 30_000 }: LmStatusPillProps): JSX.Element {
-  const [status, setStatus] = useState<LmStatusDto | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const refresh = async (force = false) => {
-    setLoading(true);
-    try {
-      const next = await api.getLmStatus(force);
-      setStatus(next);
-    } catch (err) {
-      setStatus({
-        ok: false,
-        configured: true,
-        message: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Initial fetch on mount.
-  useEffect(() => {
-    void refresh();
-  }, []);
-
-  // Background polling; pauses when the tab is hidden.
-  useVisiblePolling(refresh, intervalMs, intervalMs > 0);
+export function LmStatusPill(): JSX.Element {
+  const snap = useSystemStatus();
+  const status: LmStatusDto | null = snap?.data?.lm ?? null;
 
   if (!status) {
     return <span className="status-pill pending">LM …</span>;
@@ -52,8 +25,8 @@ export function LmStatusPill({ intervalMs = 30_000 }: LmStatusPillProps): JSX.El
     <span
       className={`status-pill ${cls}`}
       title={statusTooltip(status)}
-      onClick={() => { void refresh(true); }}
-      style={{ cursor: 'pointer', opacity: loading ? 0.6 : 1 }}
+      onClick={() => void snap?.forceRefresh()}
+      style={{ cursor: 'pointer', opacity: snap?.loading ? 0.6 : 1 }}
     >
       {label}
     </span>

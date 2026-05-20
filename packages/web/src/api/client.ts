@@ -294,14 +294,36 @@ export const api = {
    * visible; results plug into the StaleBadge label.
    */
   getCaptureEta: (sessionId: string) =>
-    request<{
-      run_id: string | null;
-      concurrency: number | null;
-      avg_duration_ms: number | null;
-      avg_source: 'in_run' | 'session' | null;
-      total_in_flight: number;
-      members: Record<string, { eta_ms: number; rank: number; sides: ('a' | 'b')[] }>;
-    }>(`/api/sessions/${sessionId}/capture-eta`),
+    request<CaptureEtaDto>(`/api/sessions/${sessionId}/capture-eta`),
+
+  /**
+   * Per-session dashboard aggregate. Folds the three highest-rate per-
+   * session pollers (evaluation status, results delta, capture ETA) into
+   * one request so the UI polls a single endpoint and the API serves one
+   * coupled response. See packages/api/src/services/dashboard.ts for the
+   * server-side rationale.
+   */
+  getReviewDashboard: (
+    sessionId: string,
+    opts: { since?: string; evaluationId?: string } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (opts.since) params.set('since', opts.since);
+    if (opts.evaluationId) params.set('eval', opts.evaluationId);
+    const qs = params.toString();
+    return request<ReviewDashboardDto>(
+      `/api/sessions/${sessionId}/dashboard${qs ? `?${qs}` : ''}`,
+    );
+  },
+
+  /**
+   * Global system-status aggregate. Folds lm-status + lm-activity +
+   * worker-activity. `force=true` forwards to the LM preflight (bypasses
+   * the 30s cache); used by the click-to-refresh handler on the status
+   * pill.
+   */
+  getSystemStatus: (force = false) =>
+    request<SystemStatusDto>(`/api/meta/system-status${force ? '?force=1' : ''}`),
 
   getViewports: () => request<{ viewports: ViewportDef[]; default: string }>(`/api/meta/viewports`),
   getLevels: () =>
@@ -494,6 +516,42 @@ export interface WorkerActivityDto {
   capacity: number;
   /** Sample cadence in ms. */
   interval_ms: number;
+}
+
+export interface CaptureEtaDto {
+  run_id: string | null;
+  concurrency: number | null;
+  avg_duration_ms: number | null;
+  avg_source: 'in_run' | 'session' | null;
+  total_in_flight: number;
+  members: Record<string, { eta_ms: number; rank: number; sides: ('a' | 'b')[] }>;
+}
+
+export interface ReviewDashboardResultsDelta {
+  plan: {
+    enabled_pair_count: number;
+    capture_misses: number;
+    comparison_misses: number;
+    cache_hits: { captures: number; pixel: number; lm: number };
+  };
+  summary: SessionResultsDto['summary'];
+  cursor: string;
+  latest_evaluation: EvaluationStatusDto | null;
+  changed_pair_keys: string[];
+}
+
+export interface ReviewDashboardDto {
+  session_id: string;
+  evaluation: EvaluationStatusDto | null;
+  results_delta: ReviewDashboardResultsDelta | null;
+  capture_eta: CaptureEtaDto;
+  config: SessionResultsDto['config'] | null;
+}
+
+export interface SystemStatusDto {
+  lm: LmStatusDto;
+  lm_activity: LmActivityDto;
+  worker_activity: WorkerActivityDto;
 }
 
 export interface SessionErrorEntry {

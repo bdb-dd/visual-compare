@@ -13,7 +13,7 @@ import type {
   ClusterMemberDto,
   ClusterSummaryDto,
 } from '@visual-compare/api/types';
-import { useCaptureEta } from '../hooks/useCaptureEta.js';
+import { useReviewCaptureEta } from '../hooks/useReviewDashboard.js';
 import { CaptureStatusChip } from './CaptureStatusChip.js';
 
 /**
@@ -805,16 +805,9 @@ function InlineMemberList({
     return members.filter((m) => m.viewport_name === activeViewport);
   }, [members, activeViewport]);
 
-  // Poll capture ETAs while any visible member is stale; turns off
-  // automatically once the run completes.
-  const anyMemberStale = useMemo(
-    () =>
-      filteredMembers.some(
-        (m) => m.capture_a_status.is_stale || m.capture_b_status.is_stale,
-      ),
-    [filteredMembers],
-  );
-  const etaByKey = useCaptureEta(sessionId, anyMemberStale);
+  // ETA map comes from the shared ReviewDashboardProvider — one poll
+  // per session, distributed via context.
+  const etaByKey = useReviewCaptureEta();
 
   // Suppress the bar entirely when there's only one viewport — the
   // export ⋯ that used to anchor its right edge has moved up to the

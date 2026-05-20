@@ -1,37 +1,32 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { api } from '../api/client.js';
 import type { EvaluationStatusDto, SessionResultsDto } from '@visual-compare/api/types';
-import { useVisiblePolling } from '../hooks/useVisiblePolling.js';
+import { useReviewDashboard } from '../hooks/useReviewDashboard.js';
 
 interface Props {
   sessionId: string;
   results: SessionResultsDto | null;
   onEvaluationComplete: () => void;
-  /**
-   * Most-recent evaluation surfaced by the parent. When the page loads
-   * mid-run the user expects to see the button reflect that — without this
-   * prop, local `evaluation` would start null and the idle label would show
-   * until the user re-triggered. Adopting the in-flight one here reattaches
-   * polling automatically.
-   */
-  latestEvaluation?: EvaluationStatusDto | null;
 }
-
-const POLL_INTERVAL_MS = 1500;
 
 /**
  * The Evaluate button + a single status line. Used in the project header
  * strip; the button label carries the plan summary so a separate card
- * isn't needed. Polls the in-flight evaluation until it terminates and
- * fires `onEvaluationComplete` so the parent can refresh `/results`.
+ * isn't needed. Reads evaluation state from the per-session
+ * `ReviewDashboardProvider` (no local polling) and fires
+ * `onEvaluationComplete` once when the tracked eval reaches a terminal
+ * state.
  */
 export function PlanAndEvaluate({
   sessionId,
   results,
   onEvaluationComplete,
-  latestEvaluation,
 }: Props): JSX.Element {
-  const [evaluation, setEvaluation] = useState<EvaluationStatusDto | null>(null);
+  const dashboard = useReviewDashboard();
+  // Optimistic state for the moment between click() resolving and the
+  // dashboard's next poll catching up. Once the dashboard reports the
+  // same id we clear this and read from the snapshot exclusively.
+  const [localEval, setLocalEval] = useState<EvaluationStatusDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   // True between the moment the user clicks Stop and the orchestrator
   // settling the row to `cancelled`. Drives the "Stopping…" label so the
@@ -40,59 +35,32 @@ export function PlanAndEvaluate({
   const onCompleteRef = useRef(onEvaluationComplete);
   onCompleteRef.current = onEvaluationComplete;
 
-  const isTerminal =
-    evaluation?.status === 'complete' ||
-    evaluation?.status === 'error' ||
-    evaluation?.status === 'cancelled';
-  const polling = !!evaluation && !isTerminal;
+  // The dashboard's evaluation overrides local once it catches up.
+  const dashboardEval = dashboard?.data?.evaluation ?? null;
+  const evaluation =
+    localEval && dashboardEval?.id !== localEval.id ? localEval : dashboardEval ?? localEval;
 
-  // Self-pacing poll: useVisiblePolling waits for each fetch to settle
-  // before scheduling the next, so a slow upstream backs the cadence off
-  // instead of stacking pending requests. The hook turns off automatically
-  // when `polling` flips false (evaluation reached a terminal state).
-  useVisiblePolling(
-    async () => {
-      if (!evaluation) return;
-      try {
-        const res = await api.getEvaluation(evaluation.id);
-        setEvaluation(res.evaluation);
-        if (
-          res.evaluation.status === 'complete' ||
-          res.evaluation.status === 'error' ||
-          res.evaluation.status === 'cancelled'
-        ) {
-          onCompleteRef.current();
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    },
-    POLL_INTERVAL_MS,
-    polling,
-  );
-
-  // Adopt an in-flight evaluation surfaced by the parent. Fires when:
-  //   1. Page loads mid-run — local `evaluation` is null, parent's
-  //      `latestEvaluation` is running/pending → adopt + start polling.
-  //   2. The evaluations list re-fetches and the latest one is still running
-  //      while we don't have local state for it (e.g. user landed on a
-  //      different session and came back).
-  // We deliberately don't override an evaluation we already track locally —
-  // the user-initiated path (`click()`) is authoritative for the current
-  // session.
+  // Once the dashboard returns the locally-tracked eval, drop the
+  // optimistic copy.
   useEffect(() => {
-    if (!latestEvaluation) return;
-    if (evaluation && evaluation.id === latestEvaluation.id) return;
-    const isLive =
-      latestEvaluation.status === 'running' || latestEvaluation.status === 'pending';
-    if (!isLive) return;
-    setEvaluation(latestEvaluation);
-    setStopRequested(false);
-    // intentional: don't depend on `evaluation` (avoid restart loops); we
-    // only adopt once per latestEvaluation id. useVisiblePolling picks it
-    // up via the `polling` flag derived from `evaluation` state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latestEvaluation?.id, latestEvaluation?.status]);
+    if (localEval && dashboardEval?.id === localEval.id) {
+      setLocalEval(null);
+    }
+  }, [localEval, dashboardEval?.id]);
+
+  // Fire onComplete once per terminal evaluation id.
+  const lastNotifiedIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!evaluation) return;
+    const terminal =
+      evaluation.status === 'complete' ||
+      evaluation.status === 'error' ||
+      evaluation.status === 'cancelled';
+    if (!terminal) return;
+    if (lastNotifiedIdRef.current === evaluation.id) return;
+    lastNotifiedIdRef.current = evaluation.id;
+    onCompleteRef.current();
+  }, [evaluation?.id, evaluation?.status]);
 
   const click = async () => {
     setError(null);
@@ -103,16 +71,10 @@ export function PlanAndEvaluate({
       // provided here.
       const res = await api.evaluate(sessionId);
       const initial = await api.getEvaluation(res.evaluation_id);
-      setEvaluation(initial.evaluation);
-      if (
-        initial.evaluation.status === 'complete' ||
-        initial.evaluation.status === 'error' ||
-        initial.evaluation.status === 'cancelled'
-      ) {
-        onEvaluationComplete();
-      }
-      // No explicit startPolling — useVisiblePolling watches `polling`
-      // (derived from evaluation.status) and arms itself.
+      setLocalEval(initial.evaluation);
+      // No standalone poller — the ReviewDashboardProvider's next tick
+      // will deliver the same evaluation_id, after which `localEval`
+      // clears and we read from the shared snapshot.
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -124,10 +86,9 @@ export function PlanAndEvaluate({
     setStopRequested(true);
     try {
       const res = await api.cancelEvaluation(evaluation.id);
-      // The orchestrator marks the row `cancelled` once in-flight work
-      // settles, which can take seconds. Reflect whatever the server returned
-      // now; polling will reconcile when the row flips.
-      setEvaluation(res.evaluation);
+      // Optimistically reflect the cancel; the dashboard catches up
+      // on its next tick and replaces this with the canonical row.
+      setLocalEval(res.evaluation);
     } catch (err) {
       setStopRequested(false);
       setError(err instanceof Error ? err.message : String(err));
