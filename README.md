@@ -1,40 +1,11 @@
 # visual-compare
 
-Local-first web tool that imports paired URLs from CSV, captures viewport
+Local or remote deployable web tool that imports paired URLs from CSV, captures viewport
 screenshots with Playwright, and compares them with ImageMagick. An
 optional LM second pass adjudicates ambiguous pixel diffs and tags each
-difference with a v1 change-type taxonomy that drives a cluster-review
+difference with a change-type taxonomy that drives a cluster-review
 workflow.
 
-The original design is in `plans/completed/improved-visual-compare-plan.md`.
-The current iteration plan (phases 1–5 shipped, Phase 6 deferred) is in
-`plans/in-progress/refactoring-plan.md`.
-
-## Layout
-
-This repository uses a bare-repo layout to support multiple worktrees:
-
-```
-visual-compare/
-├── .bare/         # bare git repo
-├── .shared/       # cross-worktree image store (see below)
-├── main/          # worktree for the main branch
-└── <feature>/     # additional worktrees as siblings
-```
-
-To work on a new branch, add a sibling worktree:
-
-```sh
-git -C main worktree add ../my-feature -b my-feature
-```
-
-## Packages
-
-- `packages/api` — Express + SQLite + Playwright + ImageMagick backend
-- `packages/web` — Vite + React frontend (proxies `/api` and `/images` to the API)
-
-Cross-package types live in `packages/api/src/types.ts` and are imported via
-the `@visual-compare/api/*` path alias declared in `tsconfig.base.json`.
 
 ## Requirements
 
@@ -139,7 +110,7 @@ images dir it would re-fire Playwright captures for every URL. To skip
 that work when you've already captured the slice in another worktree:
 
 ```sh
-pnpm import-capture-cache -- \
+pnpm import-capture-cache \
   --src ../other-worktree/data/visual-compare.sqlite \
   --dst data/visual-compare.sqlite
 ```
@@ -155,6 +126,33 @@ The destination's planner will then hit the cache for any URL whose
 `(url, viewport, capture_opts_hash)` matches a row from the source —
 so use **the same capture options** when uploading the CSV, or the
 hash diverges and captures fire anyway.
+
+## Repository Layout
+
+This repository uses a bare-repo layout to support multiple worktrees:
+
+```
+visual-compare/
+├── .bare/         # bare git repo
+├── .shared/       # cross-worktree image store (see below)
+├── main/          # worktree for the main branch
+└── <feature>/     # additional worktrees as siblings
+```
+
+To work on a new branch, add a sibling worktree:
+
+```sh
+git -C main worktree add ../my-feature -b my-feature
+```
+
+## Packages
+
+- `packages/api` — Express + SQLite + Playwright + ImageMagick backend
+- `packages/web` — Vite + React frontend (proxies `/api` and `/images` to the API)
+
+Cross-package types live in `packages/api/src/types.ts` and are imported via
+the `@visual-compare/api/*` path alias declared in `tsconfig.base.json`.
+
 
 ## Deployment
 
@@ -172,14 +170,34 @@ in `deploy/scaleway/README.md`.
 Two convenience wrappers are exposed from the repo root:
 
 ```sh
-pnpm provision -- check    # sanity-check env + scw auth
-pnpm provision -- gpu      # create the LM Studio GPU VM
-pnpm provision -- api      # create the API VM + block volume
-pnpm deploy                # rsync code, rebuild, reload services
+pnpm provision <subcommand>   # → bash deploy/scaleway/scripts/provision.sh
+pnpm deploy                   # → bash deploy/scaleway/scripts/deploy.sh
 ```
 
-Both wrappers forward arguments to the underlying scripts in
-`deploy/scaleway/scripts/`.
+`pnpm deploy` takes no arguments — it rsyncs code, rebuilds on the API
+VM, and reloads services.
+
+`pnpm provision` is a multi-subcommand wrapper covering the full
+Scaleway lifecycle. The common ones:
+
+```sh
+pnpm provision check          # sanity-check env + scw auth
+pnpm provision gpu            # create the LM Studio GPU VM
+pnpm provision api            # create the API VM + block volume
+pnpm provision status         # print IDs + IPs from state.env
+pnpm provision start-gpu      # power an existing stopped GPU back on
+pnpm provision stop-gpu       # power the GPU off (default state)
+pnpm provision resize-api <commercial-type>
+                              # in-place API VM resize
+```
+
+(Don't pass a literal `--` between `pnpm provision` and the subcommand;
+pnpm 10 forwards it through as a positional arg and the script will
+reject it with `unknown subcommand: --`.)
+
+There are more (IP reservation, instance recreate, port opening,
+cloud-init tailing). See `deploy/scaleway/README.md` for the full list
+and operational context.
 
 ## Implementation status
 
