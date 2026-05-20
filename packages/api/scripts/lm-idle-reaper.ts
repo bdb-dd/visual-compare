@@ -81,7 +81,8 @@ export interface RunReaperOptions {
 
 export async function runReaper(opts: RunReaperOptions = {}): Promise<number> {
   const env = opts.env ?? process.env;
-  const log = opts.log ?? ((m: string) => console.log(`[lm-idle-reaper] ${m}`));
+  const log =
+    opts.log ?? ((m: string) => console.log(`${new Date().toISOString()} [lm-idle-reaper] ${m}`));
   const now = opts.now ?? (() => Date.now());
 
   const idleMinutes = env.LM_IDLE_SHUTDOWN_MINUTES
@@ -161,7 +162,7 @@ if (isDirectInvocation) {
     (code) => process.exit(code),
     (err) => {
       // eslint-disable-next-line no-console
-      console.error('[lm-idle-reaper] uncaught:', err);
+      console.error(`${new Date().toISOString()} [lm-idle-reaper] uncaught:`, err);
       process.exit(1);
     },
   );

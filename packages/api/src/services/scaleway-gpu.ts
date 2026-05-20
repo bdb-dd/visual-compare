@@ -37,7 +37,16 @@ export interface ScalewayApi {
   getInstance(): Promise<ScalewayInstanceState>;
   /** Issues the `poweron` action. Idempotent: ok if already running. */
   powerOn(): Promise<void>;
-  /** Issues the `poweroff` action. Idempotent: ok if already stopped. */
+  /**
+   * Issues the `stop_in_place` action — a hypervisor-level halt that does
+   * not depend on the guest OS responding to ACPI. Used by the idle reaper
+   * where the goal is to stop compute billing; the boot drive + IP are
+   * preserved so the next `powerOn` is a fast cold boot.
+   *
+   * Idempotent: ok if already stopped. We deliberately do NOT use the
+   * `poweroff` action — observed in production to leave tasks `pending`
+   * indefinitely while the guest ignored the ACPI signal.
+   */
   powerOff(): Promise<void>;
 }
 
@@ -126,7 +135,7 @@ export function createScalewayApi(
     'Content-Type': 'application/json',
   } as const;
 
-  const action = async (verb: 'poweron' | 'poweroff') => {
+  const action = async (verb: 'poweron' | 'stop_in_place') => {
     await retry(
       async () => {
         const res = await fetchImpl(`${serverUrl}/action`, {
@@ -137,12 +146,19 @@ export function createScalewayApi(
         if (res.status === 409) {
           // Already in target state — Scaleway returns 409 ("instance is locked"
           // or "no transition") for repeat actions. Treat as success.
+          // eslint-disable-next-line no-console
+          console.log(
+            `${new Date().toISOString()} [scaleway] ${verb}: HTTP 409 (already in target state, treated as success)`,
+          );
           return;
         }
         if (!res.ok) {
           const body = await safeText(res);
           throw new Error(`Scaleway ${verb} failed: HTTP ${res.status} ${body}`);
         }
+        const body = await safeText(res);
+        // eslint-disable-next-line no-console
+        console.log(`${new Date().toISOString()} [scaleway] ${verb}: HTTP ${res.status} ${body}`);
       },
       {
         label: `scaleway ${verb}`,
@@ -181,7 +197,7 @@ export function createScalewayApi(
       );
     },
     powerOn: () => action('poweron'),
-    powerOff: () => action('poweroff'),
+    powerOff: () => action('stop_in_place'),
   };
 }
 
