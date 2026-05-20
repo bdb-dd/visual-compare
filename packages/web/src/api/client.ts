@@ -305,11 +305,14 @@ export const api = {
    */
   getReviewDashboard: (
     sessionId: string,
-    opts: { since?: string; evaluationId?: string } = {},
+    opts: { since?: string; evaluationId?: string; etaKeys?: readonly string[] } = {},
   ) => {
     const params = new URLSearchParams();
     if (opts.since) params.set('since', opts.since);
     if (opts.evaluationId) params.set('eval', opts.evaluationId);
+    if (opts.etaKeys && opts.etaKeys.length > 0) {
+      params.set('eta_keys', opts.etaKeys.join(','));
+    }
     const qs = params.toString();
     return request<ReviewDashboardDto>(
       `/api/sessions/${sessionId}/dashboard${qs ? `?${qs}` : ''}`,
@@ -524,6 +527,12 @@ export interface CaptureEtaDto {
   avg_duration_ms: number | null;
   avg_source: 'in_run' | 'session' | null;
   total_in_flight: number;
+  /**
+   * ETA by `${url_pair_id}::${viewport_name}` key. Server returns only
+   * members in the caller's requested scope (the cluster panel sends
+   * the keys for its currently-focused members). Empty when no scope
+   * was requested.
+   */
   members: Record<string, { eta_ms: number; rank: number; sides: ('a' | 'b')[] }>;
 }
 

@@ -21,6 +21,34 @@ import type {
 } from '../types.js';
 
 /**
+ * Short-lived in-memory cache for `summariseResults` output. The
+ * computation walks every session row via readSessionResults — measured
+ * at ~hundreds of ms on big sessions — so calling it on every 1.5s
+ * dashboard poll is wasteful. A 3-second TTL keeps the summary
+ * effectively fresh from the user's perspective (histogram chips
+ * don't need sub-second accuracy) while collapsing N polls into one
+ * actual computation per window.
+ *
+ * Keyed on session id + config fields that actually affect the summary
+ * (target_level, viewports). Changing either of those produces a fresh
+ * key and a cold compute on the next call. Pre-empted on session
+ * mutations isn't necessary — the TTL bound is short enough that any
+ * staleness window is brief.
+ *
+ * Map is bounded by `MAX_CACHE_ENTRIES`. Eviction is FIFO on insert
+ * order — simple, no LRU bookkeeping. Cap is generous (32) since a
+ * single deployment typically has only a few hot sessions.
+ */
+interface SummaryCacheEntry {
+  summary: SessionResultsSummary;
+  computedAt: number;
+}
+
+const SUMMARY_TTL_MS = 3_000;
+const MAX_CACHE_ENTRIES = 32;
+const summaryCache = new Map<string, SummaryCacheEntry>();
+
+/**
  * Per-session "review dashboard" aggregate. Folds the three highest-rate
  * pollers a session-detail page used to fire independently:
  *
@@ -69,6 +97,13 @@ export interface ComputeReviewDashboardOptions {
   evaluationId?: string;
   /** Optional EvaluationConfigInput override (typically empty for the dashboard). */
   configInput?: EvaluationConfigInput;
+  /**
+   * Scope `capture_eta.members` to these `${url_pair_id}::${viewport}`
+   * keys. When omitted/empty, `members` is an empty map — only the
+   * cluster panel needs ETAs (the rows view dropped its ETA chip), so
+   * the dashboard's default for the rows-only case sends nothing.
+   */
+  etaKeys?: ReadonlySet<string>;
 }
 
 export function computeReviewDashboard(
@@ -94,8 +129,7 @@ export function computeReviewDashboard(
   let results_delta: ReviewDashboardResultsDelta | null = null;
   if (opts.since && cursor && config) {
     const plan = planEvaluation(db, sessionId, config);
-    const fullResults = readSessionResults(db, sessionId, config);
-    const summary = summariseResults(fullResults, config.target_level);
+    const summary = getSummaryCached(db, sessionId, config);
     const changed = listChangedPairKeysSince(db, sessionId, opts.since);
     const evalRows = listEvaluations(db, sessionId);
     const latestEvaluation =
@@ -134,7 +168,50 @@ export function computeReviewDashboard(
     session_id: sessionId,
     evaluation,
     results_delta,
-    capture_eta: computeCaptureEta(db, sessionId),
+    capture_eta: computeCaptureEta(db, sessionId, { keys: opts.etaKeys }),
     config,
   };
+}
+
+function getSummaryCached(
+  db: Db,
+  sessionId: string,
+  config: EvaluationConfig,
+): SessionResultsSummary {
+  const key = summaryCacheKey(sessionId, config);
+  const now = Date.now();
+  const cached = summaryCache.get(key);
+  if (cached && now - cached.computedAt < SUMMARY_TTL_MS) {
+    return cached.summary;
+  }
+  const fullResults = readSessionResults(db, sessionId, config);
+  const summary = summariseResults(fullResults, config.target_level);
+  summaryCache.set(key, { summary, computedAt: now });
+  // Bounded eviction: when we cross the cap, drop the oldest entry
+  // (Map iteration is insertion-ordered in JS, so the first key is the
+  // FIFO head). Cheap O(1) per eviction.
+  if (summaryCache.size > MAX_CACHE_ENTRIES) {
+    const oldest = summaryCache.keys().next().value;
+    if (oldest) summaryCache.delete(oldest);
+  }
+  return summary;
+}
+
+function summaryCacheKey(sessionId: string, config: EvaluationConfig): string {
+  // Only include config fields that actually affect the summary buckets.
+  // viewports drives the row-count denominator (enabled pairs × viewports);
+  // target_level drives by_target_status and the matched/missing split.
+  // url_pair_ids restricts the row set; filter_query likewise. Other
+  // EvaluationConfig fields (lm_*, region_match_config, capture_options)
+  // don't change the summary shape, so we don't include them — keeps
+  // cache hits high across normal config drift.
+  const viewports = config.viewports.map((v) => v.name).sort().join(',');
+  const pairIds = config.url_pair_ids ? config.url_pair_ids.slice().sort().join(',') : '';
+  const filter = JSON.stringify(config.filter_query ?? {});
+  return `${sessionId}::${config.target_level}::${viewports}::${pairIds}::${filter}`;
+}
+
+/** Test seam — clear the in-memory cache. */
+export function _clearSummaryCacheForTests(): void {
+  summaryCache.clear();
 }

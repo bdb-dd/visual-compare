@@ -6,7 +6,6 @@ import { useSyncedScroll } from './useSyncedScroll.js';
 import { RecapturePairButton } from './RecapturePairButton.js';
 import { StatusPill } from './StatusPill.js';
 import { StaleBadge } from './StaleBadge.js';
-import { useReviewCaptureEta } from '../hooks/useReviewDashboard.js';
 import { isAtLeastAsStrict } from '@visual-compare/api/constants/equivalence';
 import type {
   AcceptanceRow,
@@ -82,14 +81,10 @@ export function ComparisonDetail({
   const [refreshTick, setRefreshTick] = useState(0);
   const [recapturing, setRecapturing] = useState(false);
 
-  // ETA map comes from the shared ReviewDashboardProvider — one poll
-  // per session, distributed via context. Outside the session-scoped
-  // surface (e.g., the legacy /comparisons/:id deep-link) the map is
-  // empty, which is fine — stale ETAs are session-only.
-  const etaByKey = useReviewCaptureEta();
-  const rowEta = row
-    ? etaByKey.get(`${row.url_pair_id}::${row.viewport_name}`)
-    : undefined;
+  // Note: the comparison-detail pane intentionally does NOT show ETAs in
+  // its stale badge — ETAs are reserved for the cluster panel (small
+  // focused set). The badge here still shows the stale + recapture-
+  // status state, just without the `~Xs` suffix.
 
   useEffect(() => {
     setDetail(null);
@@ -287,7 +282,7 @@ export function ComparisonDetail({
         {viewMode === 'a' && (
           <Pane
             label={`A · ${capture_a.viewport_name}`}
-            badge={<StaleBadge status={row?.capture_a_status} etaMs={rowEta?.eta_ms} />}
+            badge={<StaleBadge status={row?.capture_a_status} />}
             src={capture_a.screenshot_url}
             alt="A"
             boxes={boxes}
@@ -296,7 +291,7 @@ export function ComparisonDetail({
         {viewMode === 'b' && (
           <Pane
             label={`B · ${capture_b.viewport_name}`}
-            badge={<StaleBadge status={row?.capture_b_status} etaMs={rowEta?.eta_ms} />}
+            badge={<StaleBadge status={row?.capture_b_status} />}
             src={capture_b.screenshot_url}
             alt="B"
             boxes={boxes}
@@ -306,7 +301,7 @@ export function ComparisonDetail({
           <>
             <Pane
               label="A"
-              badge={<StaleBadge status={row?.capture_a_status} etaMs={rowEta?.eta_ms} />}
+              badge={<StaleBadge status={row?.capture_a_status} />}
               src={capture_a.screenshot_url}
               alt="A"
               boxes={boxes}
@@ -315,7 +310,7 @@ export function ComparisonDetail({
             />
             <Pane
               label="B"
-              badge={<StaleBadge status={row?.capture_b_status} etaMs={rowEta?.eta_ms} />}
+              badge={<StaleBadge status={row?.capture_b_status} />}
               src={capture_b.screenshot_url}
               alt="B"
               boxes={boxes}

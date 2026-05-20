@@ -41,7 +41,6 @@ import {
   type LmPromptInvocationReason,
 } from '../services/lm-prompts.js';
 import { promptGuidanceSchema } from '../services/lm-prompt-guidance.js';
-import { computeCaptureEta } from '../services/capture-eta.js';
 import { computeReviewDashboard } from '../services/dashboard.js';
 import {
   acceptanceInputSchema,
@@ -566,23 +565,6 @@ export function sessionsRouter(deps: SessionsRouterDeps): Router {
     res.status(202).json({ ...result, unknown_pair_ids: [] });
   });
 
-  // Per-(pair, viewport) ETA for the session's currently in-flight capture
-  // run. Used by the Rows + Clusters surfaces to render "Stale · recapturing
-  // (~Xs)" next to each stale row/member. Returns an empty map when nothing
-  // is in flight, so the UI can stop polling.
-  router.get('/:id/capture-eta', (req, res) => {
-    const id = req.params.id;
-    if (!id) {
-      res.status(400).json({ error: 'invalid_request', message: 'id is required' });
-      return;
-    }
-    if (!getSession(db, id)) {
-      res.status(404).json({ error: 'not_found' });
-      return;
-    }
-    res.json(computeCaptureEta(db, id));
-  });
-
   // Per-session aggregate. Folds the three per-session pollers
   // (evaluation, results-delta, capture-eta) into one request so the
   // dashboard polls a single endpoint instead of fanning out. See
@@ -605,7 +587,15 @@ export function sessionsRouter(deps: SessionsRouterDeps): Router {
     const evalParam = req.query.eval;
     const evaluationId =
       typeof evalParam === 'string' && evalParam.length > 0 ? evalParam : undefined;
-    res.json(computeReviewDashboard(db, id, lm, { since, evaluationId }));
+    // `?eta_keys=a::b,c::d` — restricts capture_eta.members to those keys.
+    // Sent by the cluster panel for its currently-visible members; omitted
+    // by the rows view (which no longer reads ETAs).
+    const etaKeysParam = req.query.eta_keys;
+    const etaKeys =
+      typeof etaKeysParam === 'string' && etaKeysParam.length > 0
+        ? new Set(etaKeysParam.split(',').filter((k) => k.includes('::')))
+        : undefined;
+    res.json(computeReviewDashboard(db, id, lm, { since, evaluationId, etaKeys }));
   });
 
   // Capture + comparison errors for a session, flattened into one list

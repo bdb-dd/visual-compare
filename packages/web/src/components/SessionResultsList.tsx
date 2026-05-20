@@ -6,7 +6,6 @@ import type {
   SessionResultsSummary,
 } from '@visual-compare/api/types';
 import { RecapturePairButton } from './RecapturePairButton.js';
-import { useReviewCaptureEta } from '../hooks/useReviewDashboard.js';
 import { CaptureStatusChip } from './CaptureStatusChip.js';
 import {
   levelMatches,
@@ -227,9 +226,10 @@ export function SessionResultsList({
   );
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  // ETA map is provided by the shared ReviewDashboardProvider — one
-  // poll per session, distributed via context. No local polling here.
-  const etaByKey = useReviewCaptureEta();
+  // Note: the rows view intentionally does NOT show ETAs in the chip —
+  // ETAs are only rendered in the cluster detail panel (where the user
+  // is looking at a small focused set). The chip here still distinguishes
+  // failed vs stale, just without the `~Xs` suffix.
 
   // Auto-select the first visible row when the current selection drops out.
   useEffect(() => {
@@ -375,7 +375,6 @@ export function SessionResultsList({
                       <CaptureStatusChip
                         statusA={r.capture_a_status}
                         statusB={r.capture_b_status}
-                        etaMs={etaByKey.get(key)?.eta_ms}
                       />
                       {missing ? (
                         <span className="viewport-badge">{missing}</span>

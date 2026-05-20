@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { ImageWithBoxes } from './ImageWithBoxes.js';
 import { StaleBadge } from './StaleBadge.js';
-import { useReviewCaptureEta } from '../hooks/useReviewDashboard.js';
+import { useReviewCaptureEta, useReviewDashboard } from '../hooks/useReviewDashboard.js';
 import { FitModeToggle, useFitMode } from './FitModeToggle.js';
 import { useSyncedScroll, type SyncedScroll } from './useSyncedScroll.js';
 import { RecapturePairButton } from './RecapturePairButton.js';
@@ -272,6 +272,22 @@ export function ClusterDetailPanel({
   const displayed: ClusterMemberDto | null = displayedIndex >= 0
     ? (members[displayedIndex] ?? null)
     : representative;
+
+  // Register this cluster's stale-and-in-flight members with the
+  // dashboard provider so the server computes ETAs only for what's
+  // visible here. Without this, the dashboard's capture_eta.members
+  // would serialize entries for thousands of in-flight pairs the user
+  // can't see — 100+ KB per tick on a big recapture. The effect runs
+  // on every members change and clears on unmount.
+  const dashboard = useReviewDashboard();
+  useEffect(() => {
+    if (!dashboard) return;
+    const staleKeys = members
+      .filter((m) => m.capture_a_status.is_stale || m.capture_b_status.is_stale)
+      .map((m) => `${m.url_pair_id}::${m.viewport_name}`);
+    dashboard.setEtaScope(staleKeys);
+    return () => dashboard.setEtaScope([]);
+  }, [members, dashboard]);
 
   // ETA map comes from the shared ReviewDashboardProvider — one poll
   // per session, distributed via context.

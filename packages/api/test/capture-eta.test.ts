@@ -150,7 +150,8 @@ describe('computeCaptureEta', () => {
       created_at: isoMinutesAgo(1),
     });
 
-    const result = computeCaptureEta(db, seed.sessionId);
+    const keys = new Set(seed.pairs.map((p) => `${p.id}::desktop`));
+    const result = computeCaptureEta(db, seed.sessionId, { keys });
     expect(result.run_id).toBe(seed.captureRunId);
     expect(result.concurrency).toBe(2);
     expect(result.avg_duration_ms).toBe(4_000);
@@ -169,6 +170,52 @@ describe('computeCaptureEta', () => {
     expect(p1.eta_ms).toBe(4_000);
     expect(p2.eta_ms).toBe(8_000);
     expect(p2.rank).toBe(3);
+  });
+
+  it('returns an empty members map when no keys are supplied (scoped-by-default)', () => {
+    const seed = seedSession(db, 1);
+    insertCapture(db, {
+      runId: seed.captureRunId,
+      pairId: seed.pairs[0]!.id,
+      side: 'a',
+      url: seed.pairs[0]!.url_a,
+      status: 'pending',
+      created_at: isoMinutesAgo(1),
+    });
+
+    const result = computeCaptureEta(db, seed.sessionId);
+    // Run is still in flight (total_in_flight reflects it), but members
+    // is empty because the caller didn't ask for any specific keys.
+    expect(result.run_id).toBe(seed.captureRunId);
+    expect(result.total_in_flight).toBe(1);
+    expect(result.members).toEqual({});
+  });
+
+  it('filters members to the requested keys only (ignoring out-of-scope pairs)', () => {
+    const seed = seedSession(db, 2);
+    const [p0, p1] = seed.pairs as [typeof seed.pairs[0], typeof seed.pairs[0]];
+    insertCapture(db, {
+      runId: seed.captureRunId,
+      pairId: p0.id,
+      side: 'a',
+      url: p0.url_a,
+      status: 'pending',
+      created_at: isoMinutesAgo(10),
+    });
+    insertCapture(db, {
+      runId: seed.captureRunId,
+      pairId: p1.id,
+      side: 'a',
+      url: p1.url_a,
+      status: 'pending',
+      created_at: isoMinutesAgo(5),
+    });
+
+    const result = computeCaptureEta(db, seed.sessionId, {
+      keys: new Set([`${p0.id}::desktop`]),
+    });
+    expect(Object.keys(result.members)).toEqual([`${p0.id}::desktop`]);
+    expect(result.total_in_flight).toBe(2);
   });
 
   it("pair ETA is the max across sides when they're at different ranks", () => {
@@ -215,7 +262,9 @@ describe('computeCaptureEta', () => {
       created_at: isoMinutesAgo(1),
     });
 
-    const result = computeCaptureEta(db, seed.sessionId);
+    const result = computeCaptureEta(db, seed.sessionId, {
+      keys: new Set([`${p.id}::desktop`]),
+    });
     expect(result.concurrency).toBe(2);
     // A: rank 1 → 2000ms. B: rank 2 (behind the extra pair's B) → 2000ms.
     // With concurrency=2, both rank values land in the same batch, so eta
@@ -258,7 +307,9 @@ describe('computeCaptureEta', () => {
       created_at: isoMinutesAgo(1),
     });
 
-    const result = computeCaptureEta(db, seed.sessionId);
+    const result = computeCaptureEta(db, seed.sessionId, {
+      keys: new Set([`${seed.pairs[0]!.id}::desktop`]),
+    });
     expect(result.avg_source).toBe('session');
     expect(result.avg_duration_ms).toBe(6_000);
     expect(result.members[`${seed.pairs[0]!.id}::desktop`]!.eta_ms).toBe(6_000);
@@ -275,7 +326,9 @@ describe('computeCaptureEta', () => {
       created_at: isoMinutesAgo(1),
     });
 
-    const result = computeCaptureEta(db, seed.sessionId);
+    const result = computeCaptureEta(db, seed.sessionId, {
+      keys: new Set([`${seed.pairs[0]!.id}::desktop`]),
+    });
     expect(result.avg_source).toBeNull();
     expect(result.avg_duration_ms).toBeNull();
     // Member is present so the UI can still mark it as stale; eta_ms is 0

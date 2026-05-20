@@ -39,7 +39,13 @@ export interface CaptureEta {
   avg_source: 'in_run' | 'session' | null;
   /** Total pending + processing captures across the run. */
   total_in_flight: number;
-  /** ETA by `${url_pair_id}::${viewport_name}` key. Only contains in-flight pairs. */
+  /**
+   * ETA by `${url_pair_id}::${viewport_name}` key. When the caller passes
+   * a `keys` filter, only members in that set are returned — the
+   * dashboard hook does this so we only serialize ETAs the user is
+   * actually viewing (cluster panel's focused member list), not every
+   * in-flight pair in the session.
+   */
   members: Record<string, MemberEta>;
 }
 
@@ -61,7 +67,26 @@ interface InFlightRow {
   rank: number;
 }
 
-export function computeCaptureEta(db: Db, sessionId: string): CaptureEta {
+export interface ComputeCaptureEtaOptions {
+  /**
+   * Restrict the returned `members` map to these `${url_pair_id}::${vp}`
+   * keys. When omitted or empty, the response has an empty `members`
+   * map — callers always pass the keys they actually intend to display
+   * (the cluster panel's focused members) so we don't pay to serialize
+   * ETAs for thousands of in-flight pairs the user can't see.
+   *
+   * Rank is still computed across the full in-flight set so the ETA for
+   * a filtered key reflects its true queue position, not a position
+   * within the filtered subset.
+   */
+  keys?: ReadonlySet<string>;
+}
+
+export function computeCaptureEta(
+  db: Db,
+  sessionId: string,
+  opts: ComputeCaptureEtaOptions = {},
+): CaptureEta {
   const empty: CaptureEta = {
     run_id: null,
     concurrency: null,
@@ -143,13 +168,23 @@ export function computeCaptureEta(db: Db, sessionId: string): CaptureEta {
     }
   }
 
+  // Filter to the caller-requested scope. When `keys` is omitted or
+  // empty, we return no members at all — the cluster panel always
+  // sends the keys it wants and the rows view no longer reads ETAs.
+  const filteredMembers: Record<string, MemberEta> = {};
+  if (opts.keys && opts.keys.size > 0) {
+    for (const [key, member] of Object.entries(members)) {
+      if (opts.keys.has(key)) filteredMembers[key] = member;
+    }
+  }
+
   return {
     run_id: run.id,
     concurrency,
     avg_duration_ms: avgMs,
     avg_source: avgInRun !== null ? 'in_run' : avgSession !== null ? 'session' : null,
     total_in_flight: ranked.length,
-    members,
+    members: filteredMembers,
   };
 }
 

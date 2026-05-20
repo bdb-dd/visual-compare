@@ -39,6 +39,17 @@ export interface ReviewDashboardSnapshot {
    * dashboard always tracks the right one.
    */
   trackEvaluation(id: string | null): void;
+  /**
+   * Restrict `capture_eta.members` server-side to these
+   * `${url_pair_id}::${viewport}` keys. Only the cluster detail panel
+   * registers a scope today (its currently-focused members); the rows
+   * view has no ETA chip and registers nothing, so the server returns
+   * an empty members map and bytes stay small.
+   *
+   * Last-writer wins: each call replaces the prior scope. Consumers
+   * pass an empty array on unmount to clear.
+   */
+  setEtaScope(keys: readonly string[]): void;
   /** Force-refresh outside the normal cadence. */
   refresh(): Promise<void>;
 }
@@ -61,12 +72,14 @@ export function ReviewDashboardProvider({
   // Refs so the polling effect doesn't restart per render.
   const cursorRef = useRef<string | null>(null);
   const trackedEvalRef = useRef<string | null>(null);
+  const etaKeysRef = useRef<readonly string[]>([]);
 
   const refresh = useCallback(async () => {
     try {
       const since = cursorRef.current ?? undefined;
       const evaluationId = trackedEvalRef.current ?? undefined;
-      const res = await api.getReviewDashboard(sessionId, { since, evaluationId });
+      const etaKeys = etaKeysRef.current.length > 0 ? etaKeysRef.current : undefined;
+      const res = await api.getReviewDashboard(sessionId, { since, evaluationId, etaKeys });
       // Advance the cursor for the next tick — once set, the dashboard
       // always returns results_delta.
       if (res.results_delta?.cursor) {
@@ -92,9 +105,13 @@ export function ReviewDashboardProvider({
     trackedEvalRef.current = id;
   }, []);
 
+  const setEtaScope = useCallback((keys: readonly string[]) => {
+    etaKeysRef.current = keys;
+  }, []);
+
   const value = useMemo<ReviewDashboardSnapshot>(
-    () => ({ data, loading, error, trackEvaluation, refresh }),
-    [data, loading, error, trackEvaluation, refresh],
+    () => ({ data, loading, error, trackEvaluation, setEtaScope, refresh }),
+    [data, loading, error, trackEvaluation, setEtaScope, refresh],
   );
 
   return (
