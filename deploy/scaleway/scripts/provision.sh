@@ -470,8 +470,9 @@ Example:
   ./provision.sh resize-api POP2-HC-8C-16G --dry-run
 
 Pre-flight verifies the target type exists in the zone and that the
-instance is in a state we can act on. With --dry-run, exits before the
-first state-changing call so you can confirm the plan safely.
+instance is in a state we can act on. After pre-flight, prompts
+interactively to create a pre-resize block-volume snapshot (y/n/a).
+With --dry-run, exits before the prompt and any state-changing call.
 EOF
         return 0
         ;;
@@ -527,15 +528,60 @@ EOF
   fi
   log "target type:   $target_type — cpu=$cpu ram=$((ram / 1024 / 1024 / 1024))GB hourly≈€$hourly_eur"
 
-  # Reminder rather than auto-snapshot — snapshots are slow and the
-  # operator may already have one. The README runbook covers it.
-  log "reminder: snapshot the block volume first if you haven't:"
-  log "  scw block snapshot create volume-id=${SCW_BLOCK_VOLUME_ID:-<unset>} zone=$SCW_API_ZONE name=pre-resize-\$(date +%F)"
-
   if [ "$dry_run" = "true" ]; then
-    log "DRY RUN — would stop, update commercial-type, then start. Exiting."
+    log "DRY RUN — would prompt for pre-resize snapshot, then stop, update commercial-type, then start. Exiting."
     return 0
   fi
+
+  # ---- Pre-resize snapshot prompt ----
+  # Always ask. Snapshots are slow but cheap insurance; surfacing the
+  # choice each time beats an opt-in flag the operator might forget.
+  [ -n "${SCW_BLOCK_VOLUME_ID:-}" ] \
+    || fail "SCW_BLOCK_VOLUME_ID not set in state.env — can't offer a pre-resize snapshot. Run ./provision.sh status to inspect."
+  [ -t 0 ] \
+    || fail "stdin is not a TTY — re-run interactively so the pre-resize snapshot prompt can be answered."
+
+  log "pre-resize snapshot of block volume $SCW_BLOCK_VOLUME_ID?"
+  log "  [y] yes   — create snapshot, wait for it to finish, then resize"
+  log "  [n] no    — skip snapshot, proceed with resize"
+  log "  [a] abort — exit without changing anything"
+  printf '[provision] choice [y/n/a]: ' >&2
+  local choice=""
+  read -r choice
+  case "$choice" in
+    y|Y|yes)
+      local snapshot_name="pre-resize-$(date +%F-%H%M%S)"
+      log "creating snapshot '$snapshot_name' …"
+      local snapshot_id
+      snapshot_id="$(scw_create_id block snapshot create \
+                       volume-id="$SCW_BLOCK_VOLUME_ID" \
+                       zone="$SCW_API_ZONE" \
+                       name="$snapshot_name")"
+      log "snapshot id: $snapshot_id — waiting for status=available …"
+      local deadline=$(( $(date +%s) + 900 ))  # 15 min cap
+      while :; do
+        local snap_status
+        snap_status="$(scw block snapshot get "$snapshot_id" zone="$SCW_API_ZONE" -o json | jq -r '.status')"
+        case "$snap_status" in
+          available) log "snapshot ready."; break ;;
+          error|deleting|deleted) fail "snapshot ended in status=$snap_status — aborting resize." ;;
+        esac
+        [ "$(date +%s)" -lt "$deadline" ] \
+          || fail "snapshot did not become available within 15min (last status=$snap_status) — aborting resize."
+        sleep 10
+      done
+      ;;
+    n|N|no)
+      log "skipping snapshot — proceeding with resize."
+      ;;
+    a|A|abort|"")
+      log "aborted by user — no changes made."
+      return 0
+      ;;
+    *)
+      fail "unrecognised choice: '$choice' (expected y/n/a)"
+      ;;
+  esac
 
   # ---- Stop ----
   case "$current_state" in
