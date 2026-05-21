@@ -1,0 +1,46 @@
+# Caddy config for the all-in-one container. No TLS here — terminate TLS
+# at a fronting proxy (or use a Caddy-in-front model) if you expose this
+# to the internet. The Scaleway deploy still uses deploy/scaleway/Caddyfile.template.
+{
+    auto_https off
+    admin off
+    persist_config off
+}
+
+:80 {
+    encode zstd gzip
+
+    # Liveness probe — bypasses everything else so platforms / uptime monitors
+    # don't need credentials.
+    @health path /healthz
+    handle @health {
+        reverse_proxy 127.0.0.1:3001
+    }
+
+    # API + image artifacts proxy to the Node process. Must be a separate
+    # `handle` block: a guarded `reverse_proxy @api` next to `try_files`
+    # lets Caddy's rewrite phase fire first and send /api/* to /index.html.
+    @api path /api/* /images/*
+    handle @api {
+        reverse_proxy 127.0.0.1:3001 {
+            # LM preflight + analyze can take 60–180 s on a cold remote
+            # endpoint. Push proxy timeouts past Caddy's 30 s default so the
+            # client doesn't see a 504 mid-warmup.
+            transport http {
+                read_timeout 300s
+                write_timeout 300s
+            }
+        }
+    }
+
+    # Static SPA build — fallback for everything not matched above.
+    handle {
+        root * /app/web
+        try_files {path} /index.html
+        file_server
+    }
+
+    log {
+        output stdout
+    }
+}

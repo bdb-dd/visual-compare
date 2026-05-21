@@ -1,0 +1,28 @@
+services:
+  visual-compare:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: visual-compare:local
+    container_name: visual-compare
+    restart: unless-stopped
+    ports:
+      # Host:container. Caddy listens on :80 inside the container. Change
+      # the left side if 8080 is taken on your host.
+      - "8080:80"
+    volumes:
+      # Persistent state: SQLite DB + content-addressed image artifacts.
+      - ./docker-data:/data
+      # Config drop: a `.env` file here is sourced by the entrypoint
+      # before supervisord starts. Copy docker/config.env.example here
+      # and fill in your LM endpoint values.
+      - ./docker-config:/config:ro
+    # `shm_size` matters for headless Chromium — Playwright tabs allocate
+    # shared memory and OOM the default 64 MB during multi-tab captures.
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
