@@ -7,9 +7,17 @@ CONFIG_ENV="${CONFIG_ENV_PATH:-/config/.env}"
 if [ -f "$CONFIG_ENV" ]; then
   # Export every assignment in the file so child processes started by
   # supervisord inherit them. `set -a` auto-exports until `set +a`.
+  #
+  # Source through `tr -d '\r'` (process substitution) so CRLF line
+  # endings — common when the operator edits .env on Windows — don't
+  # leak `\r` into variable values. Without this, `FOO=1` written by
+  # PowerShell's Add-Content becomes `FOO=$'1\r'` and any code doing
+  # `if [ "$FOO" = "1" ]` (or strict `=== '1'` on the JS side) breaks
+  # silently. /config is typically bind-mounted read-only, so we can't
+  # rewrite the source file — we strip on the read instead.
   set -a
   # shellcheck disable=SC1090
-  . "$CONFIG_ENV"
+  . <(tr -d '\r' < "$CONFIG_ENV")
   set +a
   echo "[entrypoint] loaded env from $CONFIG_ENV"
 else
