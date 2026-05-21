@@ -1,0 +1,11 @@
+# Force LF for files that Linux containers execute or read line-by-line.
+# Windows checkouts would otherwise materialise CRLF in the working tree
+# (via core.autocrlf=true), which breaks `#!/bin/sh` shebangs and the
+# Caddyfile / supervisord parsers when those files are COPYed into the
+# container.
+
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+docker/**       text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
