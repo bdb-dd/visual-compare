@@ -8,16 +8,18 @@
 
 # ---------------------------------------------------------------------------
 # 1) Pull Caddy from the official image (avoids adding their apt repo).
+#    Pinned by digest for reproducibility; bump in lockstep with the upstream
+#    Caddy release notes.
 # ---------------------------------------------------------------------------
-FROM caddy:2-alpine AS caddy-bin
+FROM caddy:2.11.3-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794 AS caddy-bin
 
 
 # ---------------------------------------------------------------------------
 # 2) Builder: pnpm install + monorepo build. Native modules (better-sqlite3)
 #    compile against Node 22 here and are copied as-is into the runtime stage,
-#    which uses the same Node version + libc (Debian Bookworm).
+#    which uses the same Node version + libc (Debian Trixie).
 # ---------------------------------------------------------------------------
-FROM node:22-bookworm AS builder
+FROM node:22-trixie@sha256:84e52470526f23a2b8d7b58b095470b37fc3918042f6bb5ff9d406e0a8f3827b AS builder
 
 ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
@@ -53,15 +55,15 @@ RUN pnpm --filter @visual-compare/api exec playwright install --with-deps chromi
 
 
 # ---------------------------------------------------------------------------
-# 3) ImageMagick 7 from the upstream AppImage. Debian Bookworm's
-#    `imagemagick` package is still 6.9.x (no unified `magick` entry point);
-#    the API calls `magick compare …` / `magick identify` / `magick <image>
-#    -blur …`, which is IM7-only syntax. We extract the AppImage (no FUSE
-#    required for `--appimage-extract`) and copy the squashfs payload into
-#    the runtime stage as /opt/magick, with a tiny shim that exports
-#    LD_LIBRARY_PATH so the bundled libs load.
+# 3) ImageMagick 7 from the upstream AppImage. Debian's `imagemagick` package
+#    is still 6.9.x in trixie (no unified `magick` entry point); the API
+#    calls `magick compare …` / `magick identify` / `magick <image> -blur …`,
+#    which is IM7-only syntax. We extract the AppImage (no FUSE required for
+#    `--appimage-extract`) and copy the squashfs payload into the runtime
+#    stage as /opt/magick, with a tiny shim that exports APPDIR so the
+#    bundled libs load.
 # ---------------------------------------------------------------------------
-FROM debian:bookworm-slim AS magick-bin
+FROM debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b588e51af8883bf8 AS magick-bin
 
 ARG MAGICK_APPIMAGE_URL=https://imagemagick.org/archive/binaries/magick
 RUN apt-get update \
@@ -76,9 +78,10 @@ RUN apt-get update \
 
 # ---------------------------------------------------------------------------
 # 4) Runtime: slim Node image + ImageMagick + Caddy + supervisord + Chromium
-#    runtime libs (fonts, libnss, etc.). No build toolchain.
+#    runtime libs (fonts, libnss, etc.). No build toolchain. Same Node major
+#    and libc as the builder so prebuilt native modules load unchanged.
 # ---------------------------------------------------------------------------
-FROM node:22-bookworm-slim AS runtime
+FROM node:22-trixie-slim@sha256:e637ac91fb4f2f40761d217c5d48c41a05edf0b65eb9c34e72c27cce55af9e65 AS runtime
 
 ENV NODE_ENV=production \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
@@ -98,7 +101,12 @@ ENV NODE_ENV=production \
 # shared libs headless Chromium dlopen()s. Playwright's `install-deps`
 # normally fetches these in the builder; we install them explicitly here
 # because only the browsers payload is carried across the stage boundary.
+#
+# `apt-get upgrade -y` picks up any out-of-band security fixes published
+# since the base image was tagged — defense in depth against base-image
+# stagnation between rebuilds.
 RUN apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
       wget \

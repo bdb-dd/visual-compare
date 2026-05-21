@@ -15,6 +15,9 @@ data/
 docker-data/
 docker-config/
 
+# local trivy / CVE scan output
+.cve-scans/
+
 # test output
 coverage/
 .vitest/
