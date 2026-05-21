@@ -11,6 +11,10 @@ data/
 *.sqlite-wal
 *.sqlite-shm
 
+# docker compose default bind-mount targets (see docker-compose.yml)
+docker-data/
+docker-config/
+
 # test output
 coverage/
 .vitest/
