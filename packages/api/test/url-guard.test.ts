@@ -82,4 +82,29 @@ describe('assertSafeCaptureUrl', () => {
       }),
     ).resolves.toBeUndefined();
   });
+
+  // Windows-edited .env files commonly produce CRLF-tainted values when
+  // sourced by bash. The escape hatch should still kick in for the common
+  // accidental forms ('1\r', '1 ', 'TRUE\r\n', etc.).
+  it.each(['1', '1\r', '1\n', ' 1 ', '\t1\t', 'true', 'TRUE', 'True\r\n', '  true  '])(
+    'accepts escape hatch value %j',
+    async (value) => {
+      await expect(
+        assertSafeCaptureUrl('http://127.0.0.1:5173/fixtures/x.html', {
+          env: { ALLOW_PRIVATE_CAPTURE_TARGETS: value },
+        }),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  it.each(['', '0', 'false', 'no', 'yes', 'enabled', '1x', '1\r\n0', undefined])(
+    'rejects when escape hatch value is %j',
+    async (value) => {
+      await expect(
+        assertSafeCaptureUrl('http://127.0.0.1:5173/fixtures/x.html', {
+          env: value === undefined ? {} : { ALLOW_PRIVATE_CAPTURE_TARGETS: value },
+        }),
+      ).rejects.toThrow(UnsafeTargetError);
+    },
+  );
 });

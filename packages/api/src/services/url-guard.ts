@@ -8,11 +8,24 @@ import { isIP } from 'node:net';
  * this guard an authenticated user could read e.g. `169.254.42.42`
  * (Scaleway metadata → IAM credentials) or `127.0.0.1:3001/api/...`.
  *
- * Setting `ALLOW_PRIVATE_CAPTURE_TARGETS=1` skips the check — useful when
- * pointing dev captures at `http://localhost:5173/fixtures/...`.
+ * Setting `ALLOW_PRIVATE_CAPTURE_TARGETS=1` (or `=true`) skips the check —
+ * useful when pointing dev captures at `http://localhost:5173/fixtures/...`
+ * or at `http://host.docker.internal:<port>/` from inside a container that
+ * needs to reach dev servers on the host.
  */
 
 const ESCAPE_HATCH_ENV = 'ALLOW_PRIVATE_CAPTURE_TARGETS';
+
+/**
+ * True when the env var is set to an opt-in value. Tolerant of trailing
+ * whitespace and CR characters — Windows-edited `.env` files commonly leak
+ * CRLF into shell-sourced values, which used to silently disable the
+ * escape hatch (the comparison was strict `=== '1'`).
+ */
+function escapeHatchEnabled(value: string | undefined): boolean {
+  const trimmed = value?.trim().toLowerCase();
+  return trimmed === '1' || trimmed === 'true';
+}
 
 export interface UrlGuardOptions {
   env?: NodeJS.ProcessEnv;
@@ -29,7 +42,7 @@ export class UnsafeTargetError extends Error {
 
 export async function assertSafeCaptureUrl(rawUrl: string, opts: UrlGuardOptions = {}): Promise<void> {
   const env = opts.env ?? process.env;
-  if (env[ESCAPE_HATCH_ENV] === '1') return;
+  if (escapeHatchEnabled(env[ESCAPE_HATCH_ENV])) return;
 
   let url: URL;
   try {
