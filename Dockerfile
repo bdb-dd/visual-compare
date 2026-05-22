@@ -16,10 +16,10 @@ FROM caddy:2.11.3-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf
 
 # ---------------------------------------------------------------------------
 # 2) Builder: pnpm install + monorepo build. Native modules (better-sqlite3)
-#    compile against Node 22 here and are copied as-is into the runtime stage,
+#    compile against Node 24 here and are copied as-is into the runtime stage,
 #    which uses the same Node version + libc (Debian Trixie).
 # ---------------------------------------------------------------------------
-FROM node:22-trixie@sha256:84e52470526f23a2b8d7b58b095470b37fc3918042f6bb5ff9d406e0a8f3827b AS builder
+FROM node:24-trixie@sha256:8202a46483627d14c75c8078d8c1b1d8ec14b792390c7001adb4f698724c4ca9 AS builder
 
 ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
@@ -53,6 +53,14 @@ RUN pnpm -r build
 # the runtime stage's apt layer focused on runtime-only packages.
 RUN pnpm --filter @visual-compare/api exec playwright install --with-deps chromium
 
+# Stage a prod-only deployment tree for the API. `pnpm deploy --prod` copies
+# the API package + its production deps into a self-contained tree at the
+# target path (no pnpm symlinks). The runtime picks this up verbatim and
+# skips dev dependencies (esbuild's Go binary, vitest, tsx, typescript, etc.)
+# entirely — that's where the bulk of "shipped but never executed" scanner
+# findings live.
+RUN pnpm --filter @visual-compare/api deploy --prod --legacy /deploy-api
+
 
 # ---------------------------------------------------------------------------
 # 3) ImageMagick 7 from the upstream AppImage. Debian's `imagemagick` package
@@ -81,7 +89,7 @@ RUN apt-get update \
 #    runtime libs (fonts, libnss, etc.). No build toolchain. Same Node major
 #    and libc as the builder so prebuilt native modules load unchanged.
 # ---------------------------------------------------------------------------
-FROM node:22-trixie-slim@sha256:e637ac91fb4f2f40761d217c5d48c41a05edf0b65eb9c34e72c27cce55af9e65 AS runtime
+FROM node:24-trixie-slim@sha256:291be77873bc04731968cacf82f0fcef17cee8cf200c6b6951e2bcab41560eb7 AS runtime
 
 ENV NODE_ENV=production \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
@@ -153,11 +161,8 @@ COPY --from=caddy-bin /usr/bin/caddy /usr/local/bin/caddy
 # We include the full top-level + per-package node_modules — pnpm's symlink
 # tree only works when the directory structure matches the install.
 WORKDIR /app
-COPY --from=builder /app/package.json /app/pnpm-workspace.yaml /app/pnpm-lock.yaml ./
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/packages/api/package.json ./packages/api/package.json
-COPY --from=builder /app/packages/api/dist ./packages/api/dist
-COPY --from=builder /app/packages/api/node_modules ./packages/api/node_modules
+# The API runs from a self-contained pnpm `deploy --prod` tree.
+COPY --from=builder /deploy-api ./packages/api
 # Web build is served by Caddy from /app/web (matches docker/Caddyfile).
 COPY --from=builder /app/packages/web/dist ./web
 
