@@ -11,6 +11,13 @@ data/
 *.sqlite-wal
 *.sqlite-shm
 
+# docker compose default bind-mount targets (see docker-compose.yml)
+docker-data/
+docker-config/
+
+# local trivy / CVE scan output
+.cve-scans/
+
 # test output
 coverage/
 .vitest/

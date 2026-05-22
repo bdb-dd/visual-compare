@@ -1,0 +1,58 @@
+# Build-context exclusions. The Dockerfile only needs:
+# - package.json / lockfiles / workspace
+# - packages/api/src + tsconfig + package.json
+# - packages/web/src + index.html + vite.config + tsconfig + package.json
+# - docker/ runtime configs
+# Everything else just slows down the COPY into the builder.
+
+.git
+.bare
+.shared
+.gitignore
+
+# Per-package and root-level build outputs / installs. These are
+# regenerated inside the builder stage.
+node_modules
+**/node_modules
+**/dist
+
+# Runtime data + local mounts (compose default targets).
+data
+docker-data
+docker-config
+
+# Worktree-layout sibling directories (CLAUDE.md describes the macOS setup).
+main
+my-feature
+
+# IDE + macOS noise.
+.DS_Store
+.vscode
+.idea
+
+# Local secrets.
+.env
+.env.local
+.env.*.local
+
+# Deploy artifacts unrelated to this image.
+deploy/scaleway/provision.env
+deploy/scaleway/state.env
+deploy/scaleway/state/*
+
+# Test + experiment outputs.
+coverage
+.vitest
+tmp
+experiments
+
+# SQLite snapshots (also covered by `data/` but listed explicitly).
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Docs we don't need in the image.
+docs
+PHASE_C_NOTES.md
+cluster-review-proposal.md

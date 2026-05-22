@@ -29,6 +29,7 @@ pnpm build                  # required for `pnpm start` and for deploy
 From here, pick a run mode:
 
 - [**Running locally**](#running-locally) — dev servers against an LM Studio you run on your machine.
+- [**Running in Docker**](#running-in-docker) — single all-in-one container against an external OpenAI-compatible LM endpoint.
 - [**Deployment**](#deployment) — Scaleway API VM with the LM on a separate GPU instance.
 
 ## Running locally
@@ -152,6 +153,92 @@ git -C main worktree add ../my-feature -b my-feature
 
 Cross-package types live in `packages/api/src/types.ts` and are imported via
 the `@visual-compare/api/*` path alias declared in `tsconfig.base.json`.
+
+
+## Running in Docker
+
+A single all-in-one image is provided at the repo root: Node 22 API + Vite
+SPA build + Caddy reverse-proxy + ImageMagick + Playwright Chromium, with
+`supervisord` orchestrating Caddy and the Node process. Designed for
+pointing at an **external** OpenAI-compatible LM endpoint (your own
+gateway, OpenRouter, a self-hosted LM Studio on another host, etc.) —
+`LM_BACKEND` defaults to `none` inside the image, so the API will not try
+to spawn the local `lms` CLI.
+
+### Volumes and ports
+
+| Mount inside container | Purpose |
+| --- | --- |
+| `/data` | Persistent state: `visual-compare.sqlite` + `images/` (content-addressed PNG store) + `lm-last-use`. |
+| `/config` | Read-only env drop. Entrypoint sources `/config/.env` before starting supervisord. |
+
+Caddy listens on `:80` inside the container; `docker-compose.yml` maps it
+to `:8080` on the host.
+
+### Quick start with docker compose
+
+```sh
+mkdir -p docker-data docker-config
+cp docker/config.env.example docker-config/.env
+$EDITOR docker-config/.env       # fill in LM_STUDIO_BASE_URL/API_KEY/MODEL
+
+docker compose build
+docker compose up -d
+```
+
+Then open <http://localhost:8080>. Logs:
+
+```sh
+docker compose logs -f visual-compare
+```
+
+### Plain `docker run`
+
+```sh
+docker build -t visual-compare:local .
+
+docker run -d --name visual-compare \
+  -p 8080:80 \
+  --shm-size=1g \
+  -v "$(pwd)/docker-data:/data" \
+  -v "$(pwd)/docker-config:/config:ro" \
+  visual-compare:local
+```
+
+`--shm-size=1g` matters for headless Chromium: Playwright allocates shared
+memory per tab and the default 64 MB OOMs during multi-tab captures.
+
+### Required environment for the LM verdict pass
+
+The user-supplied LM credentials map straight onto the same env vars
+`readLmConfigFromEnv()` reads (see `packages/api/src/services/lm.ts`):
+
+| Your value | Env var |
+| --- | --- |
+| OpenAI-compatible base URL (ends in `/v1`) | `LM_STUDIO_BASE_URL` |
+| API key / bearer token | `LM_STUDIO_API_KEY` |
+| Model id | `LM_STUDIO_MODEL` |
+
+Put these in `docker-config/.env`; the entrypoint exports them so both
+the Node process (via supervisord) and any child spawned by the API
+inherit them. `docker/config.env.example` lists the optional tuning
+knobs (`LM_STUDIO_MAX_TOKENS`, `LM_STUDIO_PARALLEL`,
+`LM_STUDIO_TIMEOUT_SECONDS`, etc.).
+
+The model must be vision-capable — the v3 prompt sends the A/B
+screenshots inline as image content parts.
+
+### Backups
+
+The container's persistent state is entirely under `/data`. To back up,
+stop the container (so SQLite finishes any WAL checkpoint) and tar the
+host-side `docker-data/`:
+
+```sh
+docker compose stop
+tar -C docker-data -czf visual-compare-backup-$(date +%F).tar.gz .
+docker compose start
+```
 
 
 ## Deployment
