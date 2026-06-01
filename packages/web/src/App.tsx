@@ -35,6 +35,15 @@ export function App(): JSX.Element {
         */}
         <Route path="/sessions/:id/comparisons/:comparison_id" element={<ComparisonDetailPage />} />
         <Route path="/comparisons/:id" element={<LegacyComparisonRedirect />} />
+        {/*
+          The session list is canonical at `/`. `/sessions` (no id) is an
+          intuitive URL to type by hand, so alias it to the list rather
+          than rendering blank. The trailing `*` catches any other unknown
+          path so a mistyped URL lands on the list instead of a blank
+          screen (no route matched → React Router renders nothing).
+        */}
+        <Route path="/sessions" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </SystemStatusProvider>
   );
