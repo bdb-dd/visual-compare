@@ -38,14 +38,21 @@ export interface ScalewayApi {
   /** Issues the `poweron` action. Idempotent: ok if already running. */
   powerOn(): Promise<void>;
   /**
-   * Issues the `stop_in_place` action — a hypervisor-level halt that does
-   * not depend on the guest OS responding to ACPI. Used by the idle reaper
-   * where the goal is to stop compute billing; the boot drive + IP are
-   * preserved so the next `powerOn` is a fast cold boot.
+   * Issues the `poweroff` action — the only stop that actually halts
+   * compute billing. The instance archives to the `stopped` state; the
+   * boot volume + flexible IP are preserved (and still billed, cheaply)
+   * so the next `powerOn` is a cold boot.
    *
-   * Idempotent: ok if already stopped. We deliberately do NOT use the
-   * `poweroff` action — observed in production to leave tasks `pending`
-   * indefinitely while the guest ignored the ACPI signal.
+   * Idempotent: ok if already stopped.
+   *
+   * NOTE: we used to issue `stop_in_place` here to dodge a hung-ACPI
+   * `poweroff` (tasks sat `pending` while the guest ignored the signal).
+   * That was a costly mistake: `stop_in_place` is Scaleway *standby*
+   * mode, which keeps the instance pinned to its hypervisor with all
+   * resources (the GPU included) reserved and is **billed at the full
+   * running rate**. The reaper's post-action verify loop already polls
+   * until the state leaves `running`, so a hung `poweroff` now surfaces
+   * as a reaper error instead of a silently-billing standby.
    */
   powerOff(): Promise<void>;
 }
@@ -135,7 +142,7 @@ export function createScalewayApi(
     'Content-Type': 'application/json',
   } as const;
 
-  const action = async (verb: 'poweron' | 'stop_in_place') => {
+  const action = async (verb: 'poweron' | 'poweroff') => {
     await retry(
       async () => {
         const res = await fetchImpl(`${serverUrl}/action`, {
@@ -197,7 +204,7 @@ export function createScalewayApi(
       );
     },
     powerOn: () => action('poweron'),
-    powerOff: () => action('stop_in_place'),
+    powerOff: () => action('poweroff'),
   };
 }
 
