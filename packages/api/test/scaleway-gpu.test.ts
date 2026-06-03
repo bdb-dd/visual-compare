@@ -184,11 +184,14 @@ describe('createScalewayApi', () => {
     expect(captured!.headers['X-Auth-Token']).toBe('k');
   });
 
-  it('powerOff POSTs `stop_in_place` (not `poweroff`)', async () => {
-    // Regression: `poweroff` is an ACPI signal that the GPU image's guest
-    // has been observed to ignore, leaving the Scaleway task `pending`
-    // forever while the instance keeps billing. `stop_in_place` halts at
-    // the hypervisor and is what the idle reaper actually wants.
+  it('powerOff POSTs `poweroff` (not `stop_in_place`)', async () => {
+    // Cost regression: `stop_in_place` is Scaleway *standby* — the instance
+    // stays pinned to its hypervisor with the GPU reserved and is billed at
+    // the full running rate, so the idle reaper saved nothing. `poweroff`
+    // archives the instance to `stopped` and is the only stop that halts
+    // compute billing. The reaper's verify loop already polls until the
+    // state leaves `running`, so a hung poweroff surfaces as an error
+    // rather than a silently-billing standby.
     let capturedBody: unknown = null;
     const impl = (async (input: string | URL | Request, init?: RequestInit) => {
       capturedBody = init?.body ? JSON.parse(init.body as string) : null;
@@ -199,7 +202,7 @@ describe('createScalewayApi', () => {
       impl,
     );
     await api.powerOff();
-    expect(capturedBody).toEqual({ action: 'stop_in_place' });
+    expect(capturedBody).toEqual({ action: 'poweroff' });
   });
 
   it('treats 409 as success (idempotent powerOff)', async () => {
