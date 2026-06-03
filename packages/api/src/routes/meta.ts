@@ -44,7 +44,9 @@ export function metaRouter(deps: MetaRouterDeps = {}): Router {
       return;
     }
     const force = req.query.force === '1' || req.query.force === 'true';
-    const pf = await deps.lm.preflight({ force });
+    // A passive status read must not wake an idle GPU. Only an explicit
+    // `?force=1` (the user's "wake it up" action) is allowed to auto-start.
+    const pf = await deps.lm.preflight({ force, probeOnly: !force });
     if (pf.ok) {
       res.json({
         ok: true,
@@ -101,6 +103,9 @@ export function metaRouter(deps: MetaRouterDeps = {}): Router {
    */
   router.get('/system-status', async (req, res) => {
     const force = req.query.force === '1' || req.query.force === 'true';
+    // Background poll (`force=false`) is probe-only so the 5s system-status
+    // cadence never powers the GPU on; only `?force=1` may auto-start it.
+    const probeOnly = !force;
 
     const lmActivity = deps.lmActivity
       ? deps.lmActivity.snapshot()
@@ -122,7 +127,7 @@ export function metaRouter(deps: MetaRouterDeps = {}): Router {
       return;
     }
 
-    const pf = await deps.lm.preflight({ force });
+    const pf = await deps.lm.preflight({ force, probeOnly });
     const lm = pf.ok
       ? {
           ok: true,
