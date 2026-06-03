@@ -427,8 +427,14 @@ export interface LmClient {
    * the server / auto-loads the model based on config flags. Result is cached
    * for `config.preflightCacheSeconds` to avoid hammering on every comparison
    * run; pass `force` to bypass the cache.
+   *
+   * Pass `probeOnly` to suppress auto-start/auto-load: the call reports the
+   * current reachability without ever issuing `serverStart`/`load` (and, for
+   * the Scaleway backend, without powering the GPU on). Background status
+   * polls use this so a passive read never wakes an idle GPU; only real work
+   * and an explicit user "wake" (`force`) are allowed to start it.
    */
-  preflight(opts?: { force?: boolean }): Promise<PreflightResult>;
+  preflight(opts?: { force?: boolean; probeOnly?: boolean }): Promise<PreflightResult>;
   /** Invalidate the preflight cache (e.g. after a real LM call fails). */
   invalidatePreflight(): void;
   analyze(args: Omit<AnalyzeArgs, 'config'>): Promise<AnalyzeOutcome>;
@@ -481,11 +487,13 @@ export function createLmClient(
     cached = null;
   };
 
-  const preflight = async (opts: { force?: boolean } = {}): Promise<PreflightResult> => {
+  const preflight = async (
+    opts: { force?: boolean; probeOnly?: boolean } = {},
+  ): Promise<PreflightResult> => {
     if (!opts.force && cached && cached.expiresAt > Date.now() && cached.result.ok) {
       return cached.result;
     }
-    const result = await runPreflight(config, cli);
+    const result = await runPreflight(config, cli, { probeOnly: opts.probeOnly });
     cached = {
       result,
       expiresAt: Date.now() + config.preflightCacheSeconds * 1000,
@@ -537,8 +545,16 @@ export function createLmClient(
   return { config, preflight, invalidatePreflight, analyze };
 }
 
-async function runPreflight(config: LmConfig, cli: LmsCli): Promise<PreflightResult> {
+async function runPreflight(
+  config: LmConfig,
+  cli: LmsCli,
+  opts: { probeOnly?: boolean } = {},
+): Promise<PreflightResult> {
   const startedAt = Date.now();
+  // probeOnly callers (background status polls) want reachability without the
+  // side effect of starting the server — for the Scaleway backend that side
+  // effect is a GPU powerOn, which would fight the idle reaper.
+  const probeOnly = opts.probeOnly ?? false;
   let startedServer = false;
   let loadedModel = false;
 
@@ -568,6 +584,15 @@ async function runPreflight(config: LmConfig, cli: LmsCli): Promise<PreflightRes
   let probe = await ping();
 
   if (!probe.ok) {
+    if (probeOnly) {
+      return failure({
+        reason: 'server_unreachable',
+        message: `LM Studio at ${config.baseURL} is not reachable: ${probe.message ?? 'no response'}. (probe-only: not auto-starting)`,
+        serverReachable: false,
+        modelLoaded: false,
+        loadedModels: [],
+      });
+    }
     if (!config.autoStart) {
       return failure({
         reason: 'server_unreachable',
@@ -601,6 +626,15 @@ async function runPreflight(config: LmConfig, cli: LmsCli): Promise<PreflightRes
   }
 
   if (!probe.loaded.includes(config.model)) {
+    if (probeOnly) {
+      return failure({
+        reason: 'model_not_loaded',
+        message: `Configured model '${config.model}' is not loaded. (probe-only: not auto-loading). Loaded: ${probe.loaded.join(', ') || '(none)'}`,
+        serverReachable: true,
+        modelLoaded: false,
+        loadedModels: probe.loaded,
+      });
+    }
     if (!config.autoLoad) {
       return failure({
         reason: 'model_not_loaded',

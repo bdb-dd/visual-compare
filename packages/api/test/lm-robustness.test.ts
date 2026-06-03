@@ -175,6 +175,52 @@ describe('LmClient preflight', () => {
     expect(serverStartCalls).toBe(1);
   });
 
+  it('probeOnly reports server_unreachable WITHOUT auto-starting (no GPU powerOn)', async () => {
+    // Regression: a background status poll must never wake an idle GPU. With
+    // probeOnly the preflight reports unreachable and never calls serverStart.
+    const state: FakeLmServerOptions = { reachable: false, loadedModels: [] };
+    const fakeF = fakeFetch(state);
+    let serverStartCalls = 0;
+    const cli = fakeCli({
+      serverStart: async () => {
+        serverStartCalls++;
+        return okResult();
+      },
+    });
+    const client = createLmClient(makeConfig(), cli);
+    await withFetch(fakeF, async () => {
+      const pf = await client.preflight({ probeOnly: true });
+      expect(pf.ok).toBe(false);
+      if (!pf.ok) {
+        expect(pf.reason).toBe('server_unreachable');
+        expect(pf.startedServer).toBe(false);
+      }
+    });
+    expect(serverStartCalls).toBe(0);
+  });
+
+  it('probeOnly reports model_not_loaded WITHOUT auto-loading', async () => {
+    const state: FakeLmServerOptions = { reachable: true, loadedModels: ['other-model'] };
+    const fakeF = fakeFetch(state);
+    let loadCalls = 0;
+    const cli = fakeCli({
+      load: async () => {
+        loadCalls++;
+        return okResult();
+      },
+    });
+    const client = createLmClient(makeConfig(), cli);
+    await withFetch(fakeF, async () => {
+      const pf = await client.preflight({ probeOnly: true });
+      expect(pf.ok).toBe(false);
+      if (!pf.ok) {
+        expect(pf.reason).toBe('model_not_loaded');
+        expect(pf.loadedModel).toBe(false);
+      }
+    });
+    expect(loadCalls).toBe(0);
+  });
+
   it('reports auto_start_failed when lms server start returns non-zero', async () => {
     const fakeF = fakeFetch({ reachable: false });
     const cli = fakeCli({
